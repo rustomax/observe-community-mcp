@@ -1,0 +1,8 @@
+fastmcp>=0.1.0
+fastapi>=0.95.0
+uvicorn>=0.21.1
+requests>=2.28.2
+python-dotenv>=1.0.0
+httpx>=0.24.0
+pinecone>=7.0.0
+tqdm>=4.65.0

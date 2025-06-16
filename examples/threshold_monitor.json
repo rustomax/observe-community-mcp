@@ -1,0 +1,593 @@
+{
+  "actionRules": [
+    {
+      "actionId": "42484747",
+      "conditions": null,
+      "definition": {
+        "email": {
+          "addresses": [
+            "bla@observeinc.com"
+          ],
+          "body": "",
+          "fragments": {
+            "body": "<table>\n    <tbody>\n        <tr>\n            <th></th>\n        </tr>\n        <tr>\n            <td>\n                <a class=\"btn\" href=\"{{alert.url}}\" style=\"margin-bottom: 4px\">View Alert</a>\n                <a class=\"btn\" href=\"{{alert.dataUrl}}\" style=\"margin-bottom: 4px\">View Data</a>\n            </td>\n        </tr>\n        {{#alert.resources}}\n        <tr>\n            <th>\n                {{label}}\n            </th>\n        </tr>\n        <tr>\n            <td class=\"resource-value\">\n                <a href=\"{{url}}\">{{value}}</a>\n            </td>\n        </tr>\n        {{/alert.resources}}\n        {{#isGroupBy}}{{#value}}\n        <tr>\n            <th>\n                {{name}}\n            </th>\n        </tr>\n        <tr>\n            <td class=\"field-value\">\n                {{value}}\n            </td>\n        </tr>\n        {{/value}}{{/isGroupBy}}\n        {{#alert.values}}{{#value}}\n        <tr>\n            <th>\n                {{name}}\n            </th>\n        </tr>\n        <tr>\n            <td class=\"field-value\">\n                {{value}}\n            </td>\n        </tr>\n        {{/value}}{{/alert.values}}\n        <tr>\n           <th>\n               Monitor\n          </th>\n        </tr>\n         <tr>\n           <td>\n               <a href=\"{{monitor.url}}\">{{monitor.name}}</a>\n           </td>\n       </tr>\n        {{#monitor.description}}\n        <tr>\n            <th>Monitor Description</th>\n        </tr>\n        <tr>\n            <td>{{monitor.description}}</td>\n        </tr>\n        {{/monitor.description}}\n    </tbody>\n</table>",
+            "title": "{{alert.severity.level}} {{monitor.name}} at {{alert.start.timePart}}, {{alert.start.datePart}}"
+          },
+          "subject": "{{alert.severity.level}} {{monitor.name}} at {{alert.start.timePart}}, {{alert.start.datePart}}",
+          "users": null
+        },
+        "inline": false,
+        "type": "Email",
+        "webhook": null
+      },
+      "levels": null,
+      "sendEndNotifications": false,
+      "sendRemindersInterval": null
+    }
+  ],
+  "definition": {
+    "customVariables": {
+      "message": "",
+      "title": ""
+    },
+    "dataStabilizationDelay": "0",
+    "groupings": [
+      {
+        "columnPath": {
+          "name": "service_name",
+          "path": ""
+        },
+        "linkColumn": null
+      }
+    ],
+    "inputQuery": {
+      "layout": {
+        "expressionList": {
+          "aggregationMode": "aggregate",
+          "expressions": [
+            {
+              "aggregateFunction": "percentile_95",
+              "alignDuration": {
+                "num": 1,
+                "unit": "minute"
+              },
+              "alignFunction": "avg",
+              "alignMs": 60000,
+              "expressionIdentifier": "A",
+              "filterActions": [
+                {
+                  "params": {
+                    "columnId": "service_name",
+                    "columnType": "string",
+                    "filterVerb": "filter",
+                    "values": [
+                      {
+                        "isExcluding": false,
+                        "value": "cartservice"
+                      }
+                    ]
+                  },
+                  "summary": null,
+                  "type": "FilterValues"
+                }
+              ],
+              "frameDuration": {
+                "num": 5,
+                "unit": "minute"
+              },
+              "frameMs": 300000,
+              "groupBy": [
+                "service_name"
+              ],
+              "invalidGroupBy": [],
+              "lookupActions": [],
+              "metric": {
+                "aggregate": "percentile_95",
+                "datasetId": "42160988",
+                "description": "",
+                "name": "span_duration_5m",
+                "nameWithPath": "span_duration_5m (ServiceExplorer/Service Metrics)",
+                "rollup": "avg",
+                "state": "Active",
+                "suggestedBucketSize": "300000000000",
+                "type": "tdigest",
+                "unit": "ns",
+                "userDefined": true
+              },
+              "noDataVisBindingUpdate": false,
+              "type": "metricExpression"
+            }
+          ]
+        },
+        "fixedResolution": true,
+        "lockDatasetType": true,
+        "timeRange": {
+          "display": "Past 12 hours",
+          "endTime": null,
+          "millisFromCurrentTime": 43200000,
+          "originalDisplay": "Past 12 hours",
+          "startTime": null,
+          "timeRangeInfo": {
+            "key": "PRESETS",
+            "name": "Presets",
+            "presetType": "PAST_12_HOURS"
+          }
+        }
+      },
+      "outputStage": "stage-uwu5nvek",
+      "stages": [
+        {
+          "id": "stage-uwu5nvek",
+          "input": [
+            {
+              "datasetId": "42160988",
+              "datasetPath": null,
+              "inputName": "span_duration_5m_from_ServiceExplorer/Service Metrics",
+              "inputRole": "Data",
+              "stageId": ""
+            }
+          ],
+          "layout": {
+            "cardLinks": [],
+            "dataLinks": [],
+            "dataTableViewState": {
+              "autoExpandColumnWidth": false,
+              "cellValuePresentation": [],
+              "columnOrderOverride": [],
+              "columnVisibility": [],
+              "columnWidths": [],
+              "defaultColumnWidth": 70,
+              "disableFixedLeftColumns": false,
+              "minColumnWidth": 60,
+              "preserveCellAndRowSelection": true,
+              "rowHeights": [],
+              "selection": {
+                "cells": {},
+                "columnSelectSequence": [],
+                "columns": {},
+                "highlightState": {},
+                "rows": {},
+                "selectionType": "table"
+              },
+              "tableWidth": 0,
+              "viewType": "Auto"
+            },
+            "disableOutput": false,
+            "index": 0,
+            "inputList": [],
+            "isInternal": false,
+            "label": "Monitored Stage",
+            "managers": [
+              {
+                "id": "8pri080u",
+                "isDisabled": false,
+                "type": "Vis",
+                "vegaVis": {
+                  "annotations": [
+                    {
+                      "enabled": true,
+                      "source": {
+                        "data": {
+                          "backgroundColor": "var(--alarm-level-error)",
+                          "color": "var(--alarm-level-error)",
+                          "orientation": "y",
+                          "position": {
+                            "start": 5000000
+                          },
+                          "title": "Threshold",
+                          "type": "range"
+                        },
+                        "type": "static"
+                      }
+                    },
+                    {
+                      "enabled": true,
+                      "id": "",
+                      "source": {
+                        "data": {
+                          "color": "var(--alarm-level-error)",
+                          "orientation": "x",
+                          "position": {
+                            "end": 1748916960000,
+                            "start": 1748916660000
+                          },
+                          "type": "range"
+                        },
+                        "description": "Notification triggered",
+                        "type": "static"
+                      }
+                    },
+                    {
+                      "enabled": true,
+                      "id": "",
+                      "source": {
+                        "data": {
+                          "color": "var(--alarm-level-error)",
+                          "orientation": "x",
+                          "position": {
+                            "end": 1748919660000,
+                            "start": 1748919060000
+                          },
+                          "type": "range"
+                        },
+                        "description": "Notification triggered",
+                        "type": "static"
+                      }
+                    },
+                    {
+                      "enabled": true,
+                      "id": "",
+                      "source": {
+                        "data": {
+                          "color": "var(--alarm-level-error)",
+                          "orientation": "x",
+                          "position": {
+                            "end": 1748921460000,
+                            "start": 1748920560000
+                          },
+                          "type": "range"
+                        },
+                        "description": "Notification triggered",
+                        "type": "static"
+                      }
+                    },
+                    {
+                      "enabled": true,
+                      "id": "",
+                      "source": {
+                        "data": {
+                          "color": "var(--alarm-level-error)",
+                          "orientation": "x",
+                          "position": {
+                            "end": 1748922960000,
+                            "start": 1748922660000
+                          },
+                          "type": "range"
+                        },
+                        "description": "Notification triggered",
+                        "type": "static"
+                      }
+                    },
+                    {
+                      "enabled": true,
+                      "source": {
+                        "data": {
+                          "color": "var(--purple-5)",
+                          "orientation": "x",
+                          "position": {
+                            "start": 1748949315000
+                          },
+                          "type": "range"
+                        },
+                        "type": "static"
+                      }
+                    }
+                  ],
+                  "legend": {
+                    "placement": "bottom",
+                    "visible": true
+                  },
+                  "lineConfig": {
+                    "areaFillType": "TranslucentFill"
+                  },
+                  "type": "LineChart",
+                  "x": "valid_from",
+                  "xConfig": {
+                    "valueFormat": {
+                      "notation": "compact"
+                    }
+                  },
+                  "y": [
+                    "A_span_duration_5m_percentile_95"
+                  ],
+                  "yConfig": {
+                    "show": true,
+                    "valueFormat": {
+                      "options": {
+                        "metricUnit": "ns",
+                        "style": "unit"
+                      }
+                    }
+                  }
+                }
+              }
+            ],
+            "queryPresentation": {
+              "initialRollupFilter": {
+                "mode": "Last"
+              },
+              "limit": 10000,
+              "linkify": true,
+              "loadEverything": false,
+              "progressive": true,
+              "resultKinds": [
+                "ResultKindSchema",
+                "ResultKindData",
+                "ResultKindVolumeStats",
+                "ResultKindColumnStats"
+              ],
+              "rollup": {}
+            },
+            "renderType": "TABLE",
+            "serializable": true,
+            "steps": [
+              {
+                "customName": "Input",
+                "customSummary": "",
+                "id": "step-no6zngj2",
+                "index": 0,
+                "isPinned": false,
+                "opal": [],
+                "type": "InputStep"
+              },
+              {
+                "action": {
+                  "params": {
+                    "expressionList": {
+                      "aggregationMode": "aggregate",
+                      "expressions": [
+                        {
+                          "aggregateFunction": "percentile_95",
+                          "alignDuration": {
+                            "num": 1,
+                            "unit": "minute"
+                          },
+                          "alignFunction": "avg",
+                          "dataVis": {
+                            "annotations": [
+                              {
+                                "enabled": true,
+                                "source": {
+                                  "data": {
+                                    "backgroundColor": "var(--alarm-level-error)",
+                                    "color": "var(--alarm-level-error)",
+                                    "orientation": "y",
+                                    "position": {
+                                      "start": 5000000
+                                    },
+                                    "title": "Threshold",
+                                    "type": "range"
+                                  },
+                                  "type": "static"
+                                }
+                              },
+                              {
+                                "enabled": true,
+                                "id": "",
+                                "source": {
+                                  "data": {
+                                    "color": "var(--alarm-level-error)",
+                                    "orientation": "x",
+                                    "position": {
+                                      "end": 1748916960000,
+                                      "start": 1748916660000
+                                    },
+                                    "type": "range"
+                                  },
+                                  "description": "Notification triggered",
+                                  "type": "static"
+                                }
+                              },
+                              {
+                                "enabled": true,
+                                "id": "",
+                                "source": {
+                                  "data": {
+                                    "color": "var(--alarm-level-error)",
+                                    "orientation": "x",
+                                    "position": {
+                                      "end": 1748919660000,
+                                      "start": 1748919060000
+                                    },
+                                    "type": "range"
+                                  },
+                                  "description": "Notification triggered",
+                                  "type": "static"
+                                }
+                              },
+                              {
+                                "enabled": true,
+                                "id": "",
+                                "source": {
+                                  "data": {
+                                    "color": "var(--alarm-level-error)",
+                                    "orientation": "x",
+                                    "position": {
+                                      "end": 1748921460000,
+                                      "start": 1748920560000
+                                    },
+                                    "type": "range"
+                                  },
+                                  "description": "Notification triggered",
+                                  "type": "static"
+                                }
+                              },
+                              {
+                                "enabled": true,
+                                "id": "",
+                                "source": {
+                                  "data": {
+                                    "color": "var(--alarm-level-error)",
+                                    "orientation": "x",
+                                    "position": {
+                                      "end": 1748922960000,
+                                      "start": 1748922660000
+                                    },
+                                    "type": "range"
+                                  },
+                                  "description": "Notification triggered",
+                                  "type": "static"
+                                }
+                              },
+                              {
+                                "enabled": true,
+                                "source": {
+                                  "data": {
+                                    "color": "var(--purple-5)",
+                                    "orientation": "x",
+                                    "position": {
+                                      "start": 1748949315000
+                                    },
+                                    "type": "range"
+                                  },
+                                  "type": "static"
+                                }
+                              }
+                            ],
+                            "legend": {
+                              "placement": "bottom",
+                              "visible": true
+                            },
+                            "lineConfig": {
+                              "areaFillType": "TranslucentFill"
+                            },
+                            "type": "LineChart",
+                            "x": "valid_from",
+                            "xConfig": {
+                              "valueFormat": {
+                                "notation": "compact"
+                              }
+                            },
+                            "y": [
+                              "A_span_duration_5m_percentile_95"
+                            ],
+                            "yConfig": {
+                              "show": true,
+                              "valueFormat": {
+                                "options": {
+                                  "metricUnit": "ns",
+                                  "style": "unit"
+                                }
+                              }
+                            }
+                          },
+                          "expressionIdentifier": "A",
+                          "filterActions": [
+                            {
+                              "params": {
+                                "columnId": "service_name",
+                                "columnType": "string",
+                                "filterVerb": "filter",
+                                "values": [
+                                  {
+                                    "isExcluding": false,
+                                    "value": "cartservice"
+                                  }
+                                ]
+                              },
+                              "summary": null,
+                              "type": "FilterValues"
+                            }
+                          ],
+                          "frameDuration": {
+                            "num": 5,
+                            "unit": "minute"
+                          },
+                          "groupBy": [
+                            "service_name"
+                          ],
+                          "id": "metricExpression-mogwtwja",
+                          "invalidGroupBy": [],
+                          "lookupActions": [],
+                          "metric": {
+                            "aggregate": "percentile_95",
+                            "datasetId": "42160988",
+                            "description": "",
+                            "name": "span_duration_5m",
+                            "nameWithPath": "span_duration_5m (ServiceExplorer/Service Metrics)",
+                            "rollup": "avg",
+                            "state": "Active",
+                            "suggestedBucketSize": "300000000000",
+                            "type": "tdigest",
+                            "unit": "ns",
+                            "userDefined": true
+                          },
+                          "noDataVisBindingUpdate": false,
+                          "showAlignment": false,
+                          "showResolution": true,
+                          "summaryMode": "over-time",
+                          "type": "metricExpression",
+                          "valueColumnId": "A_span_duration_5m_percentile_95",
+                          "viewTab": "visualize"
+                        }
+                      ],
+                      "multiExpression": {
+                        "expressionIdentifier": "A",
+                        "filterActions": [],
+                        "id": "multiExpression-iw73054e",
+                        "lookupActions": [],
+                        "noDataVisBindingUpdate": false,
+                        "type": "multiExpression",
+                        "viewTab": "visualize"
+                      },
+                      "selectedExpressionIds": [
+                        "metricExpression-mogwtwja"
+                      ],
+                      "shouldLimitPatterns": true
+                    }
+                  },
+                  "summary": null,
+                  "type": "ExpressionBuilder"
+                },
+                "customSummary": "Expression Builder",
+                "id": "step-lkhvmqlo",
+                "index": 1,
+                "isPinned": false,
+                "opal": [
+                  "filter service_name = \"cartservice\"",
+                  "align 1m, frame(back: 5m), A_span_duration_5m_percentile_95:tdigest_combine(m_tdigest(\"span_duration_5m\"))",
+                  "aggregate A_span_duration_5m_percentile_95:tdigest_quantile(tdigest_combine(A_span_duration_5m_percentile_95), 0.95), group_by(service_name)"
+                ],
+                "type": "unknown"
+              }
+            ],
+            "type": "table",
+            "viewModel": {
+              "inspectRailCollapsed": true,
+              "inspectRailPinned": false,
+              "inspectRailWidth": 640,
+              "railCollapseState": {
+                "inputsOutputs": false,
+                "minimap": false,
+                "note": true,
+                "script": true
+              },
+              "showTimeRuler": true,
+              "stageTab": "vis"
+            }
+          },
+          "pipeline": "filter service_name = \"cartservice\"\nalign 1m, frame(back: 5m), A_span_duration_5m_percentile_95:tdigest_combine(m_tdigest(\"span_duration_5m\"))\naggregate A_span_duration_5m_percentile_95:tdigest_quantile(tdigest_combine(A_span_duration_5m_percentile_95), 0.95), group_by(service_name)"
+        }
+      ]
+    },
+    "lookbackTime": "300000000000",
+    "maxAlertsPerHour": null,
+    "rules": [
+      {
+        "count": null,
+        "level": "Error",
+        "promote": null,
+        "threshold": {
+          "aggregation": "AllOf",
+          "compareGroups": null,
+          "compareValues": [
+            {
+              "compareFn": "Greater",
+              "compareValue": {
+                "float64": 5000000
+              }
+            }
+          ],
+          "valueColumnName": "A_span_duration_5m_percentile_95"
+        }
+      }
+    ],
+    "scheduling": null
+  },
+  "description": "",
+  "disabled": false,
+  "id": "42484754",
+  "monitorVersion": "1748949488051153000",
+  "name": "High latency for CartService",
+  "ruleKind": "Threshold"
+}
