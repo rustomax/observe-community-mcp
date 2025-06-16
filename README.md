@@ -371,7 +371,7 @@ When the MCP client first connects to the MCP server it will discover available 
 
 ![Claude Desktop System Prompt](./images/claude_system_prompt.png)
 
-# Craft Effective Prompts
+### Craft Effective Prompts
 
 Prompt engineering still applies! You can speed up the investigations by crafting effective prompts, by including clear objectives for the investigation, specifying time ranges of interest to focus the analysis, identifying relevant datasets or systems that should be examined and defining the expected output format, such as requesting a summary with the top 3 issues.
 
