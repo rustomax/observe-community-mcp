@@ -367,7 +367,7 @@ Generally speaking, there is a predefined way for the LLM to use the current MCP
 
 ### Hard-Code the System Prompt
 
-When the MCP client first connects to the MCP server it will discover available tools and their descriptions. The MCP server will first and foremost try to convince the model to use system prompt in `prompts/Observe MCP System Prompt.md` to configure itself as an Observe expert. In situations where the model fails to do so, it might need more calls to accomplish the requested tasks. Which brings us to recommendation number one. To ensure the most consistent use of the MCP server, hardcode the system prompt into your LLM configuration, do not rely on the MCP server to configure the model. Here is an example of how to do it in Claude Desktop:
+As mentioned earlier, when the MCP client first connects to the MCP server it will discover available tools and their descriptions and the MCP server will try to convince the model to use system prompt in `prompts/Observe MCP System Prompt.md` to configure itself as an Observe expert. In situations where the model fails to do so, it might need more calls to accomplish the requested tasks. To ensure the most consistent use of the MCP server, hardcode the system prompt into your LLM configuration, do not rely on the MCP server to configure the model. Here is an example of how to do it in Claude Desktop:
 
 ![Claude Desktop System Prompt](./images/claude_system_prompt.png)
 
