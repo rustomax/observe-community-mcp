@@ -253,11 +253,11 @@ There are two types of authentication mechanisms used in this server: Observe AP
 
 This second layer of authentication is necessary because the server exposes resource-intensive APIs (like Pinecone) to MCP users. It allows server administrators to control access and prevent resource abuse. 
 
+![Authentication](./images/mcp_auth.png)
+
 **IMPORTANT**: Current implementation of the MCP server also includes a basic RBAC via predefined roles: `admin`, `read`, `write`. These **DO NOT** map into any roles in Observe. They are used to control access to the MCP server tools.
 
 **Local-only deployment**: If you're running the server locally without public access, you can disable MCP authentication by modifying `observe_server.py` and removing the `Authorization` header from the MCP client configuration.
-
-![Authentication](./images/mcp_auth.png)
 
 ## Setting up MCP authentication
 
