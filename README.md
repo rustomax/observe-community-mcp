@@ -58,8 +58,8 @@ Despite its experimental nature, the server delivers significant value by enabli
 First, clone the repository:
 
 ```bash
-git clone https://github.com/rustomax/observe-mcp-experimental.git
-cd observe-mcp-experimental
+git clone https://github.com/rustomax/observe-experimental-mcp.git
+cd observe-experimental-mcp
 ```
 
 Create a virtual environment and activate it:
