@@ -1484,6 +1484,112 @@ async def get_monitor(ctx: Context, monitor_id: str) -> Dict[str, Any]:
         return {"error": f"Exception getting monitor: {str(e)}"}, 500
 
 @mcp.tool()
+@requires_scopes(['admin', 'read'])
+async def export_worksheet(ctx: Context, worksheet_id: str, time_range: Optional[str] = "15m", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+    """
+    Export data from an Observe worksheet.
+    
+    Args:
+        worksheet_id: The ID of the worksheet to export
+        time_range: Time range for the export (e.g., "15m", "1h", "24h"). Used if start_time and end_time are not provided. Defaults to "15m".
+        start_time: Optional start time in ISO format (e.g., "2025-07-21T00:00:00Z")
+        end_time: Optional end time in ISO format (e.g., "2025-07-22T00:00:00Z")
+        
+    Returns:
+        The exported worksheet data as a string
+    """
+    if not OBSERVE_CUSTOMER_ID or not OBSERVE_TOKEN:
+        return "Error: Observe API credentials not configured. Please set OBSERVE_CUSTOMER_ID and OBSERVE_TOKEN environment variables."
+    
+    if not worksheet_id or not worksheet_id.strip():
+        return "Error: Worksheet ID cannot be empty."
+    
+    try:
+        # Set up query parameters based on provided time options
+        params = {}
+        
+        # Handle time parameters according to API rules:
+        # Either two of startTime, endTime, and interval or interval alone can be specified
+        print(f"DEBUG: Time parameters received - start_time: {start_time}, end_time: {end_time}, time_range: {time_range}", file=sys.stderr)
+        
+        # Check if start_time or end_time are None or empty strings
+        if start_time in [None, "", "null"]:
+            start_time = None
+        if end_time in [None, "", "null"]:
+            end_time = None
+            
+        if start_time and end_time:
+            # Use explicit start and end times
+            params["startTime"] = start_time
+            params["endTime"] = end_time
+            print(f"DEBUG: Using explicit start ({start_time}) and end ({end_time}) times", file=sys.stderr)
+        elif start_time and time_range:
+            # Use start time and interval
+            params["startTime"] = start_time
+            params["interval"] = time_range
+            print(f"DEBUG: Using start time ({start_time}) and interval ({time_range})", file=sys.stderr)
+        elif end_time and time_range:
+            # Use end time and interval
+            params["endTime"] = end_time
+            params["interval"] = time_range
+            print(f"DEBUG: Using end time ({end_time}) and interval ({time_range})", file=sys.stderr)
+        elif time_range:
+            # Use just interval (relative to now)
+            params["interval"] = time_range
+            print(f"DEBUG: Using just interval ({time_range}) relative to now", file=sys.stderr)
+        else:
+            # Default fallback to 15m interval
+            params["interval"] = "15m"
+            print(f"DEBUG: Using default interval (15m) relative to now", file=sys.stderr)
+        
+        # Log the request details
+        print(f"DEBUG: Exporting worksheet {worksheet_id}", file=sys.stderr)
+        print(f"DEBUG: Time parameters: {params}", file=sys.stderr)
+        
+        # Execute the worksheet export
+        response = await make_observe_request(
+            method="POST",
+            endpoint=f"v1/meta/export/worksheet/{worksheet_id}",
+            params=params
+        )
+        
+        # Log response metadata
+        if isinstance(response, dict):
+            print(f"DEBUG: Response status: {response.get('status_code')}", file=sys.stderr)
+            if 'data' in response and isinstance(response['data'], str) and len(response['data']) > 0:
+                data_preview = response['data'].split('\n')[0:2]
+                print(f"DEBUG: First rows of data: {data_preview}", file=sys.stderr)
+        
+        # Handle error responses
+        if isinstance(response, dict) and response.get("error"):
+            return f"Error exporting worksheet: {response.get('message')}"
+        
+        # Handle paginated response (202 Accepted)
+        if isinstance(response, dict) and response.get("content_type") == "text/html" and "X-Observe-Cursor-Id" in response.get("headers", {}):
+            cursor_id = response["headers"]["X-Observe-Cursor-Id"]
+            next_page = response["headers"].get("X-Observe-Next-Page", "")
+            return f"Worksheet export accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
+        
+        # For successful responses, return the data
+        if isinstance(response, dict) and "data" in response:
+            data = response["data"]
+            # If the data is very large, provide a summary
+            if len(data) > 10000:  # Arbitrary threshold
+                lines = data.count('\n')
+                first_lines = '\n'.join(data.split('\n')[:50])
+                return f"Worksheet exported successfully with {lines} rows of data. First 50 lines:\n\n{first_lines}\n\n... (truncated, showing first 50 of {lines} lines)"
+            return data
+        
+        # Handle unexpected response format
+        return f"Unexpected response format. Please check the worksheet ID and try again. Response: {response}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return f"Error in export_worksheet function: {str(e)}"
+
+
+@mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
 async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
     """

@@ -17,6 +17,7 @@ This server is designed to work with technically capable LLM models, specificall
 This MCP server enables seamless interaction with the Observe platform through:
 
 - Executing OPAL queries
+- Exporting worksheet data with flexible time parameters
 - Listing and retrieving dataset information
 - Providing assistance with OPAL query crafting
 - Managing monitors (listing and creation)
@@ -162,12 +163,13 @@ Total chunks added to Pinecone: 116
 python observe_server.py
 ```
 
-The server runs with HTTP transport by default on port 8000. You can modify the port and transport method in the `observe_server.py` file if needed.
+The server runs with Server-Sent Events (SSE) transport by default on port 8000. You can modify the port and transport method in the `observe_server.py` file if needed.
 
 ## Available MCP Tools
 
 ### Observe API Tools
 - `execute_opal_query`: Execute an OPAL query on a dataset
+- `export_worksheet`: Export data from an Observe worksheet with flexible time parameters (defaults to 15m interval)
 - `list_datasets`: List available datasets in Observe
 - `get_dataset_info`: Get detailed information about a dataset
 - `create_monitor`: Create a new monitor in Observe
@@ -182,6 +184,30 @@ The server runs with HTTP transport by default on port 8000. You can modify the 
 
 ### System Tools
 - `get_system_prompt`: Get the system prompt for the Observe MCP server
+
+## Worksheet Export Tool
+
+The `export_worksheet` tool provides flexible worksheet data export functionality with multiple time parameter options:
+
+### Parameters
+
+- **`worksheet_id`** (required): The ID of the worksheet to export
+- **`time_range`** (optional): Time range for the export (e.g., "15m", "1h", "24h"). Defaults to "15m" if no time parameters are provided
+- **`start_time`** (optional): Start time in ISO format (e.g., "2025-07-21T00:00:00Z")
+- **`end_time`** (optional): End time in ISO format (e.g., "2025-07-22T00:00:00Z")
+
+### Time Parameter Combinations
+
+The tool supports all standard Observe API time parameter patterns:
+
+1. **Interval only** (relative to now): `export_worksheet("42566610", time_range="1h")`
+2. **Start and end times**: `export_worksheet("42566610", start_time="2025-07-21T00:00:00Z", end_time="2025-07-22T00:00:00Z")`
+3. **Start time + interval**: `export_worksheet("42566610", start_time="2025-07-21T00:00:00Z", time_range="24h")`
+4. **End time + interval**: `export_worksheet("42566610", end_time="2025-07-22T00:00:00Z", time_range="24h")`
+
+### Response Format
+
+The tool returns data in NDJSON (newline-delimited JSON) format. For large datasets, responses are automatically truncated with a summary showing the first 50 lines and total row count.
 
 ## Vector Database Helpers
 
@@ -306,7 +332,7 @@ Add the following to your `claude_desktop_config.json` if you are running the MP
       "command": "npx",
       "args": [
         "mcp-remote@latest",
-        "http://localhost:8000/mcp",
+        "http://localhost:8000/sse",
         "--header",
         "Authorization: Bearer bearer_token"
       ]
@@ -317,7 +343,7 @@ Add the following to your `claude_desktop_config.json` if you are running the MP
 
 The server runs on port 8000 by default. You can modify the port in the `observe_server.py` file if needed.
 
-> **Performance Note**: The server uses HTTP streamable transport by default, streaming responses as they're generated for improved efficiency with large payloads. Transport method can be modified in `observe_server.py` if needed.
+> **Performance Note**: The server uses Server-Sent Events (SSE) transport by default, streaming responses as they're generated for improved efficiency with large payloads. Transport method can be modified in `observe_server.py` if needed.
 
 Example Startup:
 
@@ -334,8 +360,9 @@ Attempting to import pinecone_reference_helpers...
 Successfully imported semantic_search from pinecone_reference_helpers
 
 Python MCP server starting...
-[06/16/25 10:14:29] INFO     Starting MCP server 'observe-epic' with transport                server.py:1219
-                             'streamable-http' on http://0.0.0.0:8000/mcp                                   
+[07/22/25 08:50:22] INFO     Starting MCP server 'observe-epic'   server.py:1297
+                             with transport 'sse' on                            
+                             http://0.0.0.0:8000/sse/                                   
 
 INFO:     Started server process [67344]
 INFO:     Waiting for application startup.
