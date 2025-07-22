@@ -1571,5 +1571,5 @@ async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
         return {"error": f"Exception getting system prompt: {str(e)}"}, 500
 
 print("Python MCP server starting...", file=sys.stderr)
-mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
+mcp.run(transport="sse", host="0.0.0.0", port=8000)
 
