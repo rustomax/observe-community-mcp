@@ -1,4 +1,4 @@
-# Observe MCP Server
+# Observe Community MCP Server
 
 A Model Context Protocol (MCP) server providing access to [Observe](https://observeinc.com) API functionality, OPAL query assistance, and troubleshooting runbooks through vector search.
 
