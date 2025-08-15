@@ -62,16 +62,16 @@ try:
     import pinecone
     print(f"Pinecone import successful. Version: {pinecone.__version__}", file=sys.stderr)
     
-    # Import Vector reference helpers
-    print("Attempting to import pinecone_reference_helpers...", file=sys.stderr)
-    from pinecone_reference_helpers import semantic_search
-    print("Successfully imported semantic_search from pinecone_reference_helpers", file=sys.stderr)
+    # Import organized Pinecone helpers
+    print("Attempting to import src.pinecone modules...", file=sys.stderr)
+    from src.pinecone.search import search_docs, search_runbooks
+    print("Successfully imported search functions from src.pinecone", file=sys.stderr)
 except ImportError as e:
     print(f"Error importing Pinecone or helpers: {e}", file=sys.stderr)
     
-    # Define a fallback semantic_search function
-    def semantic_search(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        print(f"FALLBACK semantic_search called with query: {query}", file=sys.stderr)
+    # Define fallback search functions
+    def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        print(f"FALLBACK search_docs called with query: {query}", file=sys.stderr)
         return [{
             "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
             "source": "error", 
@@ -79,7 +79,16 @@ except ImportError as e:
             "score": 1.0
         }]
     
-    print("Using fallback semantic_search function", file=sys.stderr)
+    def search_runbooks(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        print(f"FALLBACK search_runbooks called with query: {query}", file=sys.stderr)
+        return [{
+            "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
+            "source": "error", 
+            "title": "Pinecone Not Available", 
+            "score": 1.0
+        }]
+    
+    print("Using fallback search functions", file=sys.stderr)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -908,10 +917,9 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         # Import required modules
         import os
         from collections import defaultdict
-        from pinecone_reference_helpers import semantic_search
         
         print(f"Searching for relevant docs using Pinecone: {query}", file=sys.stderr)
-        chunk_results = semantic_search(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
+        chunk_results = search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
         
         if not chunk_results:
             print(f"No relevant documents found for: '{query}'", file=sys.stderr)
@@ -995,62 +1003,30 @@ async def recommend_runbook(ctx: Context, query: str) -> str:
     try:
         # Import required modules
         import os
-        from pinecone import Pinecone
         from collections import defaultdict
-        
-        # Get the Pinecone API key and runbooks index name
-        api_key = os.getenv("PINECONE_API_KEY")
-        if not api_key:
-            return "Error: PINECONE_API_KEY environment variable is not set. Please set it and try again."
-            
-        runbooks_index_name = os.getenv("PINECONE_RUNBOOKS_INDEX", "observe-runbooks")
         
         print(f"Searching for runbooks related to: '{query}'", file=sys.stderr)
         
-        # Initialize Pinecone client
-        pc = Pinecone(api_key=api_key)
+        # Use the new search module to get runbook results
+        chunk_results = search_runbooks(query, n_results=10)  # Get more results to ensure we have enough chunks from relevant runbooks
         
-        # Check if the index exists
-        if not pc.has_index(runbooks_index_name):
-            return f"Error: Pinecone index '{runbooks_index_name}' does not exist. Please run populate_runbooks_index.py first."
-        
-        # Get the index
-        index = pc.Index(runbooks_index_name)
-        
-        # Generate embedding for the query using Pinecone's inference API
-        embeddings = pc.inference.embed(
-            model="llama-text-embed-v2",
-            inputs=[query],
-            parameters={"input_type": "query"}
-        )
-        query_embedding = embeddings[0]["values"]
-        
-        # Query Pinecone with the embedding vector
-        results = index.query(
-            namespace="runbooks",
-            vector=query_embedding,
-            top_k=10,  # Get more results to ensure we have enough chunks from relevant runbooks
-            include_metadata=True
-        )
-        
-        if not results.get("matches"):
+        if not chunk_results:
             return "No relevant runbooks found for your query. Please try a different search term."
         
         # Group results by source file and calculate average score
         runbooks_by_source = defaultdict(list)
-        for match in results.get("matches", []):
-            metadata = match.get("metadata", {})
-            source = metadata.get("source", "")
-            if source:
-                runbooks_by_source[source].append({
-                    "score": match.get("score", 0.0),
-                    "metadata": metadata
-                })
+        for result in chunk_results:
+            source = result.get("source", "")
+            if source and source != "error":
+                runbooks_by_source[source].append(result)
+        
+        if not runbooks_by_source:
+            return "No relevant runbooks found for your query. Please try a different search term."
         
         # Calculate average score for each runbook
         runbook_scores = {}
         for source, matches in runbooks_by_source.items():
-            avg_score = sum(match["score"] for match in matches) / len(matches)
+            avg_score = sum(match.get("score", 0.0) for match in matches) / len(matches)
             runbook_scores[source] = avg_score
         
         # Sort runbooks by average score and get only the top one
@@ -1069,9 +1045,8 @@ async def recommend_runbook(ctx: Context, query: str) -> str:
                 runbook_content = f.read()
             
             # Get metadata from the first chunk of this source
-            first_match = next(match for match in runbooks_by_source[source])
-            metadata = first_match["metadata"]
-            title = metadata.get("title", os.path.basename(source).replace('.md', '').replace('_', ' ').title())
+            first_match = runbooks_by_source[source][0]
+            title = first_match.get("title", os.path.basename(source).replace('.md', '').replace('_', ' ').title())
             source_filename = os.path.basename(source)
             
             response = f"# {title}\n\n"

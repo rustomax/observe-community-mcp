@@ -39,9 +39,13 @@ Despite its experimental nature, the server delivers significant value by enabli
 | Component | Description |
 |-----------|-------------|
 | `observe_server.py` | Main MCP server implementation with Observe API tools |
-| `pinecone_reference_helpers.py` | Helper functions for accessing the Pinecone vector database |
-| `populate_docs_index.py` | Script to ingest markdown files from `observe-docs` into Pinecone |
-| `populate_runbooks_index.py` | Script to ingest troubleshooting runbooks from `runbooks` into Pinecone |
+| `src/pinecone/` | Organized package containing all Pinecone vector database operations |
+| `src/pinecone/client.py` | Pinecone client initialization and connection management |
+| `src/pinecone/embeddings.py` | Embedding generation for single texts and batches |
+| `src/pinecone/search.py` | Semantic search operations for docs and runbooks |
+| `src/pinecone/indexing.py` | Document and runbook indexing operations |
+| `populate_docs_index.py` | Simplified script to ingest markdown files from `observe-docs` into Pinecone |
+| `populate_runbooks_index.py` | Simplified script to ingest troubleshooting runbooks from `runbooks` into Pinecone |
 | `runbooks/` | Directory containing troubleshooting runbooks |
 | `observe-docs/` | Directory containing Observe documentation markdown files (not included in public repo) |
 | `generate_mcp_token.sh` | Script to generate MCP tokens |
@@ -211,13 +215,20 @@ The tool returns data in NDJSON (newline-delimited JSON) format. For large datas
 
 ## Vector Database Helpers
 
-The `pinecone_reference_helpers.py` module provides functions to query the Pinecone vector database:
+The organized `src/pinecone/` package provides comprehensive Pinecone functionality:
 
-- `initialize_pinecone()` - Initialize the Pinecone client and ensure the index exists
-- `get_embedding(pc, text, is_query)` - Get embedding for a text using Pinecone's integrated embedding model
-- `semantic_search(query, n_results)` - Perform semantic search using Pinecone
-- `list_all_entities()` - List all documents in the Pinecone index
-- `get_document_by_id(doc_id)` - Get a specific document by ID
+**Core Modules:**
+- `src/pinecone/client.py` - Initialize Pinecone client with support for multiple index types
+- `src/pinecone/embeddings.py` - Generate embeddings for single texts and batches
+- `src/pinecone/search.py` - Semantic search operations for both docs and runbooks  
+- `src/pinecone/indexing.py` - Document and runbook indexing with portable path handling
+
+**Key Functions:**
+- `initialize_pinecone(index_type)` - Initialize client for specific index type ("docs" or "runbooks")
+- `get_embedding(pc, text, is_query)` - Get embedding using Pinecone's integrated embedding model
+- `semantic_search(query, n_results, index_type)` - Unified semantic search across index types
+- `index_documents(docs_dir)` - Index documents with relative path conversion
+- `index_runbooks(runbooks_dir)` - Index runbooks with consistent chunking strategy
 
 ## Architecture and How It Works
 
@@ -356,8 +367,8 @@ Python path: ...
 Basic imports successful
 Attempting to import pinecone module...
 Pinecone import successful. Version: 7.0.2
-Attempting to import pinecone_reference_helpers...
-Successfully imported semantic_search from pinecone_reference_helpers
+Attempting to import src.pinecone modules...
+Successfully imported search functions from src.pinecone.search
 
 Python MCP server starting...
 [07/22/25 08:50:22] INFO     Starting MCP server 'observe-epic'   server.py:1297
@@ -418,10 +429,12 @@ Due to sheer volume of tokens pushed into LLM's context window for the investiga
 
 To update the vector database with new documentation:
 1. Add or update markdown files in the `observe-docs` directory
-2. Run `python populate_pinecone_db.py --force` to rebuild the index
+2. Run `python populate_docs_index.py --force` to rebuild the index
 
 ### Updating Runbooks
 
 To update the runbooks vector database:
 1. Add or update markdown files in the `runbooks` directory
 2. Run `python populate_runbooks_index.py --force` to rebuild the index
+
+Both populate scripts now use the organized `src/pinecone/` modules for consistent functionality and maintenance.
