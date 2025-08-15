@@ -257,12 +257,15 @@ def main():
                     try:
                         chunk_id = str(uuid.uuid4())
                         
+                        # Convert absolute path to relative path
+                        relative_path = os.path.relpath(chunk["source"], start=os.getcwd())
+                        
                         vectors_to_upsert.append({
                             "id": chunk_id,
                             "values": embedding,  # Now embedding is already the values list
                             "metadata": {
                                 "text": chunk["text"],
-                                "source": chunk["source"],
+                                "source": relative_path,
                                 "title": chunk["title"]
                             }
                         })
