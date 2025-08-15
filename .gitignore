@@ -183,3 +183,5 @@ config.local.py
 # Observe
 observe-docs
 _secure
+
+CLAUDE.md
