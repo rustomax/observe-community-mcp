@@ -18,7 +18,7 @@ load_dotenv()
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 INDEX_NAME = os.getenv("PINECONE_RUNBOOKS_INDEX", "observe-runbooks")
 EMBEDDING_MODEL = "llama-text-embed-v2"  # Pinecone's integrated embedding model
-RUNBOOKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runbooks")
+RUNBOOKS_DIR = os.getenv("OBSERVE_RUNBOOKS_DIR", "runbooks")
 
 def find_markdown_files(directory: str) -> List[str]:
     """Find all markdown files in the given directory recursively"""
@@ -174,10 +174,15 @@ def main():
             try:
                 chunks = chunk_markdown(file_path)
                 
-                # Add unique ID to each chunk
+                # Add unique ID to each chunk and make path relative
                 for chunk in chunks:
                     record_id = f"runbook-{chunk_id}"
                     chunk_id += 1
+                    
+                    # Convert absolute path to relative path
+                    relative_path = os.path.relpath(chunk["source"], start=os.getcwd())
+                    chunk["source"] = relative_path
+                    
                     all_records.append({"_id": record_id, **chunk})
                     
             except Exception as e:

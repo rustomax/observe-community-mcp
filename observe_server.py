@@ -8,13 +8,40 @@ import os
 import sys
 import json
 import re
-import uuid
 import base64
-import inspect
 from datetime import datetime
-from dataclasses import dataclass, field, asdict
 from functools import wraps
-from typing import Dict, Any, Optional, List, Union, Tuple, Callable
+from typing import Dict, Any, Optional, List, Union, Tuple, TypedDict
+
+# Type definitions for better type safety
+class MonitorResponse(TypedDict):
+    id: str
+    name: str
+    ruleKind: str
+    description: str
+
+class ErrorResponse(TypedDict):
+    error: bool
+    message: str
+
+class SystemInfo(TypedDict):
+    python_version: str
+    python_path: List[str]
+    environment: Dict[str, str]
+    server_time: str
+    server_pid: int
+
+class AuthPermissions(TypedDict):
+    admin_access: bool
+    read_access: bool
+    write_access: bool
+
+class AuthTokenInfo(TypedDict):
+    authenticated: bool
+    client_id: str
+    token_type: str
+    scopes: List[str]
+    permissions: AuthPermissions
 
 # Add debugging statements to help diagnose import issues
 print("Starting observe_server.py", file=sys.stderr)
@@ -23,7 +50,6 @@ print(f"Python path: {sys.path}", file=sys.stderr)
 
 try:
     import httpx
-    from typing import Dict, Any, Optional, List
     from dotenv import load_dotenv
     print("Basic imports successful", file=sys.stderr)
 except Exception as e:
@@ -552,10 +578,12 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str, time_ran
             return f"Error executing query: {response.get('message')}"
         
         # Handle paginated response (202 Accepted)
-        if isinstance(response, dict) and response.get("content_type") == "text/html" and "X-Observe-Cursor-Id" in response.get("headers", {}):
-            cursor_id = response["headers"]["X-Observe-Cursor-Id"]
-            next_page = response["headers"].get("X-Observe-Next-Page", "")
-            return f"Query accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
+        if isinstance(response, dict) and response.get("content_type") == "text/html":
+            headers = response.get("headers", {})
+            if isinstance(headers, dict) and "X-Observe-Cursor-Id" in headers:
+                cursor_id = headers["X-Observe-Cursor-Id"]
+                next_page = headers.get("X-Observe-Next-Page", "")
+                return f"Query accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
         
         # For successful responses, return the data
         if isinstance(response, dict) and "data" in response:
@@ -563,7 +591,8 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str, time_ran
             # If the data is very large, provide a summary
             if len(data) > 10000:  # Arbitrary threshold
                 lines = data.count('\n')
-                return f"Query returned {lines} rows of data. First 50 lines:\n\n{data.split('\n')[:50]}"
+                first_lines = '\n'.join(data.split('\n')[:50])
+                return f"Query returned {lines} rows of data. First 50 lines:\n\n{first_lines}"
             return data
         
         # Handle unexpected response format
@@ -1067,7 +1096,7 @@ async def recommend_runbook(ctx: Context, query: str) -> str:
 @requires_scopes(['admin', 'write'])
 async def create_monitor(ctx: Context, name: str, description: str, query: str, dataset_id: str, 
                       threshold: float, window: str, frequency: str = "5m", 
-                      actions: Optional[List[str]] = None) -> Dict[str, Any]:
+                      actions: Optional[List[str]] = None) -> Union[Dict[str, Any], ErrorResponse]:
     """
     Create a new MonitorV2 and bind to actions.
     
@@ -1121,13 +1150,13 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
     """
     # Validate inputs
     if not name or not name.strip():
-        return {"error": "Monitor name cannot be empty"}, 400
+        return {"error": True, "message": "Monitor name cannot be empty"}
     
     if not query or not query.strip():
-        return {"error": "Query cannot be empty"}, 400
+        return {"error": True, "message": "Query cannot be empty"}
     
     if not dataset_id or not dataset_id.strip():
-        return {"error": "Dataset ID cannot be empty"}, 400
+        return {"error": True, "message": "Dataset ID cannot be empty"}
     
     # Format window and frequency with proper suffix if not present
     if window and not any(window.endswith(suffix) for suffix in ['s', 'm', 'h', 'd']):
@@ -1218,13 +1247,13 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
             if status_code >= 400:
                 error_msg = f"Failed to create monitor: {result}"
                 print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": error_msg, "status_code": status_code}, status_code
+                return {"error": True, "message": error_msg}
             print(f"DEBUG: Created monitor: {result}", file=sys.stderr)
-            return result, 201
+            return result
         else:
             # If response is not a tuple, assume it's the direct response
             print(f"DEBUG: Created monitor: {response}", file=sys.stderr)
-            return response, 201
+            return response
     
     except Exception as e:
         error_msg = str(e)
@@ -1236,10 +1265,11 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
         # provide helpful guidance
         if "syntax error" in error_msg.lower() or "invalid" in error_msg.lower():
             return {
-                "error": f"Exception creating monitor: {error_msg}", 
+                "error": True, 
+                "message": f"Exception creating monitor: {error_msg}",
                 "suggestion": "The monitor creation failed. Check your OPAL query syntax and ensure it outputs a numeric value that can be compared against the threshold. Review the examples in the create_monitor documentation."
-            }, 500
-        return {"error": f"Exception creating monitor: {error_msg}"}, 500
+            }
+        return {"error": True, "message": f"Exception creating monitor: {error_msg}"}
 
 
 def convert_to_nanoseconds(duration: str) -> int:
@@ -1274,7 +1304,7 @@ def convert_to_nanoseconds(duration: str) -> int:
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_substring: Optional[str] = None) -> List[Dict[str, Any]]:
+async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_substring: Optional[str] = None) -> Union[List[Dict[str, Any]], ErrorResponse]:
     """
     List MonitorV2 instances with optional filters.
     
@@ -1308,7 +1338,7 @@ async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_sub
             if status_code >= 400:
                 error_msg = f"Failed to list monitors: {result}"
                 print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": error_msg, "status_code": status_code}, status_code
+                return {"error": True, "message": error_msg}
             
             # Process the successful response
             print(f"DEBUG: Got monitors response: {result}", file=sys.stderr)
@@ -1370,7 +1400,7 @@ async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_sub
                 
                 terse_monitors.append(terse_monitor)
             
-            return terse_monitors, 200
+            return terse_monitors
         else:
             # If response is not a tuple, assume it's the direct response
             print(f"DEBUG: Got monitors direct response: {response}", file=sys.stderr)
@@ -1432,17 +1462,17 @@ async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_sub
                 
                 terse_monitors.append(terse_monitor)
             
-            return terse_monitors, 200
+            return terse_monitors
     
     except Exception as e:
         print(f"ERROR: Exception listing monitors: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return {"error": f"Exception listing monitors: {str(e)}"}, 500
+        return {"error": True, "message": f"Exception listing monitors: {str(e)}"}
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-async def get_monitor(ctx: Context, monitor_id: str) -> Dict[str, Any]:
+async def get_monitor(ctx: Context, monitor_id: str) -> Union[Dict[str, Any], ErrorResponse]:
     """
     Get a specific MonitorV2 by ID.
     
@@ -1453,7 +1483,7 @@ async def get_monitor(ctx: Context, monitor_id: str) -> Dict[str, Any]:
         The monitor object with its complete structure
     """
     if not monitor_id or not monitor_id.strip():
-        return {"error": "Monitor ID cannot be empty"}, 400
+        return {"error": True, "message": "Monitor ID cannot be empty"}
     
     try:
         # Make API request to get the monitor
@@ -1469,19 +1499,19 @@ async def get_monitor(ctx: Context, monitor_id: str) -> Dict[str, Any]:
             if status_code >= 400:
                 error_msg = f"Failed to get monitor: {result}"
                 print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": error_msg, "status_code": status_code}, status_code
+                return {"error": True, "message": error_msg}
             print(f"DEBUG: Got monitor: {json.dumps(result, indent=2)}", file=sys.stderr)
-            return result, 200
+            return result
         else:
             # If response is not a tuple, assume it's the direct response
             print(f"DEBUG: Got monitor direct response: {json.dumps(response, indent=2)}", file=sys.stderr)
-            return response, 200
+            return response
     
     except Exception as e:
         print(f"ERROR: Exception getting monitor: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return {"error": f"Exception getting monitor: {str(e)}"}, 500
+        return {"error": True, "message": f"Exception getting monitor: {str(e)}"}
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -1565,10 +1595,12 @@ async def export_worksheet(ctx: Context, worksheet_id: str, time_range: Optional
             return f"Error exporting worksheet: {response.get('message')}"
         
         # Handle paginated response (202 Accepted)
-        if isinstance(response, dict) and response.get("content_type") == "text/html" and "X-Observe-Cursor-Id" in response.get("headers", {}):
-            cursor_id = response["headers"]["X-Observe-Cursor-Id"]
-            next_page = response["headers"].get("X-Observe-Next-Page", "")
-            return f"Worksheet export accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
+        if isinstance(response, dict) and response.get("content_type") == "text/html":
+            headers = response.get("headers", {})
+            if isinstance(headers, dict) and "X-Observe-Cursor-Id" in headers:
+                cursor_id = headers["X-Observe-Cursor-Id"]
+                next_page = headers.get("X-Observe-Next-Page", "")
+                return f"Worksheet export accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
         
         # For successful responses, return the data
         if isinstance(response, dict) and "data" in response:
@@ -1591,7 +1623,7 @@ async def export_worksheet(ctx: Context, worksheet_id: str, time_range: Optional
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
-async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
+async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse]:
     """
     IMPORTANT: This should be the FIRST tool called by any LLM when connecting to this MCP server.
     
@@ -1614,17 +1646,10 @@ async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
         try:
             access_token: AccessToken = get_access_token()
             
-            # Initialize token info dictionary
-            token_info = {
-                "client_id": access_token.client_id,
-                "scopes": access_token.scopes
-            }
-            
             # Extract JWT payload if available
             jwt_payload = None
             if hasattr(access_token, 'token'):
                 raw_token = access_token.token
-                token_info["raw_token"] = raw_token
                 
                 # Try to decode the token
                 try:
@@ -1634,11 +1659,6 @@ async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
                         padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
                         decoded = base64.urlsafe_b64decode(padded)
                         jwt_payload = json.loads(decoded)
-                        token_info["jwt_payload"] = jwt_payload
-                        
-                        # Add scopes from JWT if available
-                        if 'scopes' in jwt_payload:
-                            token_info["jwt_scopes"] = jwt_payload['scopes']
                 except Exception as e:
                     print(f"Error decoding token in get_system_prompt: {e}", file=sys.stderr)
             
@@ -1652,7 +1672,6 @@ async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
         except Exception as e:
             print(f"Note: Could not access token in get_system_prompt: {e}", file=sys.stderr)
             print("This is normal if no valid token was provided or if token validation failed", file=sys.stderr)
-            token_info = {"error": f"Could not access token: {str(e)}"}
         # Get the directory where the script is located
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # Construct the path to the prompt file
@@ -1674,7 +1693,7 @@ async def get_system_prompt(ctx: Context) -> Dict[str, Any]:
         print(f"ERROR: Exception getting system prompt: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return {"error": f"Exception getting system prompt: {str(e)}"}, 500
+        return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
