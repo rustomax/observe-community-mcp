@@ -34,21 +34,78 @@ Despite its experimental nature, the server delivers significant value by enabli
 
 ![Claude Desktop using Observe MCP Server](./images/claude_investigation.png)
 
+## Modular Architecture
+
+The server uses a clean, modular architecture for maintainability and reusability. Core functionality is organized into specialized packages, keeping the main server file focused and lean.
+
+### Package Structure
+
+```
+src/
+├── observe/          # Observe API integration package
+│   ├── __init__.py   # Clean API exports
+│   ├── client.py     # HTTP client with error handling
+│   ├── config.py     # Configuration and environment management
+│   ├── datasets.py   # Dataset listing and information
+│   ├── queries.py    # OPAL query execution
+│   ├── monitors.py   # Monitor creation and management
+│   └── worksheets.py # Worksheet export functionality
+└── auth/             # Authentication and authorization package
+    ├── __init__.py   # Clean API exports
+    ├── jwt_utils.py  # JWT token utilities
+    ├── scopes.py     # Scope-based authorization middleware
+    ├── permissions.py # Permission management
+    └── middleware.py # FastMCP authentication integration
+```
+
 ## Key Components
 
 | Component | Description |
 |-----------|-------------|
-| `observe_server.py` | Main MCP server implementation with Observe API tools |
+| `observe_server.py` | Main MCP server implementation with tool definitions |
+| **Observe API Package** | |
+| `src/observe/` | Organized package containing all Observe API operations |
+| `src/observe/client.py` | HTTP client with error handling and request utilities |
+| `src/observe/config.py` | Configuration management and environment validation |
+| `src/observe/datasets.py` | Dataset listing, filtering, and information retrieval |
+| `src/observe/queries.py` | OPAL query execution with QueryBuilder helper |
+| `src/observe/monitors.py` | Monitor creation, listing, and management |
+| `src/observe/worksheets.py` | Worksheet export with WorksheetExporter class |
+| **Authentication Package** | |
+| `src/auth/` | Complete authentication and authorization system |
+| `src/auth/jwt_utils.py` | JWT token decoding, validation, and utilities |
+| `src/auth/scopes.py` | Scope-based authorization middleware with decorators |
+| `src/auth/permissions.py` | Permission management and user capability checking |
+| `src/auth/middleware.py` | FastMCP authentication integration and setup |
+| **Vector Database Package** | |
 | `src/pinecone/` | Organized package containing all Pinecone vector database operations |
 | `src/pinecone/client.py` | Pinecone client initialization and connection management |
 | `src/pinecone/embeddings.py` | Embedding generation for single texts and batches |
 | `src/pinecone/search.py` | Semantic search operations for docs and runbooks |
 | `src/pinecone/indexing.py` | Document and runbook indexing operations |
+| **Scripts and Data** | |
 | `populate_docs_index.py` | Simplified script to ingest markdown files from `observe-docs` into Pinecone |
 | `populate_runbooks_index.py` | Simplified script to ingest troubleshooting runbooks from `runbooks` into Pinecone |
 | `runbooks/` | Directory containing troubleshooting runbooks |
 | `observe-docs/` | Directory containing Observe documentation markdown files (not included in public repo) |
 | `generate_mcp_token.sh` | Script to generate MCP tokens |
+
+### Architecture Benefits
+
+- **Maintainability**: Each module has a single responsibility and clear boundaries
+- **Reusability**: Core logic can be easily imported and used in other projects
+- **Type Safety**: Comprehensive TypedDict definitions and type hints throughout
+- **Error Handling**: Standardized error patterns with both dictionary and exception-based approaches
+- **Testing**: Individual modules can be tested in isolation
+- **Documentation**: Each module is self-documenting with comprehensive docstrings
+
+### Key Features
+
+- **Helper Classes**: `QueryBuilder`, `WorksheetExporter`, and `PermissionChecker` for improved developer experience
+- **Standardized Error Handling**: Both dictionary-based and exception-based error patterns
+- **Complete Authentication**: JWT utilities, scope-based authorization, and permission management
+- **Configuration Management**: Centralized environment validation and header sanitization
+- **Type Safety**: Comprehensive type definitions and Optional type handling
 
 ## Getting Started
 
@@ -186,8 +243,21 @@ The server runs with Server-Sent Events (SSE) transport by default on port 8000.
 ### Troubleshooting Tools
 - `recommend_runbook`: Analyze a user query and recommend the most relevant troubleshooting runbook
 
-### System Tools
+### Authentication and System Tools
 - `get_system_prompt`: Get the system prompt for the Observe MCP server
+- `decode_jwt_token`: Decode a JWT token and return its contents (debugging tool)
+- `get_auth_token_info`: Get comprehensive authentication and authorization information
+- `admin_system_info`: Get detailed system information (requires admin scope)
+- `public_server_info`: Get basic public server information (available to all users)
+
+### Scope-Based Access Control
+
+All tools are protected by scope-based authorization:
+- **Admin scope** (`admin`): Full access to all tools including system information
+- **Write scope** (`write`): Can create monitors and execute queries 
+- **Read scope** (`read`): Can view datasets, monitors, and execute read-only operations
+
+Scopes follow a hierarchical model where `admin` includes `write` and `read` permissions, and `write` includes `read` permissions.
 
 ## Worksheet Export Tool
 
@@ -229,6 +299,66 @@ The organized `src/pinecone/` package provides comprehensive Pinecone functional
 - `semantic_search(query, n_results, index_type)` - Unified semantic search across index types
 - `index_documents(docs_dir)` - Index documents with relative path conversion
 - `index_runbooks(runbooks_dir)` - Index runbooks with consistent chunking strategy
+
+## Helper Classes and Utilities
+
+The modular architecture includes several helper classes that improve developer experience and code maintainability:
+
+### Observe API Helpers
+
+**`QueryBuilder`** (`src/observe/queries.py`)
+```python
+# Build complex OPAL queries programmatically
+builder = QueryBuilder()
+query = builder.filter("service_name", "cartservice") \
+              .filter("status_code", ">=", 400) \
+              .timechart("5m", "count()") \
+              .build()
+```
+
+**`WorksheetExporter`** (`src/observe/worksheets.py`)
+```python
+# Export worksheets with flexible time parameters
+exporter = WorksheetExporter()
+data = await exporter.export_with_time_range("42566610", "24h")
+data = await exporter.export_with_time_window("42566610", start="2025-01-01T00:00:00Z", end="2025-01-02T00:00:00Z")
+```
+
+### Authentication Helpers
+
+**`PermissionChecker`** (`src/auth/permissions.py`)
+```python
+# Check user permissions programmatically
+checker = PermissionChecker(user_scopes=["read", "write"])
+if checker.can_create_monitors():
+    # User can create monitors
+if checker.can_access_admin_tools():
+    # User has admin access
+```
+
+**`ScopeValidator`** (`src/auth/scopes.py`)
+```python
+# Validate scopes for complex scenarios
+validator = ScopeValidator(required_scopes=["admin", "write"])
+result = validator.validate(user_scopes)
+if not result["has_access"]:
+    return validator.get_access_error()
+```
+
+### Error Handling
+
+The modules provide both dictionary-based and exception-based error handling patterns:
+
+```python
+# Dictionary-based errors (for MCP tools)
+{"error": True, "message": "Access denied"}
+
+# Exception-based errors (for internal logic)  
+try:
+    result = await some_operation()
+except ObserveAPIError as e:
+    return {"error": True, "message": str(e)}
+```
 
 ## Architecture and How It Works
 
