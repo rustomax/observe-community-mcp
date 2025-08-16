@@ -134,6 +134,26 @@ try:
 except ImportError as e:
     print(f"Smart tools not available: {e}", file=sys.stderr)
     SMART_TOOLS_AVAILABLE = False
+    # Define fallback functions for when smart tools are not available
+    def print_smart_tools_status():
+        print("Smart tools are not available - required dependencies not installed", file=sys.stderr)
+    
+    def is_smart_tools_enabled() -> bool:
+        return False
+    
+    def validate_smart_tools_config() -> Optional[str]:
+        return "Smart tools are not available - required dependencies not installed"
+    
+    async def llm_completion(system_prompt: str, user_message: str, tools: Optional[List[Dict[str, Any]]] = None) -> str:
+        return "Smart tools are not available"
+    
+    def extract_final_data(llm_response: str):
+        return llm_response
+    
+    def format_error_response(error_message: str, original_request: str):
+        return f"Error: {error_message}"
+    
+    OPAL_EXPERT_PROMPT = ""
 
 from fastmcp import Context
 
