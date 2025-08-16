@@ -71,6 +71,10 @@ class AnthropicClient(LLMClient):
         try:
             messages = [{"role": "user", "content": user_message}]
             
+            # Log the request for debugging
+            print(f"[SMART_TOOLS] LLM Request - Model: {self.model}", file=sys.stderr)
+            print(f"[SMART_TOOLS] User Message: {user_message[:200]}...", file=sys.stderr)
+            
             # If tools are provided, enable function calling
             if tools:
                 # Convert tools to Anthropic format if needed
@@ -93,12 +97,22 @@ class AnthropicClient(LLMClient):
             
             # Extract the response content
             if response.content and len(response.content) > 0:
-                return response.content[0].text
+                full_response = response.content[0].text
+                
+                # Log the full response for debugging
+                print(f"[SMART_TOOLS] LLM Response Length: {len(full_response)} characters", file=sys.stderr)
+                print(f"[SMART_TOOLS] Full LLM Response:", file=sys.stderr)
+                print(f"{'='*60}", file=sys.stderr)
+                print(full_response, file=sys.stderr)
+                print(f"{'='*60}", file=sys.stderr)
+                
+                return full_response
             else:
+                print("[SMART_TOOLS] No response generated from LLM", file=sys.stderr)
                 return "No response generated"
                 
         except Exception as e:
-            print(f"Error in Anthropic LLM call: {e}", file=sys.stderr)
+            print(f"[SMART_TOOLS] Error in Anthropic LLM call: {e}", file=sys.stderr)
             return f"Error calling LLM: {str(e)}"
     
     def _convert_tools_format(self, tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

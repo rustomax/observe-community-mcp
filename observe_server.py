@@ -125,7 +125,9 @@ try:
         is_smart_tools_enabled,
         print_smart_tools_status,
         llm_completion,
-        OPAL_EXPERT_PROMPT
+        OPAL_EXPERT_PROMPT,
+        extract_final_data,
+        format_error_response
     )
     SMART_TOOLS_AVAILABLE = True
     print("Smart tools import successful", file=sys.stderr)
@@ -636,6 +638,15 @@ async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_ra
         return f"Smart tools are not properly configured: {error}"
     
     try:
+        # Log the incoming request
+        print(f"[SMART_TOOLS] === NLP Query Request ===", file=sys.stderr)
+        print(f"[SMART_TOOLS] Dataset ID: {dataset_id}", file=sys.stderr)
+        print(f"[SMART_TOOLS] User Request: {request}", file=sys.stderr)
+        print(f"[SMART_TOOLS] Time Range: {time_range}", file=sys.stderr)
+        print(f"[SMART_TOOLS] Start Time: {start_time}", file=sys.stderr)
+        print(f"[SMART_TOOLS] End Time: {end_time}", file=sys.stderr)
+        print(f"[SMART_TOOLS] ========================", file=sys.stderr)
+        
         # Build the full request with context
         full_request = f"""Dataset ID: {dataset_id}
 User Request: {request}
@@ -651,21 +662,31 @@ Please help me get this data by:
 Remember to use the exact field names from the dataset schema and proper OPAL syntax."""
         
         # Call the LLM with access to our existing tools
-        # Note: In a full implementation, we would provide the LLM with function calling access
-        # to our MCP tools. For now, we'll provide a helpful message about the manual approach.
+        # The full reasoning will be logged by the LLM client
+        print(f"[SMART_TOOLS] Calling LLM for reasoning and execution...", file=sys.stderr)
         
-        response = await llm_completion(
+        full_response = await llm_completion(
             system_prompt=OPAL_EXPERT_PROMPT,
             user_message=full_request
         )
         
-        return response
+        # Extract only the final data for the user
+        print(f"[SMART_TOOLS] Extracting final data from LLM response...", file=sys.stderr)
+        final_data = extract_final_data(full_response)
+        
+        print(f"[SMART_TOOLS] === Final Response to User ===", file=sys.stderr)
+        print(f"[SMART_TOOLS] Length: {len(final_data)} characters", file=sys.stderr)
+        print(f"[SMART_TOOLS] Preview: {final_data[:200]}...", file=sys.stderr)
+        print(f"[SMART_TOOLS] ================================", file=sys.stderr)
+        
+        return final_data
         
     except Exception as e:
-        print(f"Error in execute_nlp_query: {e}", file=sys.stderr)
+        error_msg = f"Error processing natural language query: {str(e)}"
+        print(f"[SMART_TOOLS] ERROR: {error_msg}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return f"Error processing natural language query: {str(e)}"
+        return format_error_response(error_msg, request)
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)

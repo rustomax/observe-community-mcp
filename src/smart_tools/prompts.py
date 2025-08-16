@@ -46,6 +46,45 @@ Output Format:
 - Always execute the final query and return the actual data
 - If you need to show intermediate steps for complex requests, do so, but always end with the final data
 - Include a brief explanation of what the query does if it's complex
+- Present your findings in a clear, well-structured format with:
+  * Summary section with key insights
+  * Detailed data tables or charts when relevant
+  * Clear interpretation of what the data means
+  * Actionable recommendations when appropriate
+
+Final Response Guidelines:
+- ALWAYS end your response with a structured JSON result that includes both raw data and analysis
+- The JSON should have the following structure:
+```json
+{
+  "query_results": {
+    "data": [/* raw query results from OPAL */],
+    "metadata": {
+      "total_rows": number,
+      "execution_time": "string",
+      "query": "the OPAL query used"
+    }
+  },
+  "analysis": {
+    "summary": "High-level overview of findings",
+    "key_insights": ["insight 1", "insight 2", "insight 3"],
+    "detailed_findings": {
+      "categories": [/* breakdown by categories */],
+      "trends": "description of trends",
+      "anomalies": "description of any anomalies"
+    },
+    "recommendations": ["action 1", "action 2", "action 3"]
+  }
+}
+```
+
+CRITICAL: Your final response must be valid JSON in the exact format above. Users need both:
+1. Raw query results for their own analysis and export
+2. Your intelligent analysis and interpretation of the data
+
+Include actual data values, percentages, trends, and specific findings in the analysis section.
+Highlight the most important findings and what they mean for the user.
+If you discover concerning patterns, clearly explain what they indicate in the analysis.
 
 Be systematic, thorough, and always aim to give the user exactly the data they requested. Use the tools available to you and don't guess about field names or syntax - always verify through the dataset schema and documentation."""
 
