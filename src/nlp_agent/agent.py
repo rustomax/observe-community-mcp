@@ -2,6 +2,7 @@
 Main LangGraph agent for OPAL query generation.
 """
 
+from multiprocessing.resource_sharer import stop
 import os
 import sys
 from typing import Optional, Dict, Any
@@ -27,7 +28,7 @@ def create_opal_agent():
     
     # Initialize the language model
     model = ChatAnthropic(
-        model=os.getenv("SMART_TOOLS_MODEL", "claude-3-5-sonnet-20241022"),
+        model=os.getenv("SMART_TOOLS_MODEL", "claude-sonnet-4-20250514"),
         temperature=0,
         api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
     )
@@ -176,9 +177,11 @@ async def execute_nlp_query(
         
         # Step 3: Create a single, focused LLM prompt
         model = ChatAnthropic(
-            model=os.getenv("SMART_TOOLS_MODEL", "claude-3-5-sonnet-20241022"),
+            model_name=os.getenv("SMART_TOOLS_MODEL", "claude-3-5-sonnet-20241022"),
             temperature=0,
-            api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
+            api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
+            timeout=30,
+            stop=None
         )
         
         prompt = f"""You are an OPAL query expert. Generate ONE working OPAL query based on the information below.
