@@ -240,8 +240,8 @@ The server runs with Server-Sent Events (SSE) transport by default on port 8000.
 ### Documentation and Assistance Tools
 - `get_relevant_docs`: Get relevant documentation for a query using Pinecone vector search
 
-~~### Smart Tools (Temporarily Disabled)~~
-~~- `execute_nlp_query`: Execute natural language queries using AI (TEMPORARILY DISABLED - under development)~~
+### Smart Tools (LangGraph-Powered)
+- `execute_nlp_query`: Execute natural language queries using LangGraph agent with conversation memory and error recovery
 
 ### Troubleshooting Tools
 - `recommend_runbook`: Analyze a user query and recommend the most relevant troubleshooting runbook

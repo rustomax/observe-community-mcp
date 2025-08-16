@@ -625,46 +625,65 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
 
 # --- Smart Tools (LLM-powered) ---
-# TEMPORARILY DISABLED - NLP tool under development
 
-# @mcp.tool()
-# @requires_scopes(['smart_tools', 'admin'])
-# async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
-#     """
-#     TEMPORARILY DISABLED - NLP tool under development
-#     
-#     Execute a natural language query request using Claude with tool execution.
-#     
-#     This tool uses Claude's native intelligence with tools to:
-#     1. Let Claude analyze the user request
-#     2. Claude calls get_dataset_info to understand the schema
-#     3. Claude calls get_relevant_docs if needed for OPAL syntax
-#     4. Claude generates and executes OPAL queries via execute_opal_query
-#     5. Claude returns actual query results with analysis
-#     
-#     Args:
-#         dataset_id: The ID of the dataset to query
-#         request: Natural language description of what data you want
-#         time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
-#         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
-#         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
-#         
-#     Returns:
-#         The actual query results from the Observe dataset
-#         
-#     Example:
-#         execute_nlp_query("42160988", "Show me error rates by service in the last hour")
-#     """
-#     # Check if smart tools are available and configured
-#     if not SMART_TOOLS_AVAILABLE:
-#         return "Smart tools are not available. Please install required dependencies (anthropic or openai packages) and configure SMART_TOOLS_API_KEY in your environment."
-#     
-#     if not is_smart_tools_enabled():
-#         error = validate_smart_tools_config()
-#         return f"Smart tools are not properly configured: {error}"
-#     
-#     try:
-#     return "TEMPORARILY DISABLED: The NLP query tool is currently under development. Please use the individual tools (execute_opal_query, get_dataset_info, get_relevant_docs) directly."
+@mcp.tool()
+@requires_scopes(['smart_tools', 'admin'])
+async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+    """
+    Execute a natural language query request using LangGraph agent.
+    
+    This tool uses LangGraph's conversation-aware agent to:
+    1. Understand the user request with proper context
+    2. Get dataset schema information
+    3. Generate appropriate OPAL queries
+    4. Handle errors and retry with learned context
+    5. Analyze real results without hallucination
+    
+    Args:
+        dataset_id: The ID of the dataset to query
+        request: Natural language description of what data you want
+        time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
+        start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
+        end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
+        
+    Returns:
+        The actual query results from the Observe dataset with analysis
+        
+    Example:
+        execute_nlp_query("42160988", "Show me error rates by service in the last hour")
+    """
+    # Check if required environment variables are available
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return "LangGraph NLP tool requires ANTHROPIC_API_KEY environment variable to be set."
+    
+    try:
+        # Import the LangGraph agent
+        from src.nlp_agent import execute_nlp_query as langgraph_execute_nlp_query
+        
+        print(f"[LANGGRAPH] Processing request: {request[:100]}...", file=sys.stderr)
+        
+        # Execute the LangGraph agent with MCP context
+        result = await langgraph_execute_nlp_query(
+            dataset_id=dataset_id,
+            request=request,
+            time_range=time_range,
+            start_time=start_time,
+            end_time=end_time,
+            get_relevant_docs_func=get_relevant_docs,
+            mock_context=ctx
+        )
+        
+        print(f"[LANGGRAPH] Generated result: {len(result)} characters", file=sys.stderr)
+        return result
+        
+    except ImportError as e:
+        print(f"[LANGGRAPH] Import error: {e}", file=sys.stderr)
+        return f"LangGraph dependencies not available. Please install: pip install langchain-core langgraph langchain-anthropic. Error: {str(e)}"
+    except Exception as e:
+        print(f"[LANGGRAPH] Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return f"Error in LangGraph NLP query: {str(e)}"
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
