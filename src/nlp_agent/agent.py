@@ -177,7 +177,7 @@ async def execute_nlp_query(
         
         # Step 3: Create a single, focused LLM prompt
         model = ChatAnthropic(
-            model_name=os.getenv("SMART_TOOLS_MODEL", "claude-3-5-sonnet-20241022"),
+            model=os.getenv("SMART_TOOLS_MODEL", "claude-sonnet-4-20250514"),
             temperature=0,
             api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
             timeout=30,
@@ -209,7 +209,14 @@ CRITICAL SYNTAX RULES:
 - DO NOT use made-up verbs like: make_set, find, pick, etc.
 - ONLY use verbs that appear in the documentation above
 
+CRITICAL TIME FILTERING RULES:
+- DO NOT include time filtering in the OPAL query (no "filter start_time >", "frame back:", etc.)
+- Time range ({time_range}) is handled automatically by the API
+- Your OPAL query should focus on data operations only, not time filtering
+- Examples of FORBIDDEN time syntax: "filter start_time >", "frame back:", "@now", "timestamp >", etc.
+
 TASK: Generate a single, working OPAL query using ONLY the verbs from the documentation.
+Focus on data analysis, aggregation, and filtering by field values - NOT time filtering.
 
 OPAL Query:"""
         
@@ -669,6 +676,12 @@ def validate_query_syntax(query: str, schema_info: str) -> list:
     if 'dataset(' in query_lower:
         issues.append("Invalid 'dataset()' function - dataset is already specified")
     
+    # Check for time filtering attempts (should be handled by API parameters)
+    time_patterns = ['start_time >', 'end_time >', 'timestamp >', 'frame back:', '@now', '@."timestamp"', 'filter.*time.*>', 'time.*between']
+    for pattern in time_patterns:
+        if re.search(pattern, query_lower):
+            issues.append(f"Time filtering detected '{pattern}' - time range is handled by API parameters, not OPAL query")
+    
     # Check for made-up verbs (common hallucinations)
     hallucinated_verbs = ['make_set', 'find', 'pick', 'choose', 'get', 'show']
     for verb in hallucinated_verbs:
@@ -718,6 +731,25 @@ def fix_obvious_issues(query: str, issues: list) -> str:
             # Remove dataset() function calls
             import re
             fixed_query = re.sub(r'dataset\([^)]*\)\s*\|\s*', '', fixed_query)
+        
+        elif "Time filtering detected" in issue:
+            # Remove time filtering clauses - time is handled by API parameters
+            import re
+            # Remove common time filtering patterns
+            time_removal_patterns = [
+                r'filter\s+start_time\s*[><=]+[^|]*\|?',
+                r'filter\s+end_time\s*[><=]+[^|]*\|?',
+                r'filter\s+timestamp\s*[><=]+[^|]*\|?',
+                r'frame\s+back:\s*[^|]*\|?',
+                r'@now[^|]*\|?',
+                r'@\."timestamp"[^|]*\|?'
+            ]
+            for pattern in time_removal_patterns:
+                fixed_query = re.sub(pattern, '', fixed_query, flags=re.IGNORECASE)
+            # Clean up any resulting empty filters or double pipes
+            fixed_query = re.sub(r'\|\s*\|', '|', fixed_query)
+            fixed_query = re.sub(r'^\s*\|\s*', '', fixed_query)  # Remove leading pipe
+            fixed_query = re.sub(r'\s*\|\s*$', '', fixed_query)  # Remove trailing pipe
         
         elif "Invalid verb" in issue:
             # Replace common hallucinated verbs
