@@ -56,7 +56,13 @@ except Exception as e:
 try:
     print("Attempting to import pinecone module...", file=sys.stderr)
     import pinecone
-    print(f"Pinecone import successful. Version: {pinecone.__version__}", file=sys.stderr)
+    
+    # Try to get version, but don't fail if it's not available
+    try:
+        version = getattr(pinecone, '__version__', 'unknown')
+        print(f"Pinecone import successful. Version: {version}", file=sys.stderr)
+    except (AttributeError, Exception):
+        print("Pinecone import successful. Version: unknown", file=sys.stderr)
     
     # Import organized Pinecone helpers
     print("Attempting to import src.pinecone modules...", file=sys.stderr)
@@ -99,13 +105,13 @@ from src.observe import (
     get_monitor as observe_get_monitor,
     export_worksheet as observe_export_worksheet
 )
+from src.observe.monitors import ErrorResponse as ObserveErrorResponse
 
 # Import organized auth modules
 from src.auth import (
     create_authenticated_mcp,
     requires_scopes,
     decode_jwt_full,
-    get_auth_token_info,
     get_admin_system_info,
     get_public_server_info,
     initialize_auth_middleware,
@@ -445,7 +451,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_substring: Optional[str] = None) -> Union[List[Dict[str, Any]], ErrorResponse]:
+async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_substring: Optional[str] = None) -> Union[List[Dict[str, Any]], ObserveErrorResponse]:
     """
     List MonitorV2 instances with optional filters.
     
@@ -520,31 +526,37 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         
         # Try to get the access token from the request for debugging purposes
         try:
-            access_token: AccessToken = get_access_token()
+            from fastmcp.server.dependencies import get_access_token, AccessToken
+            access_token: Optional[AccessToken] = get_access_token()
             
-            # Extract JWT payload if available
-            jwt_payload = None
-            if hasattr(access_token, 'token'):
-                raw_token = access_token.token
+            if access_token is None:
+                print("No access token available in get_system_prompt", file=sys.stderr)
+            else:
+                # Extract JWT payload if available
+                jwt_payload = None
+                if hasattr(access_token, 'token'):
+                    raw_token = access_token.token
+                    
+                    # Try to decode the token
+                    try:
+                        import base64
+                        import json
+                        parts = raw_token.split('.')
+                        if len(parts) == 3:
+                            # Decode payload
+                            padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
+                            decoded = base64.urlsafe_b64decode(padded)
+                            jwt_payload = json.loads(decoded)
+                    except Exception as e:
+                        print(f"Error decoding token in get_system_prompt: {e}", file=sys.stderr)
                 
-                # Try to decode the token
-                try:
-                    parts = raw_token.split('.')
-                    if len(parts) == 3:
-                        # Decode payload
-                        padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
-                        decoded = base64.urlsafe_b64decode(padded)
-                        jwt_payload = json.loads(decoded)
-                except Exception as e:
-                    print(f"Error decoding token in get_system_prompt: {e}", file=sys.stderr)
-            
-            # Print minimal debug info
-            print("\\n=== AUTH TOKEN INFO IN get_system_prompt ===\\n", file=sys.stderr)
-            print(f"Client ID: {access_token.client_id}", file=sys.stderr)
-            print(f"Scopes from AccessToken: {access_token.scopes}", file=sys.stderr)
-            if jwt_payload and 'scopes' in jwt_payload:
-                print(f"Scopes from JWT: {jwt_payload['scopes']}", file=sys.stderr)
-            print("\\n=== END AUTH TOKEN INFO ===\\n", file=sys.stderr)
+                # Print minimal debug info
+                print("\\n=== AUTH TOKEN INFO IN get_system_prompt ===\\n", file=sys.stderr)
+                print(f"Client ID: {access_token.client_id}", file=sys.stderr)
+                print(f"Scopes from AccessToken: {access_token.scopes}", file=sys.stderr)
+                if jwt_payload and 'scopes' in jwt_payload:
+                    print(f"Scopes from JWT: {jwt_payload['scopes']}", file=sys.stderr)
+                print("\\n=== END AUTH TOKEN INFO ===\\n", file=sys.stderr)
         except Exception as e:
             print(f"Note: Could not access token in get_system_prompt: {e}", file=sys.stderr)
             print("This is normal if no valid token was provided or if token validation failed", file=sys.stderr)
