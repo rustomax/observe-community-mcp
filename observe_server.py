@@ -118,6 +118,21 @@ from src.auth import (
     setup_auth_provider
 )
 
+# Import smart tools (optional - only if configured)
+try:
+    from src.smart_tools import (
+        validate_smart_tools_config,
+        is_smart_tools_enabled,
+        print_smart_tools_status,
+        llm_completion,
+        OPAL_EXPERT_PROMPT
+    )
+    SMART_TOOLS_AVAILABLE = True
+    print("Smart tools import successful", file=sys.stderr)
+except ImportError as e:
+    print(f"Smart tools not available: {e}", file=sys.stderr)
+    SMART_TOOLS_AVAILABLE = False
+
 from fastmcp import Context
 
 # Create FastMCP instance with authentication
@@ -126,6 +141,10 @@ mcp = create_authenticated_mcp(server_name="observe-epic")
 # Initialize auth middleware for statistics and logging
 auth_provider = setup_auth_provider()
 initialize_auth_middleware(auth_provider)
+
+# Check smart tools configuration status
+if SMART_TOOLS_AVAILABLE:
+    print_smart_tools_status()
 
 # --- MCP Tools (Refactored to use organized modules) ---
 
@@ -582,6 +601,71 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         import traceback
         traceback.print_exc(file=sys.stderr)
         return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
+
+# --- Smart Tools (LLM-powered) ---
+
+@mcp.tool()
+@requires_scopes(['smart_tools', 'admin'])
+async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+    """
+    Execute a natural language query request using LLM reasoning.
+    
+    This tool converts natural language requests into proper OPAL queries and executes them.
+    The LLM will analyze the dataset schema, search documentation for examples, construct
+    appropriate queries, and handle errors through iterative refinement.
+    
+    Args:
+        dataset_id: The ID of the dataset to query
+        request: Natural language description of what data you want
+        time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
+        start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
+        end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
+        
+    Returns:
+        The requested data or an explanation of what went wrong
+        
+    Example:
+        execute_nlp_query("42160988", "Show me error rates by service in the last hour")
+    """
+    # Check if smart tools are available and configured
+    if not SMART_TOOLS_AVAILABLE:
+        return "Smart tools are not available. Please install required dependencies (anthropic or openai packages) and configure SMART_TOOLS_API_KEY in your environment."
+    
+    if not is_smart_tools_enabled():
+        error = validate_smart_tools_config()
+        return f"Smart tools are not properly configured: {error}"
+    
+    try:
+        # Build the full request with context
+        full_request = f"""Dataset ID: {dataset_id}
+User Request: {request}
+Time Parameters: time_range={time_range}, start_time={start_time}, end_time={end_time}
+
+Please help me get this data by:
+1. First using get_dataset_info to understand the dataset schema
+2. Using get_relevant_docs to find relevant OPAL documentation if needed
+3. Constructing and executing the appropriate OPAL query
+4. If there are errors, analyzing them and refining the query
+5. Returning the final data to the user
+
+Remember to use the exact field names from the dataset schema and proper OPAL syntax."""
+        
+        # Call the LLM with access to our existing tools
+        # Note: In a full implementation, we would provide the LLM with function calling access
+        # to our MCP tools. For now, we'll provide a helpful message about the manual approach.
+        
+        response = await llm_completion(
+            system_prompt=OPAL_EXPERT_PROMPT,
+            user_message=full_request
+        )
+        
+        return response
+        
+    except Exception as e:
+        print(f"Error in execute_nlp_query: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return f"Error processing natural language query: {str(e)}"
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)

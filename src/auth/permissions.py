@@ -34,6 +34,7 @@ def get_user_permissions(scopes: Optional[List[str]] = None) -> Dict[str, bool]:
         "admin_access": "admin" in effective_scopes,
         "read_access": "read" in effective_scopes,
         "write_access": "write" in effective_scopes,
+        "smart_tools_access": "smart_tools" in effective_scopes,
         "monitor_create": "admin" in effective_scopes or "write" in effective_scopes,
         "monitor_read": any(s in effective_scopes for s in ["admin", "write", "read"]),
         "system_info": "admin" in effective_scopes,
@@ -227,6 +228,10 @@ class PermissionChecker:
         """Check if user can export worksheets."""
         return self.permissions["worksheet_export"]
     
+    def can_use_smart_tools(self) -> bool:
+        """Check if user can use LLM-powered smart tools."""
+        return self.permissions["smart_tools_access"]
+    
     def get_permission_summary(self) -> Dict[str, Any]:
         """
         Get a comprehensive permission summary.
@@ -277,7 +282,8 @@ def check_tool_access(tool_name: str, user_scopes: Optional[List[str]] = None) -
         "get_dataset_info": checker.can_read_data,
         "export_worksheet": checker.can_export_worksheets,
         "get_relevant_docs": checker.can_read_data,
-        "recommend_runbook": checker.can_read_data
+        "recommend_runbook": checker.can_read_data,
+        "execute_nlp_query": checker.can_use_smart_tools
     }
     
     has_access = True

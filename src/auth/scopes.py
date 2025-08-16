@@ -179,9 +179,10 @@ class ScopeValidator:
 
 # Scope hierarchy definitions
 SCOPE_HIERARCHY = {
-    'admin': ['admin', 'write', 'read'],  # Admin can do everything
-    'write': ['write', 'read'],           # Write includes read
-    'read': ['read']                      # Read only
+    'admin': ['admin', 'smart_tools', 'write', 'read'],  # Admin can do everything
+    'smart_tools': ['smart_tools', 'read'],              # Smart tools includes read
+    'write': ['write', 'read'],                          # Write includes read
+    'read': ['read']                                     # Read only
 }
 
 
