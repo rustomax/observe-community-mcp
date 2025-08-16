@@ -625,88 +625,46 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
 
 # --- Smart Tools (LLM-powered) ---
+# TEMPORARILY DISABLED - NLP tool under development
 
-@mcp.tool()
-@requires_scopes(['smart_tools', 'admin'])
-async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
-    """
-    Execute a natural language query request using LLM reasoning.
-    
-    This tool converts natural language requests into proper OPAL queries and executes them.
-    The LLM will analyze the dataset schema, search documentation for examples, construct
-    appropriate queries, and handle errors through iterative refinement.
-    
-    Args:
-        dataset_id: The ID of the dataset to query
-        request: Natural language description of what data you want
-        time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
-        start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
-        end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
-        
-    Returns:
-        The requested data or an explanation of what went wrong
-        
-    Example:
-        execute_nlp_query("42160988", "Show me error rates by service in the last hour")
-    """
-    # Check if smart tools are available and configured
-    if not SMART_TOOLS_AVAILABLE:
-        return "Smart tools are not available. Please install required dependencies (anthropic or openai packages) and configure SMART_TOOLS_API_KEY in your environment."
-    
-    if not is_smart_tools_enabled():
-        error = validate_smart_tools_config()
-        return f"Smart tools are not properly configured: {error}"
-    
-    try:
-        # Log the incoming request
-        print(f"[SMART_TOOLS] === NLP Query Request ===", file=sys.stderr)
-        print(f"[SMART_TOOLS] Dataset ID: {dataset_id}", file=sys.stderr)
-        print(f"[SMART_TOOLS] User Request: {request}", file=sys.stderr)
-        print(f"[SMART_TOOLS] Time Range: {time_range}", file=sys.stderr)
-        print(f"[SMART_TOOLS] Start Time: {start_time}", file=sys.stderr)
-        print(f"[SMART_TOOLS] End Time: {end_time}", file=sys.stderr)
-        print(f"[SMART_TOOLS] ========================", file=sys.stderr)
-        
-        # Build the full request with context
-        full_request = f"""Dataset ID: {dataset_id}
-User Request: {request}
-Time Parameters: time_range={time_range}, start_time={start_time}, end_time={end_time}
-
-Please help me get this data by:
-1. First using get_dataset_info to understand the dataset schema
-2. Using get_relevant_docs to find relevant OPAL documentation if needed
-3. Constructing and executing the appropriate OPAL query
-4. If there are errors, analyzing them and refining the query
-5. Returning the final data to the user
-
-Remember to use the exact field names from the dataset schema and proper OPAL syntax."""
-        
-        # Call the LLM with access to our existing tools
-        # The full reasoning will be logged by the LLM client
-        print(f"[SMART_TOOLS] Calling LLM for reasoning and execution...", file=sys.stderr)
-        
-        full_response = await llm_completion(
-            system_prompt=OPAL_EXPERT_PROMPT,
-            user_message=full_request
-        )
-        
-        # Extract only the final data for the user
-        print(f"[SMART_TOOLS] Extracting final data from LLM response...", file=sys.stderr)
-        final_data = extract_final_data(full_response)
-        
-        print(f"[SMART_TOOLS] === Final Response to User ===", file=sys.stderr)
-        print(f"[SMART_TOOLS] Length: {len(final_data)} characters", file=sys.stderr)
-        print(f"[SMART_TOOLS] Preview: {final_data[:200]}...", file=sys.stderr)
-        print(f"[SMART_TOOLS] ================================", file=sys.stderr)
-        
-        return final_data
-        
-    except Exception as e:
-        error_msg = f"Error processing natural language query: {str(e)}"
-        print(f"[SMART_TOOLS] ERROR: {error_msg}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return format_error_response(error_msg, request)
+# @mcp.tool()
+# @requires_scopes(['smart_tools', 'admin'])
+# async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+#     """
+#     TEMPORARILY DISABLED - NLP tool under development
+#     
+#     Execute a natural language query request using Claude with tool execution.
+#     
+#     This tool uses Claude's native intelligence with tools to:
+#     1. Let Claude analyze the user request
+#     2. Claude calls get_dataset_info to understand the schema
+#     3. Claude calls get_relevant_docs if needed for OPAL syntax
+#     4. Claude generates and executes OPAL queries via execute_opal_query
+#     5. Claude returns actual query results with analysis
+#     
+#     Args:
+#         dataset_id: The ID of the dataset to query
+#         request: Natural language description of what data you want
+#         time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
+#         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
+#         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
+#         
+#     Returns:
+#         The actual query results from the Observe dataset
+#         
+#     Example:
+#         execute_nlp_query("42160988", "Show me error rates by service in the last hour")
+#     """
+#     # Check if smart tools are available and configured
+#     if not SMART_TOOLS_AVAILABLE:
+#         return "Smart tools are not available. Please install required dependencies (anthropic or openai packages) and configure SMART_TOOLS_API_KEY in your environment."
+#     
+#     if not is_smart_tools_enabled():
+#         error = validate_smart_tools_config()
+#         return f"Smart tools are not properly configured: {error}"
+#     
+#     try:
+#     return "TEMPORARILY DISABLED: The NLP query tool is currently under development. Please use the individual tools (execute_opal_query, get_dataset_info, get_relevant_docs) directly."
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
