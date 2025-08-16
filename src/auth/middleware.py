@@ -9,18 +9,18 @@ import os
 import sys
 from typing import Optional
 from fastmcp import FastMCP
-from fastmcp.server.auth import BearerAuthProvider
+from fastmcp.server.auth.providers.jwt import JWTVerifier
 
 
-def setup_auth_provider(public_key_pem: Optional[str] = None) -> BearerAuthProvider:
+def setup_auth_provider(public_key_pem: Optional[str] = None) -> JWTVerifier:
     """
-    Set up and configure the BearerAuthProvider for FastMCP.
+    Set up and configure the JWTVerifier for FastMCP.
     
     Args:
         public_key_pem: PEM-encoded public key. If None, will read from environment.
         
     Returns:
-        Configured BearerAuthProvider instance
+        Configured JWTVerifier instance
     """
     # Get public key from parameter or environment variable
     if public_key_pem is None:
@@ -31,8 +31,8 @@ def setup_auth_provider(public_key_pem: Optional[str] = None) -> BearerAuthProvi
         print("WARNING: PUBLIC_KEY_PEM not found in environment variables. Authentication may fail.", file=sys.stderr)
         print("Please set PUBLIC_KEY_PEM in your .env file with the correct public key.", file=sys.stderr)
     
-    # Configure BearerAuthProvider with the public key
-    return BearerAuthProvider(public_key=public_key_pem)
+    # Configure JWTVerifier with the public key
+    return JWTVerifier(public_key=public_key_pem)
 
 
 def create_authenticated_mcp(server_name: str = "observe-epic", public_key_pem: Optional[str] = None) -> FastMCP:
@@ -84,12 +84,12 @@ class AuthMiddleware:
     Authentication middleware wrapper for additional functionality.
     """
     
-    def __init__(self, auth_provider: BearerAuthProvider):
+    def __init__(self, auth_provider: JWTVerifier):
         """
         Initialize auth middleware.
         
         Args:
-            auth_provider: Configured BearerAuthProvider instance
+            auth_provider: Configured JWTVerifier instance
         """
         self.auth_provider = auth_provider
         self._stats = {
@@ -161,12 +161,12 @@ def get_auth_middleware() -> Optional[AuthMiddleware]:
     return _auth_middleware
 
 
-def initialize_auth_middleware(auth_provider: BearerAuthProvider) -> AuthMiddleware:
+def initialize_auth_middleware(auth_provider: JWTVerifier) -> AuthMiddleware:
     """
     Initialize the global auth middleware instance.
     
     Args:
-        auth_provider: Configured BearerAuthProvider instance
+        auth_provider: Configured JWTVerifier instance
         
     Returns:
         Initialized AuthMiddleware instance
