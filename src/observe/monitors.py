@@ -32,12 +32,22 @@ async def create_monitor(
     threshold: float, 
     window: str, 
     frequency: str = "5m",
+    threshold_column: str = "value",
     actions: Optional[List[str]] = None
 ) -> Union[MonitorResponse, ErrorResponse]:
     """
     Create a new MonitorV2 and bind to actions.
     
     IMPORTANT: The OPAL query must output a numeric value that can be compared against the threshold.
+    
+    NOTE: Due to a backend validation bug, the threshold_column must refer to a column that exists 
+    in the INPUT dataset schema, not the query output schema. Common columns include:
+    - "value" (numeric field in most datasets) - DEFAULT
+    - "time" (timestamp field)
+    - Other dataset-specific fields
+    
+    If you need to threshold on query output columns like "count", you must use the "value" column
+    and structure your query to put the desired value in the "value" field.
     
     Examples:
     
@@ -80,6 +90,7 @@ async def create_monitor(
         threshold: Threshold value for alerting
         window: Time window for evaluation (e.g., "5m", "1h")
         frequency: How often to run the monitor (e.g., "5m", "1h")
+        threshold_column: Column name to compare against threshold (default: "value")
         actions: List of action IDs to trigger when monitor fires
         
     Returns:
@@ -105,6 +116,7 @@ async def create_monitor(
             threshold=threshold,
             window=window,
             frequency=frequency,
+            threshold_column=threshold_column,
             actions=actions
         )
         
@@ -233,6 +245,7 @@ def _build_monitor_data(
     threshold: float,
     window: str,
     frequency: str,
+    threshold_column: str,
     actions: Optional[List[str]]
 ) -> Dict[str, Any]:
     """
@@ -248,8 +261,9 @@ def _build_monitor_data(
     if frequency and not any(frequency.endswith(suffix) for suffix in ['s', 'm', 'h', 'd']):
         frequency = f"{frequency}s"  # Default to seconds
     
-    # Convert window to nanoseconds for API
+    # Convert window and frequency to nanoseconds for API
     window_ns = convert_to_nanoseconds(window)
+    frequency_ns = convert_to_nanoseconds(frequency)
     
     # Add description as a comment in the query if it's not already there
     if not query.strip().startswith("//"):
@@ -287,7 +301,7 @@ def _build_monitor_data(
                                 }
                             }
                         ],
-                        "valueColumnName": "count",
+                        "valueColumnName": threshold_column,
                         "aggregation": "AllOf"
                     }
                 }
@@ -298,7 +312,7 @@ def _build_monitor_data(
             "groupings": [],
             "scheduling": {
                 "transform": {
-                    "freshnessGoal": frequency
+                    "freshnessGoal": str(frequency_ns)
                 }
             }
         }
@@ -497,7 +511,7 @@ def convert_to_nanoseconds(duration: str) -> int:
         ValueError: If duration format is invalid
     """
     # Extract the number and unit
-    match = re.match(r'(\\d+)([smhd])', duration)
+    match = re.match(r'(\d+)([smhd])', duration)
     if not match:
         raise ValueError(f"Invalid duration format: {duration}. Expected format like '5m', '1h', etc.")
     

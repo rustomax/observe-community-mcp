@@ -575,11 +575,14 @@ async def recommend_runbook(ctx: Context, query: str) -> str:
 @requires_scopes(['admin', 'write'])
 async def create_monitor(ctx: Context, name: str, description: str, query: str, dataset_id: str, 
                       threshold: float, window: str, frequency: str = "5m", 
-                      actions: Optional[List[str]] = None) -> Union[Dict[str, Any], ErrorResponse]:
+                      threshold_column: str = "value", actions: Optional[List[str]] = None) -> Union[Dict[str, Any], ErrorResponse]:
     """
     Create a new MonitorV2 and bind to actions.
     
     IMPORTANT: The OPAL query must output a numeric value that can be compared against the threshold.
+    
+    NOTE: Due to a backend validation bug, the threshold_column must refer to a column that exists 
+    in the INPUT dataset schema, not the query output schema. Use "value" (default) for most cases.
     
     Examples:
     
@@ -622,6 +625,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
         threshold: Threshold value for alerting
         window: Time window for evaluation (e.g., "5m", "1h")
         frequency: How often to run the monitor (e.g., "5m", "1h")
+        threshold_column: Column name to compare against threshold (default: "value")
         actions: List of action IDs to trigger when monitor fires
         
     Returns:
@@ -635,6 +639,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
         threshold=threshold,
         window=window,
         frequency=frequency,
+        threshold_column=threshold_column,
         actions=actions
     )
 
