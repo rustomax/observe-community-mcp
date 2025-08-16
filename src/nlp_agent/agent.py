@@ -116,7 +116,8 @@ async def execute_nlp_query(
         # Step 2: Get OPAL documentation for the request
         print(f"[SIMPLIFIED] Step 2: Getting OPAL documentation", file=sys.stderr)
         # Use simpler, more basic search terms to get fundamental OPAL syntax
-        docs_query = "OPAL basic syntax examples filter statsby timechart"
+        # Include options syntax to prevent incorrect usage
+        docs_query = "OPAL basic syntax examples filter statsby timechart options"
         
         # Use the vector search functions directly
         try:
@@ -196,8 +197,11 @@ For aggregations, use: statsby aggregation_function(field), group_by(field)
 For time series, use: timechart duration, aggregation_function(field)
 For filtering, use: filter field_name = "value"
 
-DO NOT use made-up verbs like: make_set, find, pick, etc.
-ONLY use verbs that appear in the documentation above.
+CRITICAL SYNTAX RULES:
+- NEVER use "filter options()" - options go with timechart/statsby, not filter
+- NEVER use "dataset()" function - the dataset is already specified
+- DO NOT use made-up verbs like: make_set, find, pick, etc.
+- ONLY use verbs that appear in the documentation above
 
 TASK: Generate a single, working OPAL query using ONLY the verbs from the documentation.
 
