@@ -7,10 +7,6 @@ using organized modules for better maintainability and reusability.
 
 import os
 import sys
-import json
-import base64
-from datetime import datetime
-from functools import wraps
 from typing import Dict, Any, Optional, List, Union, TypedDict
 
 # Type definitions for better type safety
@@ -104,80 +100,26 @@ from src.observe import (
     export_worksheet as observe_export_worksheet
 )
 
-from fastmcp import FastMCP, Context
-from fastmcp.server.auth import BearerAuthProvider
-from fastmcp.server.dependencies import get_access_token, AccessToken
+# Import organized auth modules
+from src.auth import (
+    create_authenticated_mcp,
+    requires_scopes,
+    decode_jwt_full,
+    get_auth_token_info,
+    get_admin_system_info,
+    get_public_server_info,
+    initialize_auth_middleware,
+    setup_auth_provider
+)
 
-# Get public key from environment variable, or use a default if not set
-public_key_pem = os.getenv("PUBLIC_KEY_PEM", "")
+from fastmcp import Context
 
-# If public key is not set in environment, log a warning
-if not public_key_pem:
-    print("WARNING: PUBLIC_KEY_PEM not found in environment variables. Authentication may fail.", file=sys.stderr)
-    print("Please set PUBLIC_KEY_PEM in your .env file with the correct public key.", file=sys.stderr)
+# Create FastMCP instance with authentication
+mcp = create_authenticated_mcp(server_name="observe-epic")
 
-# Configure BearerAuthProvider with the public key
-auth = BearerAuthProvider(public_key=public_key_pem)
-
-mcp = FastMCP(name="observe-epic", auth=auth)
-
-# --- Scope-based Protection Middleware ---
-
-def requires_scopes(required_scopes: List[str]):
-    """
-    Middleware decorator that protects tools based on JWT token scopes.
-    
-    Args:
-        required_scopes: List of scopes required to access the tool.
-        
-    Returns:
-        Decorator function that wraps the tool function.
-    """
-    def decorator(func):
-        @wraps(func)
-        async def wrapper(ctx: Context, *args, **kwargs):
-            # Get JWT token scopes
-            jwt_scopes = []
-            try:
-                # Get the access token
-                access_token = get_access_token()
-                
-                # Try to get scopes from AccessToken object first
-                if access_token.scopes:
-                    jwt_scopes = access_token.scopes
-                # If not available, try to extract from raw token
-                elif hasattr(access_token, 'token'):
-                    try:
-                        # Decode JWT payload
-                        parts = access_token.token.split('.')
-                        if len(parts) == 3:
-                            padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
-                            decoded = base64.urlsafe_b64decode(padded)
-                            payload = json.loads(decoded)
-                            if 'scopes' in payload:
-                                jwt_scopes = payload['scopes']
-                    except Exception as e:
-                        print(f"Error extracting scopes from JWT: {e}", file=sys.stderr)
-                        
-                # Check if user has required scopes
-                has_required_scopes = any(scope in jwt_scopes for scope in required_scopes)
-                if not has_required_scopes:
-                    print(f"Access denied: Required scopes {required_scopes}, but user has {jwt_scopes}", file=sys.stderr)
-                    return {
-                        "error": True,
-                        "message": f"Access denied: You don't have the required permissions. Required: {required_scopes}"
-                    }
-                    
-                # User has required scopes, proceed with the function
-                return await func(ctx, *args, **kwargs)
-            except Exception as e:
-                print(f"Error in requires_scopes middleware: {e}", file=sys.stderr)
-                return {
-                    "error": True,
-                    "message": f"Authentication error: {str(e)}"
-                }
-        return wrapper
-    return decorator
+# Initialize auth middleware for statistics and logging
+auth_provider = setup_auth_provider()
+initialize_auth_middleware(auth_provider)
 
 # --- MCP Tools (Refactored to use organized modules) ---
 
@@ -187,36 +129,7 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
     Decode a JWT token and return its contents.
     This is useful for debugging JWT tokens.
     """
-    try:
-        # Split the token into header, payload, and signature
-        parts = token.split('.')
-        if len(parts) != 3:
-            return {"error": "Invalid JWT token format"}
-        
-        # Decode header
-        header_padded = parts[0] + '=' * (4 - len(parts[0]) % 4) if len(parts[0]) % 4 else parts[0]
-        header_decoded = base64.urlsafe_b64decode(header_padded)
-        header = json.loads(header_decoded)
-        
-        # Decode payload
-        payload_padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
-        payload_decoded = base64.urlsafe_b64decode(payload_padded)
-        payload = json.loads(payload_decoded)
-        print(f"Header: {json.dumps(header, indent=2)}", file=sys.stderr)
-        print(f"Payload: {json.dumps(payload, indent=2)}", file=sys.stderr)
-        print("\\n=== END JWT TOKEN DEBUG INFO ===\\n", file=sys.stderr)
-        
-        return {
-            "header": header,
-            "payload": payload,
-            "signature_present": len(parts[2]) > 0
-        }
-    except Exception as e:
-        print(f"Error decoding JWT token: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        
-        return {"error": f"Exception decoding JWT token: {str(e)}"}
+    return decode_jwt_full(token, debug=True)
 
 @mcp.tool()
 @requires_scopes(['admin'])
@@ -225,40 +138,7 @@ async def admin_system_info(ctx: Context) -> Dict[str, Any]:
     Get system information that is only available to users with admin scope.
     This is a protected endpoint that requires the 'admin' scope in the JWT token.
     """
-    try:
-        # Define sensitive environment variable patterns to filter out
-        sensitive_patterns = [
-            'key', 'secret', 'password', 'token', 'credential', 'auth', 
-            'api_', 'cert', 'private', 'salt', 'hash'
-        ]
-        
-        # Filter environment variables to exclude sensitive information
-        filtered_env = {}
-        for key, value in os.environ.items():
-            # Skip any env var with sensitive patterns in key
-            if any(pattern in key.lower() for pattern in sensitive_patterns):
-                filtered_env[key] = "[REDACTED]"
-            else:
-                filtered_env[key] = value
-                
-        system_info = {
-            "python_version": sys.version,
-            "python_path": sys.path,
-            "environment": filtered_env,
-            "server_time": datetime.now().isoformat(),
-            "server_pid": os.getpid(),
-        }
-        
-        return {
-            "success": True,
-            "message": "Admin access granted",
-            "system_info": system_info
-        }
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error getting system info: {str(e)}"
-        }
+    return get_admin_system_info()
 
 @mcp.tool()
 async def public_server_info(ctx: Context) -> Dict[str, Any]:
@@ -266,95 +146,15 @@ async def public_server_info(ctx: Context) -> Dict[str, Any]:
     Get basic public server information that is available to all users.
     This endpoint does not require any specific scope.
     """
-    try:
-        server_info = {
-            "server_name": "observe-epic",
-            "server_version": "1.0.0",
-            "server_time": datetime.now().isoformat(),
-            "python_version": sys.version.split()[0]  # Just the version number, not the full string
-        }
-        
-        return {
-            "success": True,
-            "server_info": server_info
-        }
-    except Exception as e:
-        return {
-            "error": True,
-            "message": f"Error getting public server info: {str(e)}"
-        }
+    return get_public_server_info()
 
 @mcp.tool()
 async def get_auth_token_info(ctx: Context) -> Dict[str, Any]:
     """
     Get information about the current authentication status.
     """
-    try:
-        # Get the access token from the request
-        access_token: AccessToken = get_access_token()
-        
-        # Initialize the result dictionary with basic info
-        result = {
-            "authenticated": True,
-            "client_id": access_token.client_id,
-            "token_type": "Bearer"
-        }
-        
-        # Add expiration if available
-        if hasattr(access_token, 'expires_at'):
-            result["expires_at"] = access_token.expires_at
-        
-        # Get scopes - first try AccessToken.scopes
-        scopes = []
-        if access_token.scopes:
-            scopes = access_token.scopes
-            result["scopes"] = scopes
-        
-        # If no scopes found, try to extract from JWT payload
-        if not scopes and hasattr(access_token, 'token'):
-            try:
-                # Decode JWT payload to get scopes
-                parts = access_token.token.split('.')
-                if len(parts) == 3:
-                    padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
-                    decoded = base64.urlsafe_b64decode(padded)
-                    payload = json.loads(decoded)
-                    
-                    # Extract useful claims for the client
-                    if 'scopes' in payload:
-                        scopes = payload['scopes']
-                        result["scopes"] = scopes
-                    
-                    # Add other useful claims
-                    for claim in ['iss', 'aud', 'exp', 'iat', 'sub']:
-                        if claim in payload:
-                            result[claim] = payload[claim]
-            except Exception as e:
-                # Don't expose error details to client
-                pass
-        
-        # Add permissions information based on scopes
-        result["permissions"] = {
-            "admin_access": "admin" in scopes,
-            "read_access": any(s in scopes for s in ["read", "admin"]),
-            "write_access": any(s in scopes for s in ["write", "admin"])
-        }
-        
-        # Minimal logging for server-side debugging
-        print(f"Auth info requested by {access_token.client_id}, scopes: {scopes}", file=sys.stderr)
-        
-        return result
-    except Exception as e:
-        print(f"Error getting auth token info: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        
-        # Return error information
-        return {
-            "error": f"Exception getting auth token info: {str(e)}",
-            "is_authenticated": False,
-            "note": "This may indicate that no valid token was provided or that token validation failed"
-        }
+    from src.auth.permissions import get_auth_token_info as auth_get_token_info
+    return auth_get_token_info()
 
 # --- Observe API Tools (using refactored modules) ---
 
