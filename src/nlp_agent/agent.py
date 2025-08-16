@@ -225,6 +225,10 @@ CRITICAL OPAL SYNTAX RULES:
    - Correct: make_col category:if(value > 100, "high", "low")
    - WRONG: make_col category = if(value > 100, "high", "low")
 
+5. ERROR RATE ANALYSIS: Use conditional aggregation for percentages
+   - Error rate by service: statsby error_rate:avg(if(error, 1.0, 0.0)), avg_duration:avg(duration), group_by(service_name)
+   - Include context: total_traces:count(), error_traces:sum(if(error, 1, 0)) for interpretation
+
 TASK: Generate a single, working OPAL query using ONLY the verbs from the documentation.
 Focus on data analysis, aggregation, and filtering by field values - NOT time filtering.
 
@@ -594,6 +598,8 @@ CRITICAL RULES:
 - Use only verbs shown in the recovery guidance
 - Respect field names from schema
 - Fix the specific error mentioned
+- For error rate analysis: Use statsby error_rate:avg(if(error, 1.0, 0.0)), group_by(service_field)
+- For complex requests: Break into simple aggregations with conditional logic
 
 Generate a corrected OPAL query:"""
         
