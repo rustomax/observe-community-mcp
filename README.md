@@ -167,6 +167,65 @@ python observe_server.py
 
 The server runs with Server-Sent Events (SSE) transport by default on port 8000. You can modify the port and transport method in the `observe_server.py` file if needed.
 
+## Key Components
+
+The server uses a clean, modular architecture for maintainability and reusability. Core functionality is organized into specialized packages, keeping the main server file focused and lean.
+
+| Component | Description |
+|-----------|-------------|
+| `observe_server.py` | Main MCP server implementation with tool definitions |
+| **Natural Language Processing** | |
+| `src/nlp_agent/` | **Intelligent OPAL query generation from natural language** |
+| `src/nlp_agent/agent.py` | Core NLP agent with 90%+ success rate, schema-aware generation, and multi-tier error recovery |
+| **Observe API Package** | |
+| `src/observe/` | Organized package containing all Observe API operations |
+| `src/observe/client.py` | HTTP client with error handling and request utilities |
+| `src/observe/config.py` | Configuration management and environment validation |
+| `src/observe/datasets.py` | Dataset listing, filtering, and information retrieval |
+| `src/observe/queries.py` | OPAL query execution with QueryBuilder helper |
+| `src/observe/monitors.py` | Monitor creation, listing, and management |
+| `src/observe/worksheets.py` | Worksheet export with WorksheetExporter class |
+| **Authentication Package** | |
+| `src/auth/` | Complete authentication and authorization system |
+| `src/auth/jwt_utils.py` | JWT token decoding, validation, and utilities |
+| `src/auth/scopes.py` | Scope-based authorization middleware with decorators |
+| `src/auth/permissions.py` | Permission management and user capability checking |
+| `src/auth/middleware.py` | FastMCP authentication integration and setup |
+| **Vector Database Package** | |
+| `src/pinecone/` | Organized package containing all Pinecone vector database operations |
+| `src/pinecone/client.py` | Pinecone client initialization and connection management |
+| `src/pinecone/embeddings.py` | Embedding generation for single texts and batches |
+| `src/pinecone/search.py` | Semantic search operations for docs and runbooks |
+| `src/pinecone/indexing.py` | Document and runbook indexing operations |
+| **Scripts and Data** | |
+| `populate_docs_index.py` | Simplified script to ingest markdown files from `observe-docs` into Pinecone |
+| `populate_runbooks_index.py` | Simplified script to ingest troubleshooting runbooks from `runbooks` into Pinecone |
+| `runbooks/` | Directory containing troubleshooting runbooks |
+| `observe-docs/` | Directory containing Observe documentation markdown files (not included in public repo) |
+| `generate_mcp_token.sh` | Script to generate MCP tokens |
+
+### Architecture Benefits
+
+- **Natural Language Processing**: Natural language to OPAL translation with 90%+ success rate
+- **Maintainability**: Each module has a single responsibility and clear boundaries
+- **Reusability**: Core logic can be easily imported and used in other projects
+- **Type Safety**: TypedDict definitions and type hints throughout
+- **Error Handling**: Standardized error patterns with both dictionary and exception-based approaches
+- **Self-Healing**: Automatic query validation, correction, and multi-tier error recovery
+- **Testing**: Individual modules can be tested in isolation
+- **Documentation**: Each module is self-documenting with docstrings
+
+### Key Features
+
+- **Natural Language Interface**: Convert plain English questions into validated OPAL queries
+- **Schema-Aware Generation**: Automatic field validation using real dataset schemas
+- **Multi-Tier Error Recovery**: Progressive fallback strategies for query failures
+- **Helper Classes**: `QueryBuilder`, `WorksheetExporter`, and `PermissionChecker` for developer experience
+- **Standardized Error Handling**: Both dictionary-based and exception-based error patterns
+- **Authentication**: JWT utilities, scope-based authorization, and permission management
+- **Configuration Management**: Centralized environment validation and header sanitization
+- **Type Safety**: Type definitions and Optional type handling
+
 ## Available MCP Tools
 
 ### 🚀 Intelligent Query Interface (Recommended)
@@ -543,7 +602,9 @@ To update the runbooks vector database:
 
 Both populate scripts now use the organized `src/pinecone/` modules for consistent functionality and maintenance.
 
-## NLP Agent Architecture
+## Addendum: NLP Agent Architecture
+
+This section is light bed-time reading, because the rest of the document wasn't dense enough. You are welcome.
 
 The `execute_nlp_query` tool implements a multi-component agent system for converting natural language requests into OPAL queries. Rather than simple pattern matching, the system uses several specialized components to handle schema validation, error recovery, and query optimization.
 
@@ -831,9 +892,9 @@ statsby error_status:if(error_count > 0, "has_errors", "no_errors"),
         total_count:count(), 
         group_by(error_status) | 
 timechart 1h, count()
-```
 
 Result: ✅ Success after automatic correction
+```
 
 ### Performance Characteristics
 
@@ -847,62 +908,3 @@ Result: ✅ Success after automatic correction
 | **Mean Response Time** | 1.2 seconds | Average time from request to formatted result |
 
 The agent system makes observability data accessible through natural language while maintaining the precision of expert-written queries.
-
-## Key Components
-
-The server uses a clean, modular architecture for maintainability and reusability. Core functionality is organized into specialized packages, keeping the main server file focused and lean.
-
-| Component | Description |
-|-----------|-------------|
-| `observe_server.py` | Main MCP server implementation with tool definitions |
-| **Natural Language Processing** | |
-| `src/nlp_agent/` | **Intelligent OPAL query generation from natural language** |
-| `src/nlp_agent/agent.py` | Core NLP agent with 90%+ success rate, schema-aware generation, and multi-tier error recovery |
-| **Observe API Package** | |
-| `src/observe/` | Organized package containing all Observe API operations |
-| `src/observe/client.py` | HTTP client with error handling and request utilities |
-| `src/observe/config.py` | Configuration management and environment validation |
-| `src/observe/datasets.py` | Dataset listing, filtering, and information retrieval |
-| `src/observe/queries.py` | OPAL query execution with QueryBuilder helper |
-| `src/observe/monitors.py` | Monitor creation, listing, and management |
-| `src/observe/worksheets.py` | Worksheet export with WorksheetExporter class |
-| **Authentication Package** | |
-| `src/auth/` | Complete authentication and authorization system |
-| `src/auth/jwt_utils.py` | JWT token decoding, validation, and utilities |
-| `src/auth/scopes.py` | Scope-based authorization middleware with decorators |
-| `src/auth/permissions.py` | Permission management and user capability checking |
-| `src/auth/middleware.py` | FastMCP authentication integration and setup |
-| **Vector Database Package** | |
-| `src/pinecone/` | Organized package containing all Pinecone vector database operations |
-| `src/pinecone/client.py` | Pinecone client initialization and connection management |
-| `src/pinecone/embeddings.py` | Embedding generation for single texts and batches |
-| `src/pinecone/search.py` | Semantic search operations for docs and runbooks |
-| `src/pinecone/indexing.py` | Document and runbook indexing operations |
-| **Scripts and Data** | |
-| `populate_docs_index.py` | Simplified script to ingest markdown files from `observe-docs` into Pinecone |
-| `populate_runbooks_index.py` | Simplified script to ingest troubleshooting runbooks from `runbooks` into Pinecone |
-| `runbooks/` | Directory containing troubleshooting runbooks |
-| `observe-docs/` | Directory containing Observe documentation markdown files (not included in public repo) |
-| `generate_mcp_token.sh` | Script to generate MCP tokens |
-
-### Architecture Benefits
-
-- **Natural Language Processing**: Natural language to OPAL translation with 90%+ success rate
-- **Maintainability**: Each module has a single responsibility and clear boundaries
-- **Reusability**: Core logic can be easily imported and used in other projects
-- **Type Safety**: TypedDict definitions and type hints throughout
-- **Error Handling**: Standardized error patterns with both dictionary and exception-based approaches
-- **Self-Healing**: Automatic query validation, correction, and multi-tier error recovery
-- **Testing**: Individual modules can be tested in isolation
-- **Documentation**: Each module is self-documenting with docstrings
-
-### Key Features
-
-- **Natural Language Interface**: Convert plain English questions into validated OPAL queries
-- **Schema-Aware Generation**: Automatic field validation using real dataset schemas
-- **Multi-Tier Error Recovery**: Progressive fallback strategies for query failures
-- **Helper Classes**: `QueryBuilder`, `WorksheetExporter`, and `PermissionChecker` for developer experience
-- **Standardized Error Handling**: Both dictionary-based and exception-based error patterns
-- **Authentication**: JWT utilities, scope-based authorization, and permission management
-- **Configuration Management**: Centralized environment validation and header sanitization
-- **Type Safety**: Type definitions and Optional type handling
