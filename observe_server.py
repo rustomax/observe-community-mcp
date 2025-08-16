@@ -2,16 +2,16 @@
 """
 Observe MCP Server
 A Model Context Protocol server that provides access to Observe API functionality
+using organized modules for better maintainability and reusability.
 """
 
 import os
 import sys
 import json
-import re
 import base64
 from datetime import datetime
 from functools import wraps
-from typing import Dict, Any, Optional, List, Union, Tuple, TypedDict
+from typing import Dict, Any, Optional, List, Union, TypedDict
 
 # Type definitions for better type safety
 class MonitorResponse(TypedDict):
@@ -93,99 +93,16 @@ except ImportError as e:
 # Load environment variables from .env file
 load_dotenv()
 
-# Environment variables for Observe API
-OBSERVE_CUSTOMER_ID = os.getenv("OBSERVE_CUSTOMER_ID", "")
-OBSERVE_TOKEN = os.getenv("OBSERVE_TOKEN", "")
-OBSERVE_DOMAIN = os.getenv("OBSERVE_DOMAIN", "")
-
-# Base URL for Observe API
-OBSERVE_BASE_URL = f"https://{OBSERVE_CUSTOMER_ID}.{OBSERVE_DOMAIN}"
-
-# Headers for Observe API requests
-OBSERVE_HEADERS = {
-    "Authorization": f"Bearer {OBSERVE_CUSTOMER_ID} {OBSERVE_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-# --- Helper functions ---
-
-async def make_observe_request(
-    method: str, 
-    endpoint: str, 
-    params: Optional[Dict[str, Any]] = None, 
-    json_data: Optional[Dict[str, Any]] = None,
-    headers: Optional[Dict[str, str]] = None
-) -> Dict[str, Any]:
-    """
-    Make a request to the Observe API.
-    
-    Args:
-        method: HTTP method (GET, POST, etc.)
-        endpoint: API endpoint (without base URL)
-        params: Query parameters
-        json_data: JSON data for POST requests
-        headers: Additional headers
-        
-    Returns:
-        Response from the Observe API
-    """
-    url = f"{OBSERVE_BASE_URL}/{endpoint.lstrip('/')}"
-    request_headers = OBSERVE_HEADERS.copy()
-    
-    if headers:
-        request_headers.update(headers)
-    
-    print(f"DEBUG: Making {method} request to URL: {url}", file=sys.stderr)
-    print(f"DEBUG: Headers: {request_headers}", file=sys.stderr)
-    if params:
-        print(f"DEBUG: Params: {params}", file=sys.stderr)
-    if json_data:
-        print(f"DEBUG: JSON data: {json_data}", file=sys.stderr)
-        
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.request(
-                method=method,
-                url=url,
-                params=params,
-                json=json_data,
-                headers=request_headers,
-                timeout=30.0
-            )
-            
-            print(f"DEBUG: Response status code: {response.status_code}", file=sys.stderr)
-            print(f"DEBUG: Response headers: {response.headers}", file=sys.stderr)
-            
-            if response.status_code >= 400:
-                print(f"DEBUG: Error response body: {response.text}", file=sys.stderr)
-                return {
-                    "error": True,
-                    "status_code": response.status_code,
-                    "message": f"Error from Observe API: {response.status_code} {response.text}"
-                }
-                
-            if response.headers.get("Content-Type", "").startswith("application/json"):
-                return response.json()
-            else:
-                return {
-                    "data": response.text,
-                    "content_type": response.headers.get("Content-Type", "text/plain")
-                }
-                
-        except httpx.HTTPError as e:
-            print(f"DEBUG: HTTP error: {str(e)}", file=sys.stderr)
-            return {
-                "error": True,
-                "message": f"HTTP error: {str(e)}"
-            }
-        except Exception as e:
-            print(f"DEBUG: Unexpected error: {str(e)}", file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            return {
-                "error": True,
-                "message": f"Error: {str(e)}"
-            }
+# Import organized Observe API modules
+from src.observe import (
+    list_datasets as observe_list_datasets,
+    get_dataset_info as observe_get_dataset_info,
+    execute_opal_query as observe_execute_opal_query,
+    create_monitor as observe_create_monitor,
+    list_monitors as observe_list_monitors,
+    get_monitor as observe_get_monitor,
+    export_worksheet as observe_export_worksheet
+)
 
 from fastmcp import FastMCP, Context
 from fastmcp.server.auth import BearerAuthProvider
@@ -215,13 +132,6 @@ def requires_scopes(required_scopes: List[str]):
         
     Returns:
         Decorator function that wraps the tool function.
-        
-    Example:
-        @mcp.tool()
-        @requires_scopes(['admin'])
-        async def admin_only_tool(ctx: Context) -> Dict[str, Any]:
-            # Only users with 'admin' scope can access this
-            ...
     """
     def decorator(func):
         @wraps(func)
@@ -269,19 +179,13 @@ def requires_scopes(required_scopes: List[str]):
         return wrapper
     return decorator
 
-# --- MCP Tools ---
+# --- MCP Tools (Refactored to use organized modules) ---
 
 @mcp.tool()
 async def decode_jwt_token(token: str) -> Dict[str, Any]:
     """
     Decode a JWT token and return its contents.
     This is useful for debugging JWT tokens.
-    
-    Args:
-        token: The JWT token to decode
-        
-    Returns:
-        Dict containing the decoded token header and payload
     """
     try:
         # Split the token into header, payload, and signature
@@ -300,7 +204,7 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
         payload = json.loads(payload_decoded)
         print(f"Header: {json.dumps(header, indent=2)}", file=sys.stderr)
         print(f"Payload: {json.dumps(payload, indent=2)}", file=sys.stderr)
-        print("\n=== END JWT TOKEN DEBUG INFO ===\n", file=sys.stderr)
+        print("\\n=== END JWT TOKEN DEBUG INFO ===\\n", file=sys.stderr)
         
         return {
             "header": header,
@@ -314,21 +218,14 @@ async def decode_jwt_token(token: str) -> Dict[str, Any]:
         
         return {"error": f"Exception decoding JWT token: {str(e)}"}
 
-
 @mcp.tool()
 @requires_scopes(['admin'])
 async def admin_system_info(ctx: Context) -> Dict[str, Any]:
     """
     Get system information that is only available to users with admin scope.
     This is a protected endpoint that requires the 'admin' scope in the JWT token.
-    
-    Returns:
-        Dict containing sensitive system information
     """
     try:
-        # This function will only be executed if the user has the 'admin' scope
-        # Get some system information
-        
         # Define sensitive environment variable patterns to filter out
         sensitive_patterns = [
             'key', 'secret', 'password', 'token', 'credential', 'auth', 
@@ -363,23 +260,18 @@ async def admin_system_info(ctx: Context) -> Dict[str, Any]:
             "message": f"Error getting system info: {str(e)}"
         }
 
-
 @mcp.tool()
 async def public_server_info(ctx: Context) -> Dict[str, Any]:
     """
     Get basic public server information that is available to all users.
     This endpoint does not require any specific scope.
-    
-    Returns:
-        Dict containing non-sensitive server information
     """
     try:
-        # This function can be executed by any authenticated user
         server_info = {
             "server_name": "observe-epic",
             "server_version": "1.0.0",
             "server_time": datetime.now().isoformat(),
-            "python_version": sys.version.split()[0] # Just the version number, not the full string
+            "python_version": sys.version.split()[0]  # Just the version number, not the full string
         }
         
         return {
@@ -392,14 +284,10 @@ async def public_server_info(ctx: Context) -> Dict[str, Any]:
             "message": f"Error getting public server info: {str(e)}"
         }
 
-
 @mcp.tool()
 async def get_auth_token_info(ctx: Context) -> Dict[str, Any]:
     """
     Get information about the current authentication status.
-    
-    Returns:
-        Dict containing authentication information including client_id, scopes, and expiration.
     """
     try:
         # Get the access token from the request
@@ -468,6 +356,7 @@ async def get_auth_token_info(ctx: Context) -> Dict[str, Any]:
             "note": "This may indicate that no valid token was provided or that token validation failed"
         }
 
+# --- Observe API Tools (using refactored modules) ---
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
@@ -484,134 +373,15 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str, time_ran
         row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
     """
-    if not OBSERVE_CUSTOMER_ID or not OBSERVE_TOKEN:
-        return "Error: Observe API credentials not configured. Please set OBSERVE_CUSTOMER_ID and OBSERVE_TOKEN environment variables."
-    
-    try:
-        # Validate row count
-        if row_count > 100000:
-            row_count = 100000
-            print(f"WARNING: Row count limited to maximum of 100000", file=sys.stderr)
-        
-        # Prepare query payload according to the API specification
-        payload = {
-            "query": {
-                "stages": [
-                    {
-                        "input": [
-                            {
-                                "inputName": "main",
-                                "datasetId": dataset_id
-                            }
-                        ],
-                        "stageID": "query_stage",
-                        "pipeline": query
-                    }
-                ]
-            },
-            "rowCount": str(row_count)
-        }
-        
-        # Set up query parameters based on provided time options
-        params = {}
-        
-        # Handle time parameters according to API rules:
-        # Either two of startTime, endTime, and interval or interval alone can be specified
-        print(f"DEBUG: Time parameters received - start_time: {start_time}, end_time: {end_time}, time_range: {time_range}", file=sys.stderr)
-        
-        # Check if start_time or end_time are None or empty strings
-        if start_time in [None, "", "null"]:
-            start_time = None
-        if end_time in [None, "", "null"]:
-            end_time = None
-            
-        if start_time and end_time:
-            # Use explicit start and end times
-            params["startTime"] = start_time
-            params["endTime"] = end_time
-            print(f"DEBUG: Using explicit start ({start_time}) and end ({end_time}) times", file=sys.stderr)
-        elif start_time and time_range:
-            # Use start time and interval
-            params["startTime"] = start_time
-            params["interval"] = time_range
-            print(f"DEBUG: Using start time ({start_time}) and interval ({time_range})", file=sys.stderr)
-        elif end_time and time_range:
-            # Use end time and interval
-            params["endTime"] = end_time
-            params["interval"] = time_range
-            print(f"DEBUG: Using end time ({end_time}) and interval ({time_range})", file=sys.stderr)
-        elif time_range:
-            # Use just interval (relative to now)
-            params["interval"] = time_range
-            print(f"DEBUG: Using just interval ({time_range}) relative to now", file=sys.stderr)
-        
-        # Set headers for response format
-        headers = {}
-        if format.lower() == "ndjson":
-            headers["Accept"] = "application/x-ndjson"
-        else:  # Default to CSV
-            headers["Accept"] = "text/csv"
-        
-        # Log the request details
-        print(f"DEBUG: Executing OPAL query on dataset {dataset_id}", file=sys.stderr)
-        print(f"DEBUG: Time parameters: {params}", file=sys.stderr)
-        print(f"DEBUG: Format: {format}", file=sys.stderr)
-        print(f"DEBUG: Query: {query}", file=sys.stderr)
-        
-        # Log the full request details
-        print(f"DEBUG: Full request details:", file=sys.stderr)
-        print(f"DEBUG: Endpoint: v1/meta/export/query", file=sys.stderr)
-        print(f"DEBUG: Parameters: {params}", file=sys.stderr)
-        print(f"DEBUG: Payload: {json.dumps(payload, indent=2)}", file=sys.stderr)
-        print(f"DEBUG: Headers: {headers}", file=sys.stderr)
-        
-        # Execute the query
-        response = await make_observe_request(
-            method="POST",
-            endpoint="v1/meta/export/query",
-            params=params,
-            json_data=payload,
-            headers=headers
-        )
-        
-        # Log response metadata
-        if isinstance(response, dict):
-            print(f"DEBUG: Response status: {response.get('status_code')}", file=sys.stderr)
-            print(f"DEBUG: Response headers: {response.get('headers', {})}", file=sys.stderr)
-            if 'data' in response and isinstance(response['data'], str) and len(response['data']) > 0:
-                data_preview = response['data'].split('\n')[0:2]
-                print(f"DEBUG: First rows of data: {data_preview}", file=sys.stderr)
-        
-        # Handle error responses
-        if isinstance(response, dict) and response.get("error"):
-            return f"Error executing query: {response.get('message')}"
-        
-        # Handle paginated response (202 Accepted)
-        if isinstance(response, dict) and response.get("content_type") == "text/html":
-            headers = response.get("headers", {})
-            if isinstance(headers, dict) and "X-Observe-Cursor-Id" in headers:
-                cursor_id = headers["X-Observe-Cursor-Id"]
-                next_page = headers.get("X-Observe-Next-Page", "")
-                return f"Query accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
-        
-        # For successful responses, return the data
-        if isinstance(response, dict) and "data" in response:
-            data = response["data"]
-            # If the data is very large, provide a summary
-            if len(data) > 10000:  # Arbitrary threshold
-                lines = data.count('\n')
-                first_lines = '\n'.join(data.split('\n')[:50])
-                return f"Query returned {lines} rows of data. First 50 lines:\n\n{first_lines}"
-            return data
-        
-        # Handle unexpected response format
-        return f"Unexpected response format. Please check the query and try again. Response: {response}"
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return f"Error in execute_opal_query function: {str(e)}"
-
+    return await observe_execute_opal_query(
+        query=query,
+        dataset_id=dataset_id,
+        time_range=time_range,
+        start_time=start_time,
+        end_time=end_time,
+        row_count=row_count,
+        format=format
+    )
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -625,158 +395,12 @@ async def list_datasets(ctx: Context, match: Optional[str] = None, workspace_id:
         type: Optional dataset type to filter by (e.g., 'Event')
         interface: Optional interface to filter by (e.g., 'metric', 'log')
     """
-    if not OBSERVE_CUSTOMER_ID or not OBSERVE_TOKEN:
-        return "Error: Observe API credentials not configured. Please set OBSERVE_CUSTOMER_ID and OBSERVE_TOKEN environment variables."
-    
-    # Set up query parameters
-    params = {}
-    if match:
-        params["match"] = match
-    if workspace_id:
-        params["workspaceId"] = workspace_id
-    if type:
-        params["type"] = type
-    if interface:
-        # The API requires this parameter to be passed as a list
-        params["interface"] = [interface]  # Pass as a list instead of a string
-    
-    try:
-        # Log the request we're about to make
-        print(f"DEBUG: Requesting datasets with params: {params}", file=sys.stderr)
-        
-        # Make the API call to fetch datasets
-        response = await make_observe_request(
-            method="GET",
-            endpoint="v1/dataset",  # Using v1 prefix as specified in the OpenAPI doc
-            params=params
-        )
-        
-        # Handle error responses
-        if isinstance(response, dict) and response.get("error"):
-            return f"Error listing datasets: {response.get('message')}"
-        
-        # Process successful response according to the OpenAPI spec
-        # The response should be a dict with 'ok' and 'data' fields
-        if not isinstance(response, dict):
-            return f"Unexpected response format: {type(response)}. Expected a dictionary."
-        
-        # Extract datasets from the response
-        datasets = []
-        if response.get("ok") and "data" in response and isinstance(response["data"], list):
-            datasets = response["data"]
-        else:
-            return f"Unexpected response structure: {list(response.keys())}. Expected 'ok' and 'data' fields."
-        
-        # No additional client-side filtering needed as the API handles it correctly
-        
-        if not datasets:
-            return "No datasets found."
-        
-        # Format the response in a user-friendly way
-        result = "Available Datasets:\n\n"
-        for i, dataset in enumerate(datasets):
-            try:
-                # Print the raw dataset for debugging
-                print(f"DEBUG: Processing dataset: {dataset}", file=sys.stderr)
-                
-                # Extract dataset information with more robust error handling
-                # First try to get ID - could be in different locations
-                dataset_id = "Unknown"
-                if "id" in dataset:
-                    dataset_id = str(dataset["id"])
-                elif "meta" in dataset and isinstance(dataset["meta"], dict) and "id" in dataset["meta"]:
-                    dataset_id = str(dataset["meta"]["id"])
-                
-                # Get name - could be in different locations
-                name = "Unnamed dataset"
-                if "name" in dataset:
-                    name = str(dataset["name"])
-                elif "config" in dataset and isinstance(dataset["config"], dict) and "name" in dataset["config"]:
-                    name = str(dataset["config"]["name"])
-                
-                # Get type/kind - could be in different locations
-                kind = "Unknown type"
-                if "type" in dataset:
-                    kind = str(dataset["type"])
-                elif "kind" in dataset:
-                    kind = str(dataset["kind"])
-                elif "state" in dataset and isinstance(dataset["state"], dict):
-                    if "kind" in dataset["state"]:
-                        kind = str(dataset["state"]["kind"])
-                    elif "type" in dataset["state"]:
-                        kind = str(dataset["state"]["type"])
-                
-                # Get workspace ID - could be in different locations
-                workspace_id = "Unknown"
-                if "workspaceId" in dataset:
-                    workspace_id = str(dataset["workspaceId"])
-                elif "meta" in dataset and isinstance(dataset["meta"], dict) and "workspaceId" in dataset["meta"]:
-                    workspace_id = str(dataset["meta"]["workspaceId"])
-                
-                # Handle interfaces with robust error handling
-                interfaces = None
-                # Try different possible locations for interfaces
-                if "interfaces" in dataset and dataset["interfaces"] is not None:
-                    interfaces = dataset["interfaces"]
-                elif "state" in dataset and isinstance(dataset["state"], dict) and "interfaces" in dataset["state"] and dataset["state"]["interfaces"] is not None:
-                    interfaces = dataset["state"]["interfaces"]
-                
-                # Format the interfaces for display
-                interface_str = "None"
-                if interfaces is not None:
-                    if isinstance(interfaces, list):
-                        # Handle list of interfaces
-                        interface_strings = []
-                        for interface in interfaces:
-                            if isinstance(interface, dict):
-                                # If interface is a dict, extract a meaningful value or convert to string
-                                if 'name' in interface:
-                                    interface_strings.append(str(interface['name']))
-                                elif 'type' in interface:
-                                    interface_strings.append(str(interface['type']))
-                                elif 'path' in interface:
-                                    interface_strings.append(str(interface['path']))
-                                else:
-                                    interface_strings.append(str(interface))
-                            elif interface is not None:
-                                # If interface is a simple type
-                                interface_strings.append(str(interface))
-                        interface_str = ", ".join(interface_strings) if interface_strings else "None"
-                    elif isinstance(interfaces, dict):
-                        # Handle single interface as dict
-                        interface_str = str(interfaces)
-                    else:
-                        # Handle other types
-                        interface_str = str(interfaces)
-                
-                # Add dataset information to the result
-                result += f"Dataset {i+1}:\n"
-                result += f"ID: {dataset_id}\n"
-                result += f"Name: {name}\n"
-                result += f"Type: {kind}\n"
-                result += f"Workspace ID: {workspace_id}\n"
-                result += f"Interfaces: {interface_str}\n"
-                
-                # Add separator between datasets
-                result += "-" * 40 + "\n"
-                
-                # Limit to 10 datasets to avoid overwhelming output
-                if i >= 9:
-                    result += "\n(Showing first 10 datasets only. Use 'match' parameter to filter results.)\n"
-                    break
-                    
-            except Exception as e:
-                print(f"DEBUG: Error processing dataset {i}: {e}", file=sys.stderr)
-                result += f"Error processing dataset {i+1}: {str(e)}\n"
-                result += "-" * 40 + "\n"
-        
-        return result
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return f"Error in list_datasets function: {str(e)}"
-
+    return await observe_list_datasets(
+        match=match,
+        workspace_id=workspace_id,
+        type=type,
+        interface=interface
+    )
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -787,127 +411,7 @@ async def get_dataset_info(ctx: Context, dataset_id: str) -> str:
     Args:
         dataset_id: The ID of the dataset
     """
-    if not OBSERVE_CUSTOMER_ID or not OBSERVE_TOKEN:
-        return "Error: Observe API credentials not configured. Please set OBSERVE_CUSTOMER_ID and OBSERVE_TOKEN environment variables."
-    
-    try:
-        # Log the request we're about to make
-        print(f"DEBUG: Requesting dataset info for ID: {dataset_id}", file=sys.stderr)
-        
-        # Make the API call to fetch dataset information
-        response = await make_observe_request(
-            method="GET",
-            endpoint=f"v1/dataset/{dataset_id}"
-        )
-        
-        # Handle error responses
-        if isinstance(response, dict) and response.get("error"):
-            return f"Error getting dataset info: {response.get('message')}"
-        
-        # Process successful response according to the OpenAPI spec
-        # The response should be a dict with 'ok' and 'data' fields
-        if not isinstance(response, dict):
-            return f"Unexpected response format: {type(response)}. Expected a dictionary."
-        
-        # Extract dataset from the response
-        if not response.get("ok") or "data" not in response:
-            return f"Unexpected response structure: {list(response.keys())}. Expected 'ok' and 'data' fields."
-        
-        dataset = response["data"]
-        if not dataset:
-            return f"Dataset with ID {dataset_id} not found."
-        
-        # Print the raw dataset for debugging
-        print(f"DEBUG: Processing dataset: {dataset}", file=sys.stderr)
-        
-        # Extract dataset information
-        meta = dataset.get("meta", {})
-        config = dataset.get("config", {})
-        state = dataset.get("state", {})
-        
-        # Format the response in a user-friendly way
-        result = f"Dataset Information for ID: {dataset_id}\n\n"
-        
-        # Basic information
-        name = config.get("name", "Unnamed dataset")
-        kind = state.get("kind", "Unknown type")
-        workspace_id = meta.get("workspaceId", "Unknown")
-        customer_id = meta.get("customerId", "Unknown")
-        
-        result += f"Name: {name}\n"
-        result += f"Type: {kind}\n"
-        result += f"Workspace ID: {workspace_id}\n"
-        result += f"Customer ID: {customer_id}\n"
-        
-        # Creation and update information
-        created_by = state.get("createdBy")
-        created_date = state.get("createdDate")
-        updated_by = state.get("updatedBy")
-        updated_date = state.get("updatedDate")
-        
-        if created_by and created_date:
-            result += f"Created: {created_date} (by {created_by})\n"
-        if updated_by and updated_date:
-            result += f"Updated: {updated_date} (by {updated_by})\n"
-        
-        # URL path
-        url_path = state.get("urlPath")
-        if url_path:
-            result += f"URL Path: {url_path}\n"
-        
-        # Interface information
-        interfaces = state.get("interfaces")
-        if interfaces:
-            result += "\nInterfaces:\n"
-            
-            if isinstance(interfaces, list):
-                for i, interface in enumerate(interfaces):
-                    if isinstance(interface, dict):
-                        # If interface is a complex object with path and mapping
-                        path = interface.get("path", "Unknown")
-                        result += f"  {i+1}. {path}\n"
-                        
-                        # Show mapping if available
-                        mapping = interface.get("mapping")
-                        if mapping and isinstance(mapping, list):
-                            result += "     Mapping:\n"
-                            for map_item in mapping:
-                                if isinstance(map_item, dict):
-                                    interface_field = map_item.get("interfaceField", "Unknown")
-                                    field = map_item.get("field", "Unknown")
-                                    result += f"       - {interface_field} → {field}\n"
-                    else:
-                        # If interface is a simple string
-                        result += f"  {i+1}. {interface}\n"
-            else:
-                # Handle case where interfaces is not a list
-                result += f"  {interfaces}\n"
-        
-        # Schema information
-        columns = state.get("columns")
-        if columns and isinstance(columns, list):
-            result += "\nSchema:\n"
-            for column in columns:
-                if isinstance(column, dict):
-                    col_name = column.get("name", "Unknown")
-                    col_type = column.get("type", "Unknown")
-                    result += f"  - {col_name} ({col_type})\n"
-        
-        # Additional configuration
-        label_field = config.get("labelField")
-        if label_field:
-            result += f"\nLabel Field: {label_field}\n"
-        
-        primary_key = config.get("primaryKey")
-        if primary_key and isinstance(primary_key, list):
-            result += f"Primary Key: {', '.join(primary_key)}\n"
-        
-        return result
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return f"Error in get_dataset_info function: {str(e)}"
+    return await observe_get_dataset_info(dataset_id=dataset_id)
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -946,7 +450,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
             return f"No valid documents found for: '{query}'"
         
         print(f"Found {len(sorted_docs)} relevant documents", file=sys.stderr)
-        response = f"Found {len(sorted_docs)} relevant documents for: '{query}'\n\n"
+        response = f"Found {len(sorted_docs)} relevant documents for: '{query}'\\n\\n"
         
         # Read and format each full document
         for i, (source, score) in enumerate(sorted_docs, 1):
@@ -960,30 +464,30 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
                 title = first_chunk.get("title", os.path.basename(source).replace(".md", "").replace("_", " ").title())
                 source_filename = os.path.basename(source)
                 
-                response += f"### Document {i}: {title}\n"
-                response += f"Source: {source_filename}\n"
-                response += f"Relevance Score: {score:.2f}\n\n"
-                response += f"{document_content}\n\n\n"
-                response += "----------------------------------------\n\n"
+                response += f"### Document {i}: {title}\\n"
+                response += f"Source: {source_filename}\\n"
+                response += f"Relevance Score: {score:.2f}\\n\\n"
+                response += f"{document_content}\\n\\n\\n"
+                response += "----------------------------------------\\n\\n"
             except Exception as e:
                 print(f"Error reading document file {source}: {e}", file=sys.stderr)
                 # Use the chunk text as fallback if we can't read the file
-                chunks_text = "\n\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
+                chunks_text = "\\n\\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
                 title = os.path.basename(source).replace(".md", "").replace("_", " ").title()
                 
-                response += f"### Document {i}: {title}\n"
-                response += f"Source: {os.path.basename(source)}\n"
-                response += f"Relevance Score: {score:.2f}\n"
-                response += f"Note: Could not read the full document file. Showing available chunks.\n\n"
-                response += f"{chunks_text}\n\n\n"
-                response += "----------------------------------------\n\n"
+                response += f"### Document {i}: {title}\\n"
+                response += f"Source: {os.path.basename(source)}\\n"
+                response += f"Relevance Score: {score:.2f}\\n"
+                response += f"Note: Could not read the full document file. Showing available chunks.\\n\\n"
+                response += f"{chunks_text}\\n\\n\\n"
+                response += "----------------------------------------\\n\\n"
         
         return response
     except Exception as e:
         print(f"ERROR in get_relevant_docs: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_pinecone_db.py."
+        return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_docs_index.py."
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -1049,9 +553,9 @@ async def recommend_runbook(ctx: Context, query: str) -> str:
             title = first_match.get("title", os.path.basename(source).replace('.md', '').replace('_', ' ').title())
             source_filename = os.path.basename(source)
             
-            response = f"# {title}\n\n"
-            response += f"**Source:** {source_filename} (Relevance: {score:.2f})\n\n"
-            response += f"**Content:**\n\n{runbook_content}"
+            response = f"# {title}\\n\\n"
+            response += f"**Source:** {source_filename} (Relevance: {score:.2f})\\n\\n"
+            response += f"**Content:**\\n\\n{runbook_content}"
             
             return response
             
@@ -1083,7 +587,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
        create_monitor(
            name="Cart Errors Monitor", 
            description="Shopping cart errors are high", 
-           query="filter container = \"cartservice\" | filter body ~ \"error\" | timechart 5m, count()", 
+           query="filter container = \\"cartservice\\" | filter body ~ \\"error\\" | timechart 5m, count()", 
            dataset_id="42428942", 
            threshold=3.0, 
            window="5m"
@@ -1093,7 +597,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
        create_monitor(
            name="Cart Latency Monitor", 
            description="Shopping cart latency is high", 
-           query="filter service_name = \"cartservice\" | align 1m, frame(back: 5m), latency:tdigest_quantile(tdigest_combine(m_tdigest(\"span_duration_5m\")), 0.95) | timechart 5m, latency", 
+           query="filter service_name = \\"cartservice\\" | align 1m, frame(back: 5m), latency:tdigest_quantile(tdigest_combine(m_tdigest(\\"span_duration_5m\\")), 0.95) | timechart 5m, latency", 
            dataset_id="42160988", 
            threshold=500000000, 
            window="5m"
@@ -1103,7 +607,7 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
        create_monitor(
            name="CartService Error Rate Alert", 
            description="Alert when CartService error rate exceeds threshold by monitoring error counts", 
-           query="filter service_name = \"cartservice\" and metric = \"span_error_count_5m\" and value > 0 | timechart 5m, count()", 
+           query="filter service_name = \\"cartservice\\" and metric = \\"span_error_count_5m\\" and value > 0 | timechart 5m, count()", 
            dataset_id="42160988", 
            threshold=5.0, 
            window="10m",
@@ -1123,159 +627,16 @@ async def create_monitor(ctx: Context, name: str, description: str, query: str, 
     Returns:
         The created MonitorV2 object
     """
-    # Validate inputs
-    if not name or not name.strip():
-        return {"error": True, "message": "Monitor name cannot be empty"}
-    
-    if not query or not query.strip():
-        return {"error": True, "message": "Query cannot be empty"}
-    
-    if not dataset_id or not dataset_id.strip():
-        return {"error": True, "message": "Dataset ID cannot be empty"}
-    
-    # Format window and frequency with proper suffix if not present
-    if window and not any(window.endswith(suffix) for suffix in ['s', 'm', 'h', 'd']):
-        window = f"{window}s"  # Default to seconds
-    
-    if frequency and not any(frequency.endswith(suffix) for suffix in ['s', 'm', 'h', 'd']):
-        frequency = f"{frequency}s"  # Default to seconds
-    
-    # Convert window to nanoseconds for API
-    window_ns = convert_to_nanoseconds(window)
-    
-    # Create monitor data structure
-    # Add description as a comment in the query if it's not already there
-    if not query.strip().startswith("//"):
-        query_with_comment = f"// {description}\n{query}"
-    else:
-        query_with_comment = query
-    
-    monitor_data = {
-        "name": name,
-        "ruleKind": "Threshold",
-        "description": description,
-        "definition": {
-            "inputQuery": {
-                "outputStage": "output",
-                "stages": [
-                    {
-                        "id": "output",
-                        "input": {
-                            "inputName": "dataset",
-                            "datasetId": dataset_id
-                        },
-                        "pipeline": query_with_comment
-                    }
-                ]
-            },
-            "rules": [
-                {
-                    "level": "Error",
-                    "threshold": {
-                        "compareValues": [
-                            {
-                                "compareFn": "Greater",
-                                "compareValue": {
-                                    "float64": threshold
-                                }
-                            }
-                        ],
-                        "valueColumnName": "count",
-                        "aggregation": "AllOf"
-                    }
-                }
-            ],
-            "lookbackTime": str(window_ns),
-            "dataStabilizationDelay": "0",
-            "maxAlertsPerHour": "10",
-            "groupings": [],
-            "scheduling": {
-                "transform": {
-                    "freshnessGoal": frequency
-                }
-            }
-        }
-    }
-    
-    # Only add actions if provided and not empty
-    if actions:
-        action_rules = []
-        for action_id in actions:
-            action_rules.append({
-                "actionId": action_id,
-                "sendEndNotifications": False
-            })
-        monitor_data["actionRules"] = action_rules
-    
-    try:
-        # Make API request to create monitor
-        print(f"DEBUG: Sending monitor data: {json.dumps(monitor_data, indent=2)}", file=sys.stderr)
-        response = await make_observe_request(
-            method="POST",
-            endpoint="/v1/monitors",
-            json_data=monitor_data
-        )
-        
-        # Check if response is a tuple (response, status_code)
-        if isinstance(response, tuple) and len(response) == 2:
-            result, status_code = response
-            if status_code >= 400:
-                error_msg = f"Failed to create monitor: {result}"
-                print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": True, "message": error_msg}
-            print(f"DEBUG: Created monitor: {result}", file=sys.stderr)
-            return result
-        else:
-            # If response is not a tuple, assume it's the direct response
-            print(f"DEBUG: Created monitor: {response}", file=sys.stderr)
-            return response
-    
-    except Exception as e:
-        error_msg = str(e)
-        print(f"ERROR: Exception creating monitor: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        
-        # If there's a syntax error or other issue that suggests the LLM's query is invalid,
-        # provide helpful guidance
-        if "syntax error" in error_msg.lower() or "invalid" in error_msg.lower():
-            return {
-                "error": True, 
-                "message": f"Exception creating monitor: {error_msg}",
-                "suggestion": "The monitor creation failed. Check your OPAL query syntax and ensure it outputs a numeric value that can be compared against the threshold. Review the examples in the create_monitor documentation."
-            }
-        return {"error": True, "message": f"Exception creating monitor: {error_msg}"}
-
-
-def convert_to_nanoseconds(duration: str) -> int:
-    """
-    Convert a duration string (e.g., '5m', '1h') to nanoseconds.
-    
-    Args:
-        duration: Duration string with suffix (s, m, h, d)
-        
-    Returns:
-        Duration in nanoseconds as a string
-    """
-    # Extract the number and unit
-    match = re.match(r'(\d+)([smhd])', duration)
-    if not match:
-        raise ValueError(f"Invalid duration format: {duration}. Expected format like '5m', '1h', etc.")
-    
-    value, unit = match.groups()
-    value = int(value)
-    
-    # Convert to nanoseconds
-    if unit == 's':
-        return value * 1_000_000_000  # seconds to nanoseconds
-    elif unit == 'm':
-        return value * 60 * 1_000_000_000  # minutes to nanoseconds
-    elif unit == 'h':
-        return value * 60 * 60 * 1_000_000_000  # hours to nanoseconds
-    elif unit == 'd':
-        return value * 24 * 60 * 60 * 1_000_000_000  # days to nanoseconds
-    else:
-        raise ValueError(f"Unknown time unit: {unit}")
+    return await observe_create_monitor(
+        name=name,
+        description=description,
+        query=query,
+        dataset_id=dataset_id,
+        threshold=threshold,
+        window=window,
+        frequency=frequency,
+        actions=actions
+    )
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -1290,160 +651,10 @@ async def list_monitors(ctx: Context, name_exact: Optional[str] = None, name_sub
     Returns:
         An array of monitor objects
     """
-    # Prepare query parameters
-    params = {}
-    if name_exact is not None:
-        params["nameExact"] = name_exact  # Using camelCase for API
-    
-    if name_substring is not None:
-        params["nameSubstring"] = name_substring  # Using camelCase for API
-    
-    try:
-        # Make API request to list monitors
-        print(f"DEBUG: Listing monitors with params: {params}", file=sys.stderr)
-        response = await make_observe_request(
-            method="GET",
-            endpoint="/v1/monitors",
-            params=params
-        )
-        
-        # Check if response is a tuple (response, status_code)
-        if isinstance(response, tuple) and len(response) == 2:
-            result, status_code = response
-            if status_code >= 400:
-                error_msg = f"Failed to list monitors: {result}"
-                print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": True, "message": error_msg}
-            
-            # Process the successful response
-            print(f"DEBUG: Got monitors response: {result}", file=sys.stderr)
-            
-            # The API might return monitors in different formats
-            monitors = []
-            if isinstance(result, list):
-                monitors = result
-            elif isinstance(result, dict):
-                if "monitors" in result:
-                    monitors = result["monitors"]
-                elif "data" in result:
-                    monitors = result["data"]
-                elif "items" in result:
-                    monitors = result["items"]
-            
-            # Convert to terse format for better readability
-            terse_monitors = []
-            for monitor in monitors:
-                terse_monitor = {
-                    "id": monitor.get("id", "unknown"),
-                    "name": monitor.get("name", "unknown"),
-                    "ruleKind": monitor.get("ruleKind", "unknown"),
-                    "description": monitor.get("description", "")
-                }
-                
-                # Add additional useful info if available
-                if "definition" in monitor:
-                    definition = monitor["definition"]
-                    
-                    # Extract query from inputQuery if available
-                    if "inputQuery" in definition and "stages" in definition["inputQuery"]:
-                        stages = definition["inputQuery"]["stages"]
-                        if stages and "pipeline" in stages[0]:
-                            terse_monitor["query"] = stages[0]["pipeline"]
-                        if stages and "input" in stages[0] and "datasetId" in stages[0]["input"]:
-                            terse_monitor["datasetId"] = stages[0]["input"]["datasetId"]
-                    
-                    # Extract threshold info if available
-                    if "rules" in definition and definition["rules"]:
-                        rule = definition["rules"][0]  # Take the first rule
-                        if "threshold" in rule:
-                            threshold = rule["threshold"]
-                            terse_monitor["thresholdType"] = "threshold"
-                            if "compareValues" in threshold and isinstance(threshold["compareValues"], list) and threshold["compareValues"]:
-                                compare_value = threshold["compareValues"][0]
-                                if isinstance(compare_value, dict):
-                                    if "compareValue" in compare_value and "float64" in compare_value["compareValue"]:
-                                        terse_monitor["thresholdValue"] = compare_value["compareValue"]["float64"]
-                                    if "compareFn" in compare_value:
-                                        terse_monitor["thresholdOperator"] = compare_value["compareFn"]
-                            terse_monitor["thresholdColumn"] = threshold.get("valueColumnName", "")
-                    
-                    # Extract time settings
-                    if "lookbackTime" in definition:
-                        terse_monitor["lookbackTime"] = definition["lookbackTime"]
-                    if "scheduling" in definition and definition["scheduling"] and "transform" in definition["scheduling"]:
-                        terse_monitor["freshnessGoal"] = definition["scheduling"]["transform"].get("freshnessGoal", "")
-                
-                terse_monitors.append(terse_monitor)
-            
-            return terse_monitors
-        else:
-            # If response is not a tuple, assume it's the direct response
-            print(f"DEBUG: Got monitors direct response: {response}", file=sys.stderr)
-            
-            # Process the response similar to above
-            monitors = []
-            if isinstance(response, list):
-                monitors = response
-            elif isinstance(response, dict):
-                if "monitors" in response:
-                    monitors = response["monitors"]
-                elif "data" in response:
-                    monitors = response["data"]
-                elif "items" in response:
-                    monitors = response["items"]
-            
-            # Convert to terse format using the same logic as above
-            terse_monitors = []
-            for monitor in monitors:
-                terse_monitor = {
-                    "id": monitor.get("id", "unknown"),
-                    "name": monitor.get("name", "unknown"),
-                    "ruleKind": monitor.get("ruleKind", "unknown"),
-                    "description": monitor.get("description", "")
-                }
-                
-                # Add additional useful info if available
-                if "definition" in monitor:
-                    definition = monitor["definition"]
-                    
-                    # Extract query from inputQuery if available
-                    if "inputQuery" in definition and "stages" in definition["inputQuery"]:
-                        stages = definition["inputQuery"]["stages"]
-                        if stages and "pipeline" in stages[0]:
-                            terse_monitor["query"] = stages[0]["pipeline"]
-                        if stages and "input" in stages[0] and "datasetId" in stages[0]["input"]:
-                            terse_monitor["datasetId"] = stages[0]["input"]["datasetId"]
-                    
-                    # Extract threshold info if available
-                    if "rules" in definition and definition["rules"]:
-                        rule = definition["rules"][0]  # Take the first rule
-                        if "threshold" in rule:
-                            threshold = rule["threshold"]
-                            terse_monitor["thresholdType"] = "threshold"
-                            if "compareValues" in threshold and isinstance(threshold["compareValues"], list) and threshold["compareValues"]:
-                                compare_value = threshold["compareValues"][0]
-                                if isinstance(compare_value, dict):
-                                    if "compareValue" in compare_value and "float64" in compare_value["compareValue"]:
-                                        terse_monitor["thresholdValue"] = compare_value["compareValue"]["float64"]
-                                    if "compareFn" in compare_value:
-                                        terse_monitor["thresholdOperator"] = compare_value["compareFn"]
-                            terse_monitor["thresholdColumn"] = threshold.get("valueColumnName", "")
-                    
-                    # Extract time settings
-                    if "lookbackTime" in definition:
-                        terse_monitor["lookbackTime"] = definition["lookbackTime"]
-                    if "scheduling" in definition and definition["scheduling"] and "transform" in definition["scheduling"]:
-                        terse_monitor["freshnessGoal"] = definition["scheduling"]["transform"].get("freshnessGoal", "")
-                
-                terse_monitors.append(terse_monitor)
-            
-            return terse_monitors
-    
-    except Exception as e:
-        print(f"ERROR: Exception listing monitors: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return {"error": True, "message": f"Exception listing monitors: {str(e)}"}
+    return await observe_list_monitors(
+        name_exact=name_exact,
+        name_substring=name_substring
+    )
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -1457,36 +668,7 @@ async def get_monitor(ctx: Context, monitor_id: str) -> Union[Dict[str, Any], Er
     Returns:
         The monitor object with its complete structure
     """
-    if not monitor_id or not monitor_id.strip():
-        return {"error": True, "message": "Monitor ID cannot be empty"}
-    
-    try:
-        # Make API request to get the monitor
-        print(f"DEBUG: Getting monitor with ID: {monitor_id}", file=sys.stderr)
-        response = await make_observe_request(
-            method="GET",
-            endpoint=f"/v1/monitors/{monitor_id}"
-        )
-        
-        # Check if response is a tuple (response, status_code)
-        if isinstance(response, tuple) and len(response) == 2:
-            result, status_code = response
-            if status_code >= 400:
-                error_msg = f"Failed to get monitor: {result}"
-                print(f"ERROR: {error_msg}", file=sys.stderr)
-                return {"error": True, "message": error_msg}
-            print(f"DEBUG: Got monitor: {json.dumps(result, indent=2)}", file=sys.stderr)
-            return result
-        else:
-            # If response is not a tuple, assume it's the direct response
-            print(f"DEBUG: Got monitor direct response: {json.dumps(response, indent=2)}", file=sys.stderr)
-            return response
-    
-    except Exception as e:
-        print(f"ERROR: Exception getting monitor: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return {"error": True, "message": f"Exception getting monitor: {str(e)}"}
+    return await observe_get_monitor(monitor_id=monitor_id)
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
@@ -1503,98 +685,12 @@ async def export_worksheet(ctx: Context, worksheet_id: str, time_range: Optional
     Returns:
         The exported worksheet data as a string
     """
-    if not OBSERVE_CUSTOMER_ID or not OBSERVE_TOKEN:
-        return "Error: Observe API credentials not configured. Please set OBSERVE_CUSTOMER_ID and OBSERVE_TOKEN environment variables."
-    
-    if not worksheet_id or not worksheet_id.strip():
-        return "Error: Worksheet ID cannot be empty."
-    
-    try:
-        # Set up query parameters based on provided time options
-        params = {}
-        
-        # Handle time parameters according to API rules:
-        # Either two of startTime, endTime, and interval or interval alone can be specified
-        print(f"DEBUG: Time parameters received - start_time: {start_time}, end_time: {end_time}, time_range: {time_range}", file=sys.stderr)
-        
-        # Check if start_time or end_time are None or empty strings
-        if start_time in [None, "", "null"]:
-            start_time = None
-        if end_time in [None, "", "null"]:
-            end_time = None
-            
-        if start_time and end_time:
-            # Use explicit start and end times
-            params["startTime"] = start_time
-            params["endTime"] = end_time
-            print(f"DEBUG: Using explicit start ({start_time}) and end ({end_time}) times", file=sys.stderr)
-        elif start_time and time_range:
-            # Use start time and interval
-            params["startTime"] = start_time
-            params["interval"] = time_range
-            print(f"DEBUG: Using start time ({start_time}) and interval ({time_range})", file=sys.stderr)
-        elif end_time and time_range:
-            # Use end time and interval
-            params["endTime"] = end_time
-            params["interval"] = time_range
-            print(f"DEBUG: Using end time ({end_time}) and interval ({time_range})", file=sys.stderr)
-        elif time_range:
-            # Use just interval (relative to now)
-            params["interval"] = time_range
-            print(f"DEBUG: Using just interval ({time_range}) relative to now", file=sys.stderr)
-        else:
-            # Default fallback to 15m interval
-            params["interval"] = "15m"
-            print(f"DEBUG: Using default interval (15m) relative to now", file=sys.stderr)
-        
-        # Log the request details
-        print(f"DEBUG: Exporting worksheet {worksheet_id}", file=sys.stderr)
-        print(f"DEBUG: Time parameters: {params}", file=sys.stderr)
-        
-        # Execute the worksheet export
-        response = await make_observe_request(
-            method="POST",
-            endpoint=f"v1/meta/export/worksheet/{worksheet_id}",
-            params=params
-        )
-        
-        # Log response metadata
-        if isinstance(response, dict):
-            print(f"DEBUG: Response status: {response.get('status_code')}", file=sys.stderr)
-            if 'data' in response and isinstance(response['data'], str) and len(response['data']) > 0:
-                data_preview = response['data'].split('\n')[0:2]
-                print(f"DEBUG: First rows of data: {data_preview}", file=sys.stderr)
-        
-        # Handle error responses
-        if isinstance(response, dict) and response.get("error"):
-            return f"Error exporting worksheet: {response.get('message')}"
-        
-        # Handle paginated response (202 Accepted)
-        if isinstance(response, dict) and response.get("content_type") == "text/html":
-            headers = response.get("headers", {})
-            if isinstance(headers, dict) and "X-Observe-Cursor-Id" in headers:
-                cursor_id = headers["X-Observe-Cursor-Id"]
-                next_page = headers.get("X-Observe-Next-Page", "")
-                return f"Worksheet export accepted for asynchronous processing. Use cursor ID '{cursor_id}' to fetch results. Next page: {next_page}"
-        
-        # For successful responses, return the data
-        if isinstance(response, dict) and "data" in response:
-            data = response["data"]
-            # If the data is very large, provide a summary
-            if len(data) > 10000:  # Arbitrary threshold
-                lines = data.count('\n')
-                first_lines = '\n'.join(data.split('\n')[:50])
-                return f"Worksheet exported successfully with {lines} rows of data. First 50 lines:\n\n{first_lines}\n\n... (truncated, showing first 50 of {lines} lines)"
-            return data
-        
-        # Handle unexpected response format
-        return f"Unexpected response format. Please check the worksheet ID and try again. Response: {response}"
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return f"Error in export_worksheet function: {str(e)}"
-
+    return await observe_export_worksheet(
+        worksheet_id=worksheet_id,
+        time_range=time_range,
+        start_time=start_time,
+        end_time=end_time
+    )
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
@@ -1638,12 +734,12 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
                     print(f"Error decoding token in get_system_prompt: {e}", file=sys.stderr)
             
             # Print minimal debug info
-            print("\n=== AUTH TOKEN INFO IN get_system_prompt ===\n", file=sys.stderr)
+            print("\\n=== AUTH TOKEN INFO IN get_system_prompt ===\\n", file=sys.stderr)
             print(f"Client ID: {access_token.client_id}", file=sys.stderr)
             print(f"Scopes from AccessToken: {access_token.scopes}", file=sys.stderr)
             if jwt_payload and 'scopes' in jwt_payload:
                 print(f"Scopes from JWT: {jwt_payload['scopes']}", file=sys.stderr)
-            print("\n=== END AUTH TOKEN INFO ===\n", file=sys.stderr)
+            print("\\n=== END AUTH TOKEN INFO ===\\n", file=sys.stderr)
         except Exception as e:
             print(f"Note: Could not access token in get_system_prompt: {e}", file=sys.stderr)
             print("This is normal if no valid token was provided or if token validation failed", file=sys.stderr)
@@ -1672,4 +768,3 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
 
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
-
