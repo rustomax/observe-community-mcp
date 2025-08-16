@@ -346,7 +346,7 @@ sort desc(metric_avg) | limit 10
 **✅ Working Alternatives:**
 - Always filter metrics early: `filter metric = "specific_metric"`
 - Use boolean operators: `filter (condition1 or condition2) and condition3`
-- Include time bounds: `filter time > time - 2h` (when needed)
+- Time bounds handled via API parameters only (never in OPAL queries)
 - Check for non-zero values: `filter value > 0` for count/duration metrics
 - Use pivot for reshaping: `pivot metric, metric_sum, calls:"metric1", errors:"metric2", group_by(dimension)`
 

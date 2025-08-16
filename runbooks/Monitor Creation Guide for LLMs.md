@@ -93,7 +93,7 @@ filter [conditions]
 filter field = "value"
 filter field > 100
 filter field = "value1" or field = "value2"  // NOT: field in ("value1", "value2")
-filter timestamp > timestamp - 1h
+// NEVER: filter timestamp > timestamp - 1h  (time filtering via API parameters only)
 ```
 
 **Aggregations**:
@@ -118,12 +118,13 @@ make_col count:calculated_value  // Required for threshold monitors
 **Time Operations**:
 ```opal
 timechart 5m, aggregation  // Creates time buckets
-filter time > time - 4h    // Time filtering
+// NEVER: filter time > time - 4h  (time filtering via API parameters only)
 ```
 
 ### ❌ Avoid These Antipatterns
 
 **DO NOT USE**:
+- **Time filtering in OPAL**: `filter timestamp >`, `filter time >` → Use API parameters instead
 - SQL syntax: `SELECT`, `GROUP BY`, `HAVING`
 - `filter field in ("val1", "val2")` → Use: `filter field = "val1" or field = "val2"`
 - `sort desc column` → Use: `topk n, column`
@@ -155,13 +156,13 @@ filter time > time - 4h    // Time filtering
 ```
 1. list_datasets(match="service", interface="metric") // Find relevant datasets
 2. get_dataset_info(dataset_id="...") // Check schema and field names
-3. execute_opal_query(query="filter time > time - 1h | limit 5") // Verify data exists
+3. execute_opal_query(query="limit 5") // Verify data exists (time via API params)
 ```
 
 ### Phase 2: Query Development (5-10 minutes)
 ```
 4. Start simple: execute_opal_query(query="filter service_name = 'target' | limit 10")
-5. Add time bounds: execute_opal_query(query="filter time > time - 1h | filter service_name = 'target' | limit 10")
+5. Add filters: execute_opal_query(query="filter service_name = 'target' | limit 10")
 6. Add aggregations: execute_opal_query(query="filter... | timechart 5m, count()")
 7. Build final query with "count" column for threshold monitors
 ```
@@ -259,7 +260,7 @@ Frequency: "5m"
 ### Common Query Testing Pattern:
 ```opal
 // Test 1: Basic data access
-filter time > time - 1h | limit 5
+limit 5  // Time range via API parameters
 
 // Test 2: Add service filter  
 filter time > time - 1h | filter service_name = "target" | limit 5

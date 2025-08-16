@@ -98,8 +98,8 @@ Present both the raw data (for user export/analysis) and AI insights (for immedi
 
 #### Phase 2: Data Validation (1-2 minutes)
 ```opal
-# Verify data freshness and availability
-filter @timestamp > @timestamp - 1h | limit 5
+# Verify data availability (time filtering via API parameters)
+limit 5
 
 # Check field availability in target datasets
 filter service_name exists | limit 3
@@ -144,8 +144,9 @@ Quantify business impact and provide actionable next steps.
 
 ### Syntax Patterns That Work
 ```opal
-# Time filtering (always start with this)
-filter timestamp > timestamp - 2h
+# IMPORTANT: NO TIME FILTERING IN OPAL
+# Time ranges are handled via API parameters (time_range, start_time, end_time)
+# Never use: filter timestamp > timestamp - 2h
 
 # Service-specific analysis
 filter service_name = "checkout-service"
@@ -175,9 +176,11 @@ extract_regex body, /(?P<error_type>\w+Exception)/
 ```
 
 ### Critical Mistakes to Avoid
+- **Time Filtering in OPAL**: NEVER use `filter timestamp >`, `filter time >`, or similar. Time is handled via API parameters only.
 - **SQL Syntax**: Never use `SELECT`, `GROUP BY`, `HAVING`, `JOIN`
 - **Invalid Verbs**: Don't use `group_by` as standalone verb, or `top` verb
 - **Invalid Sort Syntax**: Don't use `sort -field` notation (use `sort desc(field)` instead)
+- **Invalid Case Function**: Use `if()` not `case()` - syntax is `if(condition, true_value, false_value)`
 - **Nested Aggregations in Timechart**: Don't use `rate(count())` inside `timechart`
 - **Wrong Field References**: Use `timestamp` not `@timestamp`, `error` not `level`, etc.
 - **Unvalidated Field Names**: Always check dataset schema first
@@ -186,7 +189,7 @@ extract_regex body, /(?P<error_type>\w+Exception)/
 
 ### Query Development Process
 1. **Schema Check**: `get_dataset_info()` to understand available fields
-2. **Simple Filter**: Start with time bounds and basic filters
+2. **Simple Filter**: Start with basic filters (no time filtering in OPAL)
 3. **Data Verification**: `limit 5` to see actual data structure  
 4. **Incremental Building**: Add one operation at a time
 5. **Validation**: Test each addition before proceeding

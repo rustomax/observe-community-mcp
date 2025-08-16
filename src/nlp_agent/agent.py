@@ -209,11 +209,21 @@ CRITICAL SYNTAX RULES:
 - DO NOT use made-up verbs like: make_set, find, pick, etc.
 - ONLY use verbs that appear in the documentation above
 
-CRITICAL TIME FILTERING RULES:
-- DO NOT include time filtering in the OPAL query (no "filter start_time >", "frame back:", etc.)
-- Time range ({time_range}) is handled automatically by the API
-- Your OPAL query should focus on data operations only, not time filtering
-- Examples of FORBIDDEN time syntax: "filter start_time >", "frame back:", "@now", "timestamp >", etc.
+CRITICAL OPAL SYNTAX RULES:
+1. TIME FILTERING: NEVER use filter timestamp >, filter time >, filter start_time >, etc.
+   - Time range ({time_range}) is handled automatically by the API
+   - Examples of FORBIDDEN: "filter start_time >", "frame back:", "@now", "timestamp >", etc.
+
+2. CONDITIONAL LOGIC: Use if() function, NOT case()
+   - Correct: if(condition, true_value, false_value)
+   - WRONG: case(condition, true_value, false_value)
+
+3. SORTING: Use sort desc(field) or sort asc(field)
+   - WRONG: sort -field or sort desc field
+
+4. COLUMN CREATION: Use make_col column:expression (colon, not equals)
+   - Correct: make_col category:if(value > 100, "high", "low")
+   - WRONG: make_col category = if(value > 100, "high", "low")
 
 TASK: Generate a single, working OPAL query using ONLY the verbs from the documentation.
 Focus on data analysis, aggregation, and filtering by field values - NOT time filtering.
@@ -337,9 +347,9 @@ OPAL Query:"""
 4. Verify the time range has data available
 
 **Working Alternative:** You can try a basic query like:
-- `filter timestamp > timestamp - 1h | limit 10` (to see recent data)
+- `limit 10` (to see recent data)
 - `statsby count:count()` (to count all records)
-- `distinct(timestamp) | limit 5` (to see time ranges with data)"""
+- `limit 5` (to see available data)"""
         
         # Parse and format successful results
         lines = query_result.split('\n')
@@ -529,14 +539,15 @@ SCHEMA INFO:
 RECOVERY GUIDANCE:
 {recovery_docs}
 
-STRATEGY: Create the most basic query possible - just filter by time and maybe count records. Don't try to be fancy.
+STRATEGY: Create the most basic query possible - just count records or show basic data. Don't try to be fancy.
 
 CRITICAL RULES:
 - Use only basic verbs: filter, statsby, timechart, distinct, sort, limit
-- Start with simple time filter: filter timestamp > timestamp - 1h
+- NEVER use time filtering in OPAL (time is handled by API parameters)
 - If aggregating, use: statsby count:count()
 - If grouping, use: group_by(field_name)
 - NEVER use made-up verbs
+- Keep it simple: limit 10 or statsby count:count()
 
 Generate the simplest working OPAL query:"""
         
@@ -609,17 +620,25 @@ Generate a corrected OPAL query:"""
             fixed_query = fixed_query[1:].strip()
         
         print(f"[RELIABILITY] Strategy generated: {fixed_query[:100]}...", file=sys.stderr)
+        
+        # Apply validation and fixes to recovery query too
+        validation_issues = validate_query_syntax(fixed_query, schema_info)
+        if validation_issues:
+            print(f"[RELIABILITY] Recovery query has issues: {validation_issues[:100]}...", file=sys.stderr)
+            fixed_query = fix_obvious_issues(fixed_query, validation_issues)
+            print(f"[RELIABILITY] Auto-fixed recovery query: {fixed_query[:100]}...", file=sys.stderr)
+        
         return fixed_query
         
     except Exception as e:
         print(f"[RELIABILITY] Recovery strategy failed: {e}", file=sys.stderr)
-        # Fallback to basic query
+        # Fallback to basic query (no time filtering)
         if "count" in request.lower() or "how many" in request.lower():
             return "statsby count:count()"
         elif "distinct" in request.lower() or "unique" in request.lower():
-            return "distinct(timestamp) | limit 10"  # Safe fallback
+            return "limit 10"  # Safe fallback - just show data
         else:
-            return "filter timestamp > timestamp - 1h | limit 5"
+            return "limit 5"  # Safe fallback - just show data
 
 
 async def execute_with_retry(query: str, dataset_id: str, time_range: str, 
@@ -681,6 +700,20 @@ def validate_query_syntax(query: str, schema_info: str) -> list:
     for pattern in time_patterns:
         if re.search(pattern, query_lower):
             issues.append(f"Time filtering detected '{pattern}' - time range is handled by API parameters, not OPAL query")
+    
+    # Check for case() function usage (should be if())
+    if 'case(' in query_lower:
+        issues.append("Use if() function instead of case() - syntax: if(condition, true_value, false_value)")
+    
+    # Check for invalid sort syntax
+    if re.search(r'sort\s+-', query_lower):
+        issues.append("Invalid sort syntax with dash - use 'sort desc(field)' or 'sort asc(field)'")
+    if re.search(r'sort\s+\w+\s+(desc|asc)', query_lower):
+        issues.append("Invalid sort syntax - use 'sort desc(field)' not 'sort field desc'")
+    
+    # Check for make_col assignment operator (should use : not =)
+    if re.search(r'make_col\s+\w+\s*=', query_lower):
+        issues.append("Invalid make_col syntax - use 'make_col column:expression' not 'make_col column = expression'")
     
     # Check for made-up verbs (common hallucinations)
     hallucinated_verbs = ['make_set', 'find', 'pick', 'choose', 'get', 'show']
@@ -750,6 +783,26 @@ def fix_obvious_issues(query: str, issues: list) -> str:
             fixed_query = re.sub(r'\|\s*\|', '|', fixed_query)
             fixed_query = re.sub(r'^\s*\|\s*', '', fixed_query)  # Remove leading pipe
             fixed_query = re.sub(r'\s*\|\s*$', '', fixed_query)  # Remove trailing pipe
+        
+        elif "Use if() function instead of case()" in issue:
+            # Convert case() to if() function
+            import re
+            # Pattern to match case(condition, true_value, false_value) and similar
+            fixed_query = re.sub(r'\bcase\s*\(', 'if(', fixed_query, flags=re.IGNORECASE)
+        
+        elif "Invalid sort syntax" in issue:
+            # Fix sort syntax issues
+            import re
+            # Fix sort -field to sort desc(field)
+            fixed_query = re.sub(r'sort\s+-(\w+)', r'sort desc(\1)', fixed_query, flags=re.IGNORECASE)
+            # Fix sort field desc to sort desc(field)
+            fixed_query = re.sub(r'sort\s+(\w+)\s+(desc|asc)', r'sort \2(\1)', fixed_query, flags=re.IGNORECASE)
+        
+        elif "Invalid make_col syntax" in issue:
+            # Fix make_col assignment operator (= to :)
+            import re
+            # Fix make_col column = expression to make_col column:expression
+            fixed_query = re.sub(r'make_col\s+(\w+)\s*=\s*', r'make_col \1:', fixed_query, flags=re.IGNORECASE)
         
         elif "Invalid verb" in issue:
             # Replace common hallucinated verbs
