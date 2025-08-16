@@ -13,6 +13,9 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from .state import OPALAgentState
 from .tools import OPAL_TOOLS, set_mcp_context
+import asyncio
+import time
+import re
 
 
 def create_opal_agent():
@@ -239,6 +242,14 @@ OPAL Query:"""
             opal_query = opal_query[1:].strip()
         print(f"[SIMPLIFIED] Generated query: {opal_query}", file=sys.stderr)
         
+        # Step 3.5: Pre-validation to catch obvious issues
+        validation_issues = validate_query_syntax(opal_query, schema_info)
+        if validation_issues:
+            print(f"[RELIABILITY] Pre-validation found issues: {validation_issues}", file=sys.stderr)
+            # Try to fix obvious issues before execution
+            opal_query = fix_obvious_issues(opal_query, validation_issues)
+            print(f"[RELIABILITY] Pre-validation corrected query: {opal_query}", file=sys.stderr)
+        
         # Step 4: Execute the query
         print(f"[SIMPLIFIED] Step 4: Executing query", file=sys.stderr)
         query_result = await observe_execute_opal_query(
@@ -250,82 +261,75 @@ OPAL Query:"""
             row_count=50  # Limit for efficiency
         )
         
-        # Step 5: If query failed, try to fix it  
-        # Check for actual OPAL errors, not CSV data containing the word "error"
-        is_error = (
-            query_result.startswith("Error") or 
-            "unknown verb" in query_result.lower() or
-            "syntax error" in query_result.lower() or
-            "400" in query_result or
-            "500" in query_result or
-            ("error" in query_result.lower() and not query_result.startswith('"'))
-        )
+        # Step 5: Multi-tier error recovery with progressive strategies
+        retry_count = 0
+        max_retries = 3
+        recovery_strategies = []
         
-        if is_error:
-            print(f"[SIMPLIFIED] Query failed, trying to fix...", file=sys.stderr)
+        while retry_count < max_retries:
+            # Enhanced error classification
+            error_type, is_error = classify_error(query_result)
             
-            # Get more specific documentation for error fix
+            if not is_error:
+                break  # Success, exit retry loop
+                
+            retry_count += 1
+            print(f"[RELIABILITY] Attempt {retry_count}/{max_retries}: {error_type} detected", file=sys.stderr)
+            
+            # Progressive recovery strategies based on error type
+            recovery_strategy = select_recovery_strategy(error_type, retry_count, schema_info, request)
+            recovery_strategies.append(f"Attempt {retry_count}: {recovery_strategy['name']}")
+            
             try:
-                from src.pinecone.search import search_docs
-                error_query = f"OPAL error fix: {query_result[:200]}"
-                print(f"[SIMPLIFIED] Searching for error fix docs: {error_query}", file=sys.stderr)
+                fixed_query = await apply_recovery_strategy(
+                    recovery_strategy, opal_query, query_result, error_type, 
+                    model, schema_info, request, dataset_id
+                )
                 
-                fix_chunk_results = search_docs(error_query, n_results=5)
-                
-                if fix_chunk_results and len(fix_chunk_results) > 0:
-                    fix_docs = "Error fix documentation:\\n\\n"
-                    for i, result in enumerate(fix_chunk_results[:3], 1):
-                        text = result.get("text", "")
-                        fix_docs += f"{i}. {text[:300]}{'...' if len(text) > 300 else ''}\\n\\n"
+                if fixed_query and fixed_query != opal_query:
+                    print(f"[RELIABILITY] Trying strategy '{recovery_strategy['name']}': {fixed_query[:100]}...", file=sys.stderr)
+                    
+                    # Execute with retry logic for transient failures
+                    query_result = await execute_with_retry(
+                        fixed_query, dataset_id, time_range, start_time, end_time
+                    )
+                    opal_query = fixed_query
                 else:
-                    fix_docs = "No specific error fix documentation found"
+                    print(f"[RELIABILITY] Strategy '{recovery_strategy['name']}' did not generate a different query", file=sys.stderr)
+                    break
+                    
             except Exception as e:
-                print(f"[SIMPLIFIED] Error getting fix docs: {e}", file=sys.stderr)
-                fix_docs = "Error fix documentation not available"
-            
-            fix_prompt = f"""The OPAL query failed. Generate a corrected version.
-
-FAILED QUERY: {opal_query}
-ERROR: {query_result}
-
-FIX DOCUMENTATION:
-{fix_docs}
-
-Generate a corrected OPAL query (query only, no explanation):"""
-            
-            fix_response = model.invoke([HumanMessage(content=fix_prompt)])
-            fixed_query = fix_response.content.strip()
-            
-            if "```" in fixed_query:
-                fixed_query = fixed_query.split("```")[1]
-                if fixed_query.startswith("opal"):
-                    fixed_query = fixed_query[4:]
-            fixed_query = fixed_query.strip()
-            
-            print(f"[SIMPLIFIED] Trying fixed query: {fixed_query}", file=sys.stderr)
-            query_result = await observe_execute_opal_query(
-                query=fixed_query,
-                dataset_id=dataset_id,
-                time_range=time_range, 
-                start_time=start_time,
-                end_time=end_time,
-                row_count=50
-            )
-            opal_query = fixed_query
+                print(f"[RELIABILITY] Strategy '{recovery_strategy['name']}' failed: {e}", file=sys.stderr)
+                if retry_count == max_retries:
+                    query_result = f"Error: All recovery strategies failed. Last error: {str(e)}"
+                continue
         
-        # Step 6: Analyze results and return
-        # Use same error detection logic as above
-        final_is_error = (
-            query_result.startswith("Error") or 
-            "unknown verb" in query_result.lower() or
-            "syntax error" in query_result.lower() or
-            "400" in query_result or
-            "500" in query_result or
-            ("error" in query_result.lower() and not query_result.startswith('"'))
-        )
+        # Step 6: Analyze results and return with recovery information
+        final_error_type, final_is_error = classify_error(query_result)
         
         if final_is_error:
-            return f"**Query Failed**\n\nOPAL Query: `{opal_query}`\n\nError: {query_result}\n\nSuggestion: Try using the direct OPAL tools (get_dataset_info, execute_opal_query) for more control."
+            recovery_summary = "\\n".join(recovery_strategies) if recovery_strategies else "No recovery strategies attempted"
+            return f"""**Query Failed After {retry_count} Recovery Attempts**
+
+**Final OPAL Query:** `{opal_query}`
+
+**Final Error:** {query_result}
+
+**Recovery Strategies Tried:**
+{recovery_summary}
+
+**Diagnosis:** {final_error_type}
+
+**Suggestions:**
+1. Try using direct OPAL tools (get_dataset_info, execute_opal_query) for more control
+2. Simplify your request and try again
+3. Check if the dataset contains the fields you're looking for
+4. Verify the time range has data available
+
+**Working Alternative:** You can try a basic query like:
+- `filter timestamp > timestamp - 1h | limit 10` (to see recent data)
+- `statsby count:count()` (to count all records)
+- `distinct(timestamp) | limit 5` (to see time ranges with data)"""
         
         # Parse and format successful results
         lines = query_result.split('\n')
@@ -351,3 +355,391 @@ Generate a corrected OPAL query (query only, no explanation):"""
         import traceback
         traceback.print_exc()
         return f"Error in simplified NLP query: {str(e)}"
+
+
+def classify_error(query_result: str) -> tuple[str, bool]:
+    """
+    Enhanced error classification for targeted recovery strategies.
+    Returns (error_type, is_error) tuple.
+    """
+    if not query_result:
+        return ("empty_result", True)
+    
+    query_lower = query_result.lower()
+    
+    # Not an error - successful CSV data
+    if query_result.startswith('"') and ',' in query_result:
+        return ("success", False)
+    
+    # HTTP errors
+    if "400" in query_result or "bad request" in query_lower:
+        return ("http_400", True)
+    if "500" in query_result or "internal server error" in query_lower:
+        return ("http_500", True)
+    if "timeout" in query_lower or "timed out" in query_lower:
+        return ("timeout", True)
+    
+    # OPAL syntax errors
+    if "unknown verb" in query_lower:
+        return ("unknown_verb", True)
+    if "syntax error" in query_lower or "parse error" in query_lower:
+        return ("syntax_error", True)
+    if "expected" in query_lower and ("," in query_lower or "(" in query_lower):
+        return ("syntax_expected", True)
+    if "need to pick" in query_lower or "must select" in query_lower:
+        return ("missing_column", True)
+    
+    # Field/schema errors
+    if "unknown field" in query_lower or "field not found" in query_lower:
+        return ("unknown_field", True)
+    if "type mismatch" in query_lower or "invalid type" in query_lower:
+        return ("type_error", True)
+    
+    # Dataset/permission errors
+    if "dataset not found" in query_lower or "access denied" in query_lower:
+        return ("access_error", True)
+    
+    # Generic error patterns
+    if query_result.startswith("Error") or "error" in query_lower:
+        return ("generic_error", True)
+    
+    return ("success", False)
+
+
+def select_recovery_strategy(error_type: str, retry_count: int, schema_info: str, request: str) -> dict:
+    """
+    Select the best recovery strategy based on error type and retry attempt.
+    Returns strategy configuration dict.
+    """
+    # Strategy progression: specific -> general -> fallback
+    strategies = {
+        "unknown_verb": [
+            {"name": "verb_replacement", "approach": "specific_docs", "search_terms": "OPAL verbs filter statsby timechart distinct"},
+            {"name": "basic_syntax", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax examples"},
+            {"name": "simple_fallback", "approach": "minimal_query", "search_terms": "OPAL simple queries"}
+        ],
+        "syntax_error": [
+            {"name": "syntax_correction", "approach": "specific_docs", "search_terms": "OPAL syntax comma parentheses"},
+            {"name": "structure_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL query structure"},
+            {"name": "basic_filter", "approach": "minimal_query", "search_terms": "OPAL filter examples"}
+        ],
+        "syntax_expected": [
+            {"name": "punctuation_fix", "approach": "specific_docs", "search_terms": "OPAL syntax comma expected parentheses"},
+            {"name": "structure_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL query structure"},
+            {"name": "simple_filter", "approach": "minimal_query", "search_terms": "OPAL basic filter"}
+        ],
+        "missing_column": [
+            {"name": "schema_aware_rebuild", "approach": "schema_focused", "search_terms": "OPAL column selection timechart"},
+            {"name": "field_inspection", "approach": "fundamental_rebuild", "search_terms": "OPAL field selection"},
+            {"name": "basic_count", "approach": "minimal_query", "search_terms": "OPAL count queries"}
+        ],
+        "unknown_field": [
+            {"name": "field_mapping", "approach": "schema_focused", "search_terms": "OPAL field names"},
+            {"name": "schema_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic queries"},
+            {"name": "simple_count", "approach": "minimal_query", "search_terms": "OPAL simple"}
+        ],
+        "type_error": [
+            {"name": "type_correction", "approach": "specific_docs", "search_terms": "OPAL data types aggregation"},
+            {"name": "aggregation_fix", "approach": "fundamental_rebuild", "search_terms": "OPAL aggregation functions"},
+            {"name": "basic_filter", "approach": "minimal_query", "search_terms": "OPAL filter"}
+        ],
+        "timeout": [
+            {"name": "query_optimization", "approach": "specific_docs", "search_terms": "OPAL performance limit"},
+            {"name": "simpler_query", "approach": "fundamental_rebuild", "search_terms": "OPAL simple fast"},
+            {"name": "basic_limit", "approach": "minimal_query", "search_terms": "OPAL limit"}
+        ],
+        "http_400": [
+            {"name": "request_correction", "approach": "specific_docs", "search_terms": "OPAL valid queries"},
+            {"name": "syntax_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax"},
+            {"name": "minimal_query", "approach": "minimal_query", "search_terms": "OPAL simple"}
+        ],
+        "generic_error": [
+            {"name": "general_fix", "approach": "specific_docs", "search_terms": "OPAL common errors"},
+            {"name": "basic_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic examples"},
+            {"name": "fallback_simple", "approach": "minimal_query", "search_terms": "OPAL"}
+        ]
+    }
+    
+    # Get strategy list for error type, fallback to generic_error
+    strategy_list = strategies.get(error_type, strategies["generic_error"])
+    
+    # Select strategy based on retry count (0-indexed)
+    strategy_index = min(retry_count - 1, len(strategy_list) - 1)
+    return strategy_list[strategy_index]
+
+
+async def apply_recovery_strategy(strategy: dict, failed_query: str, error_result: str, 
+                                error_type: str, model, schema_info: str, request: str, 
+                                dataset_id: str) -> str:
+    """
+    Apply the selected recovery strategy to generate a corrected query.
+    """
+    approach = strategy["approach"]
+    search_terms = strategy["search_terms"]
+    
+    print(f"[RELIABILITY] Applying {approach} strategy with search: {search_terms}", file=sys.stderr)
+    
+    try:
+        # Get strategy-specific documentation
+        from src.pinecone.search import search_docs
+        
+        if approach == "specific_docs":
+            # Targeted documentation search
+            doc_results = search_docs(f"{search_terms} {error_type}", n_results=8)
+        elif approach == "schema_focused":
+            # Schema-aware documentation search
+            doc_results = search_docs(f"{search_terms} schema fields", n_results=10)
+        elif approach == "fundamental_rebuild":
+            # Basic OPAL documentation
+            doc_results = search_docs(search_terms, n_results=12)
+        else:  # minimal_query
+            # Simplest possible queries
+            doc_results = search_docs(f"{search_terms} basic simple", n_results=5)
+        
+        # Format documentation
+        if doc_results and len(doc_results) > 0:
+            recovery_docs = f"Recovery documentation for {strategy['name']}:\\n\\n"
+            for i, result in enumerate(doc_results[:5], 1):
+                text = result.get("text", "")
+                recovery_docs += f"{i}. {text[:400]}{'...' if len(text) > 400 else ''}\\n\\n"
+        else:
+            recovery_docs = "No specific recovery documentation found - using basic OPAL guidance"
+        
+        # Create strategy-specific prompt
+        if approach == "minimal_query":
+            recovery_prompt = f"""The query failed with {error_type}. Generate the SIMPLEST possible OPAL query to get ANY data from this request.
+
+USER REQUEST: {request}
+FAILED QUERY: {failed_query}
+ERROR: {error_result[:200]}
+
+SCHEMA INFO:
+{schema_info[:500]}
+
+RECOVERY GUIDANCE:
+{recovery_docs}
+
+STRATEGY: Create the most basic query possible - just filter by time and maybe count records. Don't try to be fancy.
+
+CRITICAL RULES:
+- Use only basic verbs: filter, statsby, timechart, distinct, sort, limit
+- Start with simple time filter: filter timestamp > timestamp - 1h
+- If aggregating, use: statsby count:count()
+- If grouping, use: group_by(field_name)
+- NEVER use made-up verbs
+
+Generate the simplest working OPAL query:"""
+        
+        elif approach == "schema_focused":
+            recovery_prompt = f"""The query failed with {error_type}. Rebuild using ONLY fields from the schema.
+
+USER REQUEST: {request}
+FAILED QUERY: {failed_query}
+ERROR: {error_result[:200]}
+
+AVAILABLE SCHEMA:
+{schema_info}
+
+RECOVERY GUIDANCE:
+{recovery_docs}
+
+STRATEGY: Carefully map the user request to available schema fields. Use exact field names.
+
+CRITICAL RULES:
+- ONLY use field names that appear in the schema above
+- Check field types before using in aggregations
+- Use proper OPAL syntax from documentation
+- Start simple and build up
+
+Generate a corrected OPAL query using schema fields:"""
+        
+        else:  # specific_docs or fundamental_rebuild
+            recovery_prompt = f"""The query failed with {error_type}. Generate a corrected version using proper OPAL syntax.
+
+USER REQUEST: {request}
+FAILED QUERY: {failed_query}
+ERROR: {error_result[:200]}
+
+SCHEMA INFO:
+{schema_info[:500]}
+
+RECOVERY GUIDANCE:
+{recovery_docs}
+
+STRATEGY: Use the documentation above to fix the specific error while maintaining the user's intent.
+
+CRITICAL RULES:
+- Follow EXACT syntax from the documentation
+- Use only verbs shown in the recovery guidance
+- Respect field names from schema
+- Fix the specific error mentioned
+
+Generate a corrected OPAL query:"""
+        
+        # Generate recovery query
+        recovery_response = model.invoke([HumanMessage(content=recovery_prompt)])
+        fixed_query = recovery_response.content.strip()
+        
+        # Clean the response
+        if "```" in fixed_query:
+            fixed_query = fixed_query.split("```")[1]
+            if fixed_query.startswith("opal"):
+                fixed_query = fixed_query[4:]
+        
+        # Remove explanatory text - keep only the query
+        lines = fixed_query.split('\\n')
+        cleaned_lines = []
+        for line in lines:
+            line = line.strip()
+            if line and not line.lower().startswith(('the ', 'this ', 'here ', 'query:')):
+                cleaned_lines.append(line)
+        
+        fixed_query = '\\n'.join(cleaned_lines).strip()
+        if fixed_query.startswith('|'):
+            fixed_query = fixed_query[1:].strip()
+        
+        print(f"[RELIABILITY] Strategy generated: {fixed_query[:100]}...", file=sys.stderr)
+        return fixed_query
+        
+    except Exception as e:
+        print(f"[RELIABILITY] Recovery strategy failed: {e}", file=sys.stderr)
+        # Fallback to basic query
+        if "count" in request.lower() or "how many" in request.lower():
+            return "statsby count:count()"
+        elif "distinct" in request.lower() or "unique" in request.lower():
+            return "distinct(timestamp) | limit 10"  # Safe fallback
+        else:
+            return "filter timestamp > timestamp - 1h | limit 5"
+
+
+async def execute_with_retry(query: str, dataset_id: str, time_range: str, 
+                           start_time: str, end_time: str, max_retries: int = 2) -> str:
+    """
+    Execute query with exponential backoff for transient failures.
+    """
+    from src.observe import execute_opal_query as observe_execute_opal_query
+    
+    for attempt in range(max_retries + 1):
+        try:
+            if attempt > 0:
+                wait_time = min(2 ** attempt, 5)  # Cap at 5 seconds
+                print(f"[RELIABILITY] Retrying query execution in {wait_time}s (attempt {attempt + 1})", file=sys.stderr)
+                await asyncio.sleep(wait_time)
+            
+            result = await observe_execute_opal_query(
+                query=query,
+                dataset_id=dataset_id,
+                time_range=time_range,
+                start_time=start_time,
+                end_time=end_time,
+                row_count=50
+            )
+            
+            return result
+            
+        except Exception as e:
+            if attempt == max_retries:
+                return f"Error: Query execution failed after {max_retries + 1} attempts: {str(e)}"
+            print(f"[RELIABILITY] Execution attempt {attempt + 1} failed: {e}", file=sys.stderr)
+    
+    return "Error: Maximum retries exceeded"
+
+
+def validate_query_syntax(query: str, schema_info: str) -> list:
+    """
+    Pre-validate OPAL query syntax to catch obvious issues before execution.
+    Returns list of validation issues found.
+    """
+    issues = []
+    query_lower = query.lower()
+    
+    # Check for SQL syntax leakage
+    sql_keywords = ['select', 'from', 'where', 'group by', 'order by', 'having', 'join']
+    for keyword in sql_keywords:
+        if keyword in query_lower:
+            issues.append(f"SQL keyword '{keyword}' found - use OPAL syntax instead")
+    
+    # Check for invalid OPAL patterns
+    if 'filter options(' in query_lower:
+        issues.append("Invalid 'filter options()' - options should be used with timechart/statsby")
+    
+    if 'dataset(' in query_lower:
+        issues.append("Invalid 'dataset()' function - dataset is already specified")
+    
+    # Check for made-up verbs (common hallucinations)
+    hallucinated_verbs = ['make_set', 'find', 'pick', 'choose', 'get', 'show']
+    for verb in hallucinated_verbs:
+        if f'{verb}(' in query_lower:
+            issues.append(f"Invalid verb '{verb}()' - not a valid OPAL verb")
+    
+    # Check for basic syntax issues
+    if query.count('(') != query.count(')'):
+        issues.append("Mismatched parentheses")
+    
+    # Check for multiple pipes without verbs
+    if '||' in query:
+        issues.append("Double pipe '||' found - use single pipe '|' between OPAL verbs")
+    
+    return issues
+
+
+def fix_obvious_issues(query: str, issues: list) -> str:
+    """
+    Fix obvious syntax issues in OPAL query.
+    """
+    fixed_query = query
+    
+    for issue in issues:
+        if "SQL keyword" in issue:
+            # Remove common SQL keywords
+            sql_replacements = {
+                'select ': '',
+                'from ': '',
+                'where ': 'filter ',
+                'group by': 'group_by',
+                'order by': 'sort',
+                'having ': '',
+                'join ': ''
+            }
+            for sql_term, opal_term in sql_replacements.items():
+                fixed_query = fixed_query.replace(sql_term, opal_term)
+                fixed_query = fixed_query.replace(sql_term.upper(), opal_term)
+        
+        elif "filter options()" in issue:
+            # Move options to appropriate verb
+            fixed_query = fixed_query.replace('filter options(', 'filter ')
+            if 'timechart' in fixed_query:
+                fixed_query = fixed_query.replace('timechart', 'timechart options(empty_bins:true)')
+        
+        elif "dataset()" in issue:
+            # Remove dataset() function calls
+            import re
+            fixed_query = re.sub(r'dataset\([^)]*\)\s*\|\s*', '', fixed_query)
+        
+        elif "Invalid verb" in issue:
+            # Replace common hallucinated verbs
+            verb_replacements = {
+                'make_set(': 'distinct(',
+                'find(': 'filter ',
+                'pick(': 'filter ',
+                'choose(': 'filter ',
+                'get(': 'filter ',
+                'show(': 'filter '
+            }
+            for bad_verb, good_verb in verb_replacements.items():
+                fixed_query = fixed_query.replace(bad_verb, good_verb)
+        
+        elif "Double pipe" in issue:
+            fixed_query = fixed_query.replace('||', '|')
+        
+        elif "Mismatched parentheses" in issue:
+            # Try to balance parentheses (basic attempt)
+            open_count = fixed_query.count('(')
+            close_count = fixed_query.count(')')
+            if open_count > close_count:
+                fixed_query += ')' * (open_count - close_count)
+            elif close_count > open_count:
+                fixed_query = fixed_query.rstrip(')')
+                fixed_query += ')' * open_count
+    
+    return fixed_query.strip()
