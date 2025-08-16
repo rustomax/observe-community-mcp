@@ -48,9 +48,9 @@ filter [conditions]
 filter service_name = "servicename" 
 | filter metric = "span_error_count_5m" or metric = "span_call_count_5m" 
 | timechart 5m, 
-    error_count:sum(case(metric="span_error_count_5m", value, true, 0)), 
-    call_count:sum(case(metric="span_call_count_5m", value, true, 0)) 
-| make_col count:case(call_count > 0, error_count/call_count*100, true, 0)
+    error_count:sum(if(metric="span_error_count_5m", value, 0)), 
+    call_count:sum(if(metric="span_call_count_5m", value, 0)) 
+| make_col count:if(call_count > 0, error_count/call_count*100, 0)
 ```
 
 **Simple Metric Threshold**:
@@ -105,8 +105,8 @@ statsby total:sum(value), group_by(service_name)
 
 **Conditional Logic**:
 ```opal
-case(condition, true_value, false_condition, false_value, true, default_value)
-sum(case(metric="error_count", value, true, 0))  // Must use with aggregation functions
+if(condition, true_value, false_value)
+sum(if(metric="error_count", value, 0))  // Must use with aggregation functions
 ```
 
 **Column Creation**:
@@ -214,7 +214,7 @@ Monitors [specific metric names] and alerts when [specific condition].
 ```
 Name: "CartService Error Rate Monitor 2%"
 Description: "Alert when cartservice error rate exceeds 2% for sustained periods. Calculates error rate as percentage by dividing error count by call count over 5-minute intervals."
-Query: "filter service_name = 'cartservice' | filter metric = 'span_error_count_5m' or metric = 'span_call_count_5m' | timechart 5m, error_count:sum(case(metric='span_error_count_5m', value, true, 0)), call_count:sum(case(metric='span_call_count_5m', value, true, 0)) | make_col count:case(call_count > 0, error_count/call_count*100, true, 0)"
+Query: "filter service_name = 'cartservice' | filter metric = 'span_error_count_5m' or metric = 'span_call_count_5m' | timechart 5m, error_count:sum(if(metric='span_error_count_5m', value, 0)), call_count:sum(if(metric='span_call_count_5m', value, 0)) | make_col count:if(call_count > 0, error_count/call_count*100, 0)"
 Threshold: 2.0
 Window: "5m"
 Frequency: "5m"
@@ -263,16 +263,16 @@ Frequency: "5m"
 limit 5  // Time range via API parameters
 
 // Test 2: Add service filter  
-filter time > time - 1h | filter service_name = "target" | limit 5
+filter service_name = "target" | limit 5  // Time range via API parameters
 
 // Test 3: Add metric filter
-filter time > time - 1h | filter service_name = "target" | filter metric = "target_metric" | limit 5
+filter service_name = "target" | filter metric = "target_metric" | limit 5  // Time range via API parameters
 
 // Test 4: Add aggregation
-filter time > time - 1h | filter service_name = "target" | filter metric = "target_metric" | timechart 5m, count()
+filter service_name = "target" | filter metric = "target_metric" | timechart 5m, count()  // Time range via API parameters
 
 // Test 5: Final monitor query with count column
-[full_query] | make_col count:[calculated_value]
+[full_query] | make_col count:[calculated_value]  // Time range via API parameters
 ```
 
 ## Integration with Actions

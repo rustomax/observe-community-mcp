@@ -107,18 +107,18 @@ async def execute_nlp_query(
     if get_relevant_docs_func and mock_context:
         set_mcp_context(get_relevant_docs_func, mock_context)
     
-    print(f"[SIMPLIFIED] Processing: {request[:100]}...", file=sys.stderr)
+    print(f"[NLPQ_INFO] Processing: {request[:100]}...", file=sys.stderr)
     
     try:
         # Import the actual MCP functions directly
         from src.observe import get_dataset_info as observe_get_dataset_info
         from src.observe import execute_opal_query as observe_execute_opal_query
         
-        print(f"[SIMPLIFIED] Step 1: Getting dataset schema", file=sys.stderr)
+        print(f"[NLPQ_INFO] Step 1: Getting dataset schema", file=sys.stderr)
         schema_info = await observe_get_dataset_info(dataset_id=dataset_id)
         
         # Step 2: Get OPAL documentation for the request
-        print(f"[SIMPLIFIED] Step 2: Getting OPAL documentation", file=sys.stderr)
+        print(f"[NLPQ_INFO] Step 2: Getting OPAL documentation", file=sys.stderr)
         # Use simpler, more basic search terms to get fundamental OPAL syntax
         # Include options syntax to prevent incorrect usage
         docs_query = "OPAL basic syntax examples filter statsby timechart options"
@@ -129,7 +129,7 @@ async def execute_nlp_query(
             import os
             from collections import defaultdict
             
-            print(f"[SIMPLIFIED] Searching for docs: {docs_query}", file=sys.stderr)
+            print(f"[NLPQ_INFO] Searching for docs: {docs_query}", file=sys.stderr)
             chunk_results = search_docs(docs_query, n_results=15)
             
             if chunk_results and len(chunk_results) > 0:
@@ -149,7 +149,7 @@ async def execute_nlp_query(
                 # Sort documents by average score and limit to top 3
                 sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:3]
                 
-                print(f"[SIMPLIFIED] Found {len(sorted_docs)} relevant docs: {[os.path.basename(source) for source, _ in sorted_docs]}", file=sys.stderr)
+                print(f"[NLPQ_INFO] Found {len(sorted_docs)} relevant docs: {[os.path.basename(source) for source, _ in sorted_docs]}", file=sys.stderr)
                 
                 opal_docs = f"Found {len(sorted_docs)} relevant documents for OPAL syntax:\\n\\n"
                 
@@ -162,17 +162,17 @@ async def execute_nlp_query(
                         title = os.path.basename(source).replace(".md", "").replace("_", " ").title()
                         opal_docs += f"### Document {i}: {title}\\n"
                         opal_docs += f"{document_content[:1000]}{'...' if len(document_content) > 1000 else ''}\\n\\n"
-                        print(f"[SIMPLIFIED] Added doc {i}: {title} ({len(document_content)} chars)", file=sys.stderr)
+                        print(f"[NLPQ_INFO] Added doc {i}: {title} ({len(document_content)} chars)", file=sys.stderr)
                     except Exception as e:
-                        print(f"[SIMPLIFIED] Error reading doc {source}: {e}", file=sys.stderr)
+                        print(f"[NLPQ_INFO] Error reading doc {source}: {e}", file=sys.stderr)
                         continue
                 
-                print(f"[SIMPLIFIED] Total documentation length: {len(opal_docs)} chars", file=sys.stderr)
+                print(f"[NLPQ_INFO] Total documentation length: {len(opal_docs)} chars", file=sys.stderr)
             else:
                 opal_docs = "No relevant OPAL documentation found"
                 
         except Exception as e:
-            print(f"[SIMPLIFIED] Error searching docs: {e}", file=sys.stderr)
+            print(f"[NLPQ_INFO] Error searching docs: {e}", file=sys.stderr)
             opal_docs = "Error accessing documentation - using basic OPAL guidance:\\n\\nBasic OPAL syntax: filter, distinct, statsby, timechart, sort, limit"
         
         # Step 3: Create a single, focused LLM prompt
@@ -214,12 +214,16 @@ CRITICAL OPAL SYNTAX RULES:
    - Time range ({time_range}) is handled automatically by the API
    - Examples of FORBIDDEN: "filter start_time >", "frame back:", "@now", "timestamp >", etc.
 
-2. CONDITIONAL LOGIC: Use if() function, NOT case()
+2. CONDITIONAL LOGIC: ALWAYS use if() function, NEVER case()
    - Correct: if(condition, true_value, false_value)
+   - Correct: sum(if(metric="span_error_count_5m", value, 0))
    - WRONG: case(condition, true_value, false_value)
+   - WRONG: case(metric="span_error_count_5m", value, true, 0)
 
-3. SORTING: Use sort desc(field) or sort asc(field)
-   - WRONG: sort -field or sort desc field
+3. SORTING: Use sort desc(field) or sort asc(field) with parentheses
+   - Correct: sort desc(count), asc(service_name)
+   - Correct: sort desc(duration) | limit 10
+   - WRONG: sort -field, sort desc field, sort max_duration
 
 4. COLUMN CREATION: Use make_col column:expression (colon, not equals)
    - Correct: make_col category:if(value > 100, "high", "low")
@@ -234,9 +238,9 @@ Focus on data analysis, aggregation, and filtering by field values - NOT time fi
 
 OPAL Query:"""
         
-        print(f"[SIMPLIFIED] Step 3: Generating OPAL query", file=sys.stderr)
-        print(f"[SIMPLIFIED] Prompt length: {len(prompt)} chars", file=sys.stderr)
-        print(f"[SIMPLIFIED] Prompt preview: {prompt[:500]}...", file=sys.stderr)
+        print(f"[NLPQ_INFO] Step 3: Generating OPAL query", file=sys.stderr)
+        print(f"[NLPQ_INFO] Prompt length: {len(prompt)} chars", file=sys.stderr)
+        print(f"[NLPQ_INFO] Prompt preview: {prompt[:500]}...", file=sys.stderr)
         
         response = model.invoke([HumanMessage(content=prompt)])
         opal_query = response.content.strip()
@@ -264,18 +268,18 @@ OPAL Query:"""
         # If it starts with |, remove the leading |
         if opal_query.startswith('|'):
             opal_query = opal_query[1:].strip()
-        print(f"[SIMPLIFIED] Generated query: {opal_query}", file=sys.stderr)
+        print(f"[NLPQ_INFO] Generated query: {opal_query}", file=sys.stderr)
         
         # Step 3.5: Pre-validation to catch obvious issues
         validation_issues = validate_query_syntax(opal_query, schema_info)
         if validation_issues:
-            print(f"[RELIABILITY] Pre-validation found issues: {validation_issues}", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Pre-validation found issues: {validation_issues}", file=sys.stderr)
             # Try to fix obvious issues before execution
             opal_query = fix_obvious_issues(opal_query, validation_issues)
-            print(f"[RELIABILITY] Pre-validation corrected query: {opal_query}", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Pre-validation corrected query: {opal_query}", file=sys.stderr)
         
         # Step 4: Execute the query
-        print(f"[SIMPLIFIED] Step 4: Executing query", file=sys.stderr)
+        print(f"[NLPQ_INFO] Step 4: Executing query", file=sys.stderr)
         query_result = await observe_execute_opal_query(
             query=opal_query,
             dataset_id=dataset_id, 
@@ -298,7 +302,7 @@ OPAL Query:"""
                 break  # Success, exit retry loop
                 
             retry_count += 1
-            print(f"[RELIABILITY] Attempt {retry_count}/{max_retries}: {error_type} detected", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Attempt {retry_count}/{max_retries}: {error_type} detected", file=sys.stderr)
             
             # Progressive recovery strategies based on error type
             recovery_strategy = select_recovery_strategy(error_type, retry_count, schema_info, request)
@@ -311,7 +315,7 @@ OPAL Query:"""
                 )
                 
                 if fixed_query and fixed_query != opal_query:
-                    print(f"[RELIABILITY] Trying strategy '{recovery_strategy['name']}': {fixed_query[:100]}...", file=sys.stderr)
+                    print(f"[NLPQ_RELIABILITY] Trying strategy '{recovery_strategy['name']}': {fixed_query[:100]}...", file=sys.stderr)
                     
                     # Execute with retry logic for transient failures
                     query_result = await execute_with_retry(
@@ -319,11 +323,11 @@ OPAL Query:"""
                     )
                     opal_query = fixed_query
                 else:
-                    print(f"[RELIABILITY] Strategy '{recovery_strategy['name']}' did not generate a different query", file=sys.stderr)
+                    print(f"[NLPQ_RELIABILITY] Strategy '{recovery_strategy['name']}' did not generate a different query", file=sys.stderr)
                     break
                     
             except Exception as e:
-                print(f"[RELIABILITY] Strategy '{recovery_strategy['name']}' failed: {e}", file=sys.stderr)
+                print(f"[NLPQ_RELIABILITY] Strategy '{recovery_strategy['name']}' failed: {e}", file=sys.stderr)
                 if retry_count == max_retries:
                     query_result = f"Error: All recovery strategies failed. Last error: {str(e)}"
                 continue
@@ -375,7 +379,7 @@ OPAL Query:"""
             return f"**No data found**\n\nQuery: `{opal_query}`\nResult: {query_result}"
             
     except Exception as e:
-        print(f"[SIMPLIFIED] Error: {e}", file=sys.stderr)
+        print(f"[NLPQ_INFO] Error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         return f"Error in simplified NLP query: {str(e)}"
@@ -501,7 +505,7 @@ async def apply_recovery_strategy(strategy: dict, failed_query: str, error_resul
     approach = strategy["approach"]
     search_terms = strategy["search_terms"]
     
-    print(f"[RELIABILITY] Applying {approach} strategy with search: {search_terms}", file=sys.stderr)
+    print(f"[NLPQ_RELIABILITY] Applying {approach} strategy with search: {search_terms}", file=sys.stderr)
     
     try:
         # Get strategy-specific documentation
@@ -625,19 +629,19 @@ Generate a corrected OPAL query:"""
         if fixed_query.startswith('|'):
             fixed_query = fixed_query[1:].strip()
         
-        print(f"[RELIABILITY] Strategy generated: {fixed_query[:100]}...", file=sys.stderr)
+        print(f"[NLPQ_RELIABILITY] Strategy generated: {fixed_query[:100]}...", file=sys.stderr)
         
         # Apply validation and fixes to recovery query too
         validation_issues = validate_query_syntax(fixed_query, schema_info)
         if validation_issues:
-            print(f"[RELIABILITY] Recovery query has issues: {validation_issues[:100]}...", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Recovery query has issues: {validation_issues[:100]}...", file=sys.stderr)
             fixed_query = fix_obvious_issues(fixed_query, validation_issues)
-            print(f"[RELIABILITY] Auto-fixed recovery query: {fixed_query[:100]}...", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Auto-fixed recovery query: {fixed_query[:100]}...", file=sys.stderr)
         
         return fixed_query
         
     except Exception as e:
-        print(f"[RELIABILITY] Recovery strategy failed: {e}", file=sys.stderr)
+        print(f"[NLPQ_RELIABILITY] Recovery strategy failed: {e}", file=sys.stderr)
         # Fallback to basic query (no time filtering)
         if "count" in request.lower() or "how many" in request.lower():
             return "statsby count:count()"
@@ -658,7 +662,7 @@ async def execute_with_retry(query: str, dataset_id: str, time_range: str,
         try:
             if attempt > 0:
                 wait_time = min(2 ** attempt, 5)  # Cap at 5 seconds
-                print(f"[RELIABILITY] Retrying query execution in {wait_time}s (attempt {attempt + 1})", file=sys.stderr)
+                print(f"[NLPQ_RELIABILITY] Retrying query execution in {wait_time}s (attempt {attempt + 1})", file=sys.stderr)
                 await asyncio.sleep(wait_time)
             
             result = await observe_execute_opal_query(
@@ -675,7 +679,7 @@ async def execute_with_retry(query: str, dataset_id: str, time_range: str,
         except Exception as e:
             if attempt == max_retries:
                 return f"Error: Query execution failed after {max_retries + 1} attempts: {str(e)}"
-            print(f"[RELIABILITY] Execution attempt {attempt + 1} failed: {e}", file=sys.stderr)
+            print(f"[NLPQ_RELIABILITY] Execution attempt {attempt + 1} failed: {e}", file=sys.stderr)
     
     return "Error: Maximum retries exceeded"
 
@@ -716,6 +720,10 @@ def validate_query_syntax(query: str, schema_info: str) -> list:
         issues.append("Invalid sort syntax with dash - use 'sort desc(field)' or 'sort asc(field)'")
     if re.search(r'sort\s+\w+\s+(desc|asc)', query_lower):
         issues.append("Invalid sort syntax - use 'sort desc(field)' not 'sort field desc'")
+    if re.search(r'sort\s+(desc|asc)\s+\w+', query_lower):
+        issues.append("Invalid sort syntax - use 'sort desc(field)' with parentheses")
+    if re.search(r'sort\s+\w+\s*$', query_lower):
+        issues.append("Invalid sort syntax - use 'sort desc(field)' or 'sort asc(field)' with parentheses")
     
     # Check for make_col assignment operator (should use : not =)
     if re.search(r'make_col\s+\w+\s*=', query_lower):
@@ -795,6 +803,9 @@ def fix_obvious_issues(query: str, issues: list) -> str:
             import re
             # Pattern to match case(condition, true_value, false_value) and similar
             fixed_query = re.sub(r'\bcase\s*\(', 'if(', fixed_query, flags=re.IGNORECASE)
+            # Handle complex case patterns like case(metric="x", value, true, 0)
+            # Convert to if(metric="x", value, 0)
+            fixed_query = re.sub(r'if\(([^,]+),\s*([^,]+),\s*true,\s*([^)]+)\)', r'if(\1, \2, \3)', fixed_query)
         
         elif "Invalid sort syntax" in issue:
             # Fix sort syntax issues
@@ -803,6 +814,10 @@ def fix_obvious_issues(query: str, issues: list) -> str:
             fixed_query = re.sub(r'sort\s+-(\w+)', r'sort desc(\1)', fixed_query, flags=re.IGNORECASE)
             # Fix sort field desc to sort desc(field)
             fixed_query = re.sub(r'sort\s+(\w+)\s+(desc|asc)', r'sort \2(\1)', fixed_query, flags=re.IGNORECASE)
+            # Fix sort desc field to sort desc(field)
+            fixed_query = re.sub(r'sort\s+(desc|asc)\s+(\w+)', r'sort \1(\2)', fixed_query, flags=re.IGNORECASE)
+            # Fix bare sort field to sort desc(field)
+            fixed_query = re.sub(r'sort\s+([a-zA-Z_]\w*)\s*(\||$)', r'sort desc(\1)\2', fixed_query, flags=re.IGNORECASE)
         
         elif "Invalid make_col syntax" in issue:
             # Fix make_col assignment operator (= to :)
