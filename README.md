@@ -319,6 +319,8 @@ The server uses a clean, modular architecture for maintainability and reusabilit
 
 ### 🚀 Intelligent Query Interface (Recommended)
 - **`execute_nlp_query`**: **Convert natural language requests into validated OPAL queries and execute them**
+  - **Required Parameters**: `dataset_id` (string) + `request` (natural language query)
+  - **Prerequisite**: Caller must first identify the target dataset using `list_datasets` or `get_dataset_info`
   - **90%+ Success Rate**: Advanced OPAL syntax generation with comprehensive error recovery
   - **Schema-Aware**: Automatically validates field names against dataset schemas
   - **Self-Healing**: Multi-tier error recovery with intelligent fallback strategies
@@ -694,6 +696,21 @@ Both populate scripts now use the organized `src/pinecone/` modules for consiste
 ## Addendum: NLP Agent Architecture
 
 This section is light bed-time reading, because the rest of the document wasn't dense enough. You are welcome.
+
+### Critical Usage Requirements
+
+The `execute_nlp_query` tool requires **two essential parameters**:
+1. **`dataset_id`** (string): The specific Observe dataset to query against
+2. **`request`** (string): Natural language description of the desired analysis
+
+**Important**: The caller must identify the appropriate dataset BEFORE using this tool. Use `list_datasets` to explore available datasets or `get_dataset_info` to understand dataset schemas and contents. The NLP agent cannot determine which dataset to use from the natural language request alone.
+
+**Typical Workflow**:
+1. `list_datasets` → Identify relevant datasets  
+2. `get_dataset_info("dataset_id")` → Understand schema and data structure
+3. `execute_nlp_query("dataset_id", "natural language request")` → Execute analysis
+
+### Technical Architecture
 
 The `execute_nlp_query` tool implements a multi-component agent system for converting natural language requests into OPAL queries. Rather than simple pattern matching, the system uses several specialized components to handle schema validation, error recovery, and query optimization.
 
