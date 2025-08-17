@@ -158,7 +158,7 @@ except ImportError as e:
 from fastmcp import Context
 
 # Create FastMCP instance with authentication
-mcp = create_authenticated_mcp(server_name="observe-epic")
+mcp = create_authenticated_mcp(server_name="observe-community")
 
 # Initialize auth middleware for statistics and logging
 auth_provider = setup_auth_provider()

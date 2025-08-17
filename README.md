@@ -1,5 +1,13 @@
 # Observe Community MCP Server
 
+![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.95+-009688?style=flat-square&logo=fastapi&logoColor=white)
+![Pinecone](https://img.shields.io/badge/Pinecone-Vector_Search-FF6C37?style=flat-square&logo=pinecone&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-Agent_Framework-FF6B6B?style=flat-square&logo=langchain&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Anthropic-Claude-1E293B?style=flat-square&logo=anthropic&logoColor=white)
+![Model Context Protocol](https://img.shields.io/badge/MCP-Compatible-6366F1?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJMMTMuMDkgOC4yNkwyMCA5TDEzLjA5IDE1Ljc0TDEyIDIyTDEwLjkxIDE1Ljc0TDQgOUwxMC45MSA4LjI2TDEyIDJaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K&logoColor=white)
+![Observe](https://img.shields.io/badge/Observe-Platform-FF8C00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOCIgZmlsbD0id2hpdGUiLz4KPC9zdmc+&logoColor=white)
+
 A Model Context Protocol (MCP) server providing access to [Observe](https://observeinc.com) API functionality, OPAL query assistance, and troubleshooting runbooks through vector search.
 
 ## Purpose
@@ -13,6 +21,87 @@ This server is designed to work with technically capable LLM models, specificall
 > **⚠️ IMPORTANT**: The newest addition to this MCP - the `execute_nlp_query` tool does leverage LLM under the hood (specifically Anthropic models). If this is not desirable, you can disable the tool. The caller LLM or agent can still use the MCP, but it will need to do more heavy lifting to get to the end result.
 
 > **⚠️ IMPORTANT DISCLAIMER**: This is an experimental and unsupported MCP server created for testing and collaboration with Observe AI design partners. Observe or the author bear no liability for any use of this server and does not support it in any way. A separate production-ready closed-source MCP server is available to Observe customers.
+
+## Table of Contents
+
+- [Purpose](#purpose)
+- [Overview](#overview)
+  - [Core API Integration](#core-api-integration)
+  - [Natural Language Query Interface](#natural-language-query-interface)
+  - [Knowledge Base Integration](#knowledge-base-integration)
+  - [Value Proposition](#value-proposition)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+  - [Environment Setup](#environment-setup)
+  - [Populating Vector Database](#populating-vector-database)
+    - [Documentation Index](#documentation-index)
+    - [Runbooks Index](#runbooks-index)
+- [Running the Server](#running-the-server)
+- [Key Components](#key-components)
+  - [Architecture Benefits](#architecture-benefits)
+  - [Key Features](#key-features)
+- [Available MCP Tools](#available-mcp-tools)
+  - [🚀 Intelligent Query Interface (Recommended)](#-intelligent-query-interface-recommended)
+  - [Core Observe API Tools](#core-observe-api-tools)
+  - [Knowledge Base & Documentation Tools](#knowledge-base--documentation-tools)
+  - [Authentication and System Tools](#authentication-and-system-tools)
+  - [Scope-Based Access Control](#scope-based-access-control)
+  - [Worksheet Export Tool](#worksheet-export-tool)
+    - [Parameters](#parameters)
+    - [Time Parameter Combinations](#time-parameter-combinations)
+  - [Response Format](#response-format)
+- [Vector Database Helpers](#vector-database-helpers)
+- [Helper Classes and Utilities](#helper-classes-and-utilities)
+  - [Observe API Helpers](#observe-api-helpers)
+  - [Authentication Helpers](#authentication-helpers)
+  - [Error Handling](#error-handling)
+- [Architecture and How It Works](#architecture-and-how-it-works)
+  - [Indexing Process](#indexing-process)
+  - [Runtime Query Process](#runtime-query-process)
+  - [Documentation Assistance Flow](#documentation-assistance-flow)
+  - [Runbook Recommendation Flow](#runbook-recommendation-flow)
+- [Advantages of the Vector Database Approach](#advantages-of-the-vector-database-approach)
+- [Setting up Authentication](#setting-up-authentication)
+- [Setting up MCP authentication](#setting-up-mcp-authentication)
+- [Using in Claude Desktop](#using-in-claude-desktop)
+- [Making the Most of the MCP Server](#making-the-most-of-the-mcp-server)
+  - [Start with Natural Language Queries](#start-with-natural-language-queries)
+  - [Use a Smart Client LLM](#use-a-smart-client-llm)
+  - [Understand the Recommended Flow](#understand-the-recommended-flow)
+  - [Query Types and Tool Selection](#query-types-and-tool-selection)
+  - [Hard-Code the System Prompt](#hard-code-the-system-prompt)
+  - [Craft Effective Prompts](#craft-effective-prompts)
+  - [Use Runbooks to Guide LLMs](#use-runbooks-to-guide-llms)
+  - [Remind LLMs to Use Tools](#remind-llms-to-use-tools)
+- [Maintenance](#maintenance)
+  - [Updating Documentation](#updating-documentation)
+  - [Updating Runbooks](#updating-runbooks)
+- [Addendum: NLP Agent Architecture](#addendum-nlp-agent-architecture)
+  - [Agent System Overview](#agent-system-overview)
+  - [Component Architecture](#component-architecture)
+    - [1. Schema Analysis Agent](#1-schema-analysis-agent)
+    - [2. Documentation Retrieval Agent](#2-documentation-retrieval-agent)
+    - [3. Query Generation Agent](#3-query-generation-agent)
+    - [4. Validation Agent](#4-validation-agent)
+    - [5. Execution Agent](#5-execution-agent)
+    - [6. Error Recovery System](#6-error-recovery-system)
+  - [Recovery Strategy Matrix](#recovery-strategy-matrix)
+  - [Error Classification](#error-classification)
+  - [Learning and Adaptation](#learning-and-adaptation)
+    - [Pattern Recognition](#pattern-recognition)
+    - [Context Preservation](#context-preservation)
+    - [Performance Optimization](#performance-optimization)
+  - [Agent Communication Flow](#agent-communication-flow)
+  - [Key Agent Capabilities](#key-agent-capabilities)
+    - [Semantic Understanding](#semantic-understanding)
+    - [Contextual Adaptation](#contextual-adaptation)
+    - [Self-Healing Operation](#self-healing-operation)
+  - [Real-World Agent Examples](#real-world-agent-examples)
+    - [Example 1: Simple Error Rate Analysis](#example-1-simple-error-rate-analysis)
+    - [Example 2: Complex Recovery Scenario](#example-2-complex-recovery-scenario)
+    - [Example 3: Multi-Tier Validation and Correction](#example-3-multi-tier-validation-and-correction)
+  - [Performance Characteristics](#performance-characteristics)
 
 ## Overview
 
@@ -474,7 +563,7 @@ Add the following to your `claude_desktop_config.json` if you are running the MP
 ```json
 {
   "mcpServers": {
-    "observe-epic": {
+    "observe-community": {
       "command": "npx",
       "args": [
         "mcp-remote@latest",
@@ -506,7 +595,7 @@ Attempting to import src.pinecone modules...
 Successfully imported search functions from src.pinecone.search
 
 Python MCP server starting...
-[07/22/25 08:50:22] INFO     Starting MCP server 'observe-epic'   server.py:1297
+[07/22/25 08:50:22] INFO     Starting MCP server 'observe-community'   server.py:1297
                              with transport 'sse' on                            
                              http://0.0.0.0:8000/sse/                                   
 

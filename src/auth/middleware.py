@@ -35,7 +35,7 @@ def setup_auth_provider(public_key_pem: Optional[str] = None) -> JWTVerifier:
     return JWTVerifier(public_key=public_key_pem)
 
 
-def create_authenticated_mcp(server_name: str = "observe-epic", public_key_pem: Optional[str] = None) -> FastMCP:
+def create_authenticated_mcp(server_name: str = "observe-community", public_key_pem: Optional[str] = None) -> FastMCP:
     """
     Create a FastMCP instance with authentication configured.
     

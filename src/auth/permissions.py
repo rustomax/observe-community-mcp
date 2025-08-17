@@ -171,8 +171,8 @@ def get_public_server_info() -> Dict[str, Any]:
     """
     try:
         server_info = {
-            "server_name": "observe-epic",
-            "server_version": "1.0.0",
+            "server_name": "observe-community",
+            "server_version": "1.2.0",
             "server_time": datetime.now().isoformat(),
             "python_version": sys.version.split()[0]  # Just the version number
         }
