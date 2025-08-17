@@ -7,7 +7,12 @@ using organized modules for better maintainability and reusability.
 
 import os
 import sys
-from typing import Dict, Any, Optional, List, Union, TypedDict
+from typing import Dict, Any, Optional, List, Union
+
+try:
+    from typing_extensions import TypedDict
+except ImportError:
+    from typing import TypedDict
 
 # Type definitions for better type safety
 class MonitorResponse(TypedDict):

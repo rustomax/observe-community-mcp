@@ -1,0 +1,33 @@
+# Production configuration for docker-compose
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  observe-mcp:
+    # Production configuration
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Remove development volumes
+    volumes: []
+    environment:
+      # Production environment variables
+      - PYTHONUNBUFFERED=1
+      - DEBUG=0
+    # Production resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # Only expose necessary ports
+    ports:
+      - "8000:8000"
+    # Production restart policy
+    restart: always
+    
+  # Enable nginx for production
+  nginx:
+    profiles: []  # Remove profile restriction for production

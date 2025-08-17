@@ -6,6 +6,7 @@ python-dotenv>=1.0.0
 httpx>=0.24.0
 pinecone>=7.0.0
 tqdm>=4.65.0
+typing-extensions>=4.0.0
 
 # LangGraph dependencies for NLP query agent
 langchain-core>=0.3.0

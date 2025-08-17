@@ -38,6 +38,12 @@ This server is designed to work with technically capable LLM models, specificall
     - [Documentation Index](#documentation-index)
     - [Runbooks Index](#runbooks-index)
 - [Running the Server](#running-the-server)
+  - [Traditional Python Execution](#traditional-python-execution)
+  - [Docker Deployment](#docker-deployment)
+    - [Development with Docker](#development-with-docker)
+    - [Production Deployment](#production-deployment)
+    - [Docker Configuration](#docker-configuration)
+    - [Customizing Docker Deployment](#customizing-docker-deployment)
 - [Key Components](#key-components)
   - [Architecture Benefits](#architecture-benefits)
   - [Key Features](#key-features)
@@ -250,11 +256,63 @@ Total chunks added to Pinecone: 116
 
 ## Running the Server
 
+### Traditional Python Execution
+
 ```bash
 python observe_server.py
 ```
 
 The server runs with Server-Sent Events (SSE) transport by default on port 8000. You can modify the port and transport method in the `observe_server.py` file if needed.
+
+### Docker Deployment
+
+The server can be containerized using Docker for easier deployment and isolation.
+
+#### Development with Docker
+
+1. **Copy environment configuration:**
+   ```bash
+   cp .env.docker .env
+   # Edit .env with your actual API keys and configuration
+   ```
+
+2. **Start with docker-compose (development mode):**
+   ```bash
+   docker-compose up --build
+   ```
+   
+   This runs in development mode with source code mounted for live reloading.
+
+3. **Access the server:**
+   - MCP Server: `http://localhost:8000` (SSE transport)
+   - Health monitoring: Automatic via Docker health checks
+
+#### Production Deployment
+
+For production deployments with nginx proxy and resource limits:
+
+```bash
+# Use production configuration
+docker-compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+
+# Or with nginx proxy (for load balancing/SSL termination)
+docker-compose --profile production up --build -d
+```
+
+#### Docker Configuration
+
+- **Port**: 8000 (configurable via docker-compose)
+- **Health Check**: Automatic health monitoring with restart policies
+- **Security**: Non-root user execution, minimal attack surface
+- **Resource Limits**: Configurable CPU/memory limits in production mode
+- **Data Persistence**: Vector database and documentation mounted as volumes
+
+#### Customizing Docker Deployment
+
+- **Environment Variables**: Modify `.env` file or docker-compose environment section
+- **Resource Limits**: Adjust in `docker-compose.prod.yml`
+- **SSL/TLS**: Configure nginx section in docker-compose with your certificates
+- **Custom Docs**: Mount your own `observe-docs` or `runbooks` directories
 
 ## Key Components
 
