@@ -210,31 +210,50 @@ CRITICAL SYNTAX RULES:
 - ONLY use verbs that appear in the documentation above
 
 CRITICAL OPAL SYNTAX RULES:
-1. TIME FILTERING: NEVER use filter timestamp >, filter time >, filter start_time >, etc.
+1. VERBS - Use ONLY these valid verbs:
+   - filter, statsby, timechart, distinct, sort, limit, make_col, fields
+   - NEVER: pick (use fields), by (use group_by()), show, select, get
+
+2. TIME FILTERING: NEVER use filter timestamp >, filter time >, filter start_time >, etc.
    - Time range ({time_range}) is handled automatically by the API
-   - Examples of FORBIDDEN: "filter start_time >", "frame back:", "@now", "timestamp >", etc.
+   - FORBIDDEN: "filter start_time >", "frame back:", "@now", "timestamp >", "_c_timestamp", "now"
 
-2. CONDITIONAL LOGIC: ALWAYS use if() function, NEVER case()
+3. FIELD SELECTION: Use fields, not pick
+   - Correct: | fields timestamp, body, container
+   - WRONG: | pick timestamp, body, container
+
+4. AGGREGATIONS: Proper statsby syntax with commas
+   - Correct: statsby count:count(), avg_duration:avg(duration), group_by(service_name)
+   - WRONG: statsby count() group_by(service_name) # missing comma
+
+5. CONDITIONAL LOGIC: ALWAYS use if() with exactly 3 arguments
    - Correct: if(condition, true_value, false_value)
-   - Correct: sum(if(metric="span_error_count_5m", value, 0))
-   - WRONG: case(condition, true_value, false_value)
-   - WRONG: case(metric="span_error_count_5m", value, true, 0)
+   - Correct: sum(if(error, 1, 0))
+   - WRONG: case() functions, if() with 4+ arguments
 
-3. SORTING: Use sort desc(field) or sort asc(field) with parentheses
-   - Correct: sort desc(count), asc(service_name)
-   - Correct: sort desc(duration) | limit 10
-   - WRONG: sort -field, sort desc field, sort max_duration
+6. PERCENTILES: Use decimal values 0.0-1.0, not 1-100
+   - Correct: percentile(duration, 0.95), percentile(duration, 0.99)
+   - WRONG: percentile(duration, 95), percentile(duration, 99)
 
-4. COLUMN CREATION: Use make_col column:expression (colon, not equals)
-   - Correct: make_col category:if(value > 100, "high", "low")
-   - WRONG: make_col category = if(value > 100, "high", "low")
+7. REGULAR EXPRESSIONS: Use proper regex syntax
+   - Correct: filter body ~ "error"
+   - Correct: filter body ~ /error|Error/
+   - WRONG: filter body ~ /(?i)(error|exception)/ # complex regex can fail
 
-5. ERROR RATE ANALYSIS: Use conditional aggregation for percentages
-   - Error rate by service: statsby error_rate:avg(if(error, 1.0, 0.0)), avg_duration:avg(duration), group_by(service_name)
-   - Include context: total_traces:count(), error_traces:sum(if(error, 1, 0)) for interpretation
+8. FIELD REFERENCES: Only use fields from the schema above
+   - Check the DATASET SCHEMA section for available field names
+   - Do NOT assume fields like _c_timestamp, @.now exist
 
-TASK: Generate a single, working OPAL query using ONLY the verbs from the documentation.
+COMMON SUCCESSFUL PATTERNS:
+- Simple filtering: filter field_name = "value" | limit 10
+- Count by groups: statsby count:count(), group_by(field_name)
+- Error analysis: statsby error_rate:avg(if(error, 1.0, 0.0)), group_by(service_name)
+- Field selection: filter condition | fields field1, field2, field3
+- Top N: statsby count:count(), group_by(field) | sort desc(count) | limit 10
+
+TASK: Generate a single, working OPAL query using ONLY the verbs and fields from above.
 Focus on data analysis, aggregation, and filtering by field values - NOT time filtering.
+Verify all field names exist in the DATASET SCHEMA.
 
 OPAL Query:"""
         
@@ -304,18 +323,25 @@ OPAL Query:"""
             retry_count += 1
             print(f"[NLPQ_RELIABILITY] Attempt {retry_count}/{max_retries}: {error_type} detected", file=sys.stderr)
             
-            # Progressive recovery strategies based on error type
-            recovery_strategy = select_recovery_strategy(error_type, retry_count, schema_info, request)
-            recovery_strategies.append(f"Attempt {retry_count}: {recovery_strategy['name']}")
-            
             try:
-                fixed_query = await apply_recovery_strategy(
-                    recovery_strategy, opal_query, query_result, error_type, 
-                    model, schema_info, request, dataset_id
-                )
+                # First attempt: Surgical fix (targeted error-specific fix)
+                if retry_count == 1:
+                    print(f"[NLPQ_RELIABILITY] Trying surgical fix for {error_type}", file=sys.stderr)
+                    fixed_query = apply_surgical_fix(opal_query, query_result, error_type, schema_info)
+                    recovery_strategies.append(f"Attempt {retry_count}: Surgical fix for {error_type}")
+                    strategy_name = "Surgical fix"
+                else:
+                    # Fallback: Use traditional recovery strategy
+                    recovery_strategy = select_recovery_strategy(error_type, retry_count-1, schema_info, request)
+                    recovery_strategies.append(f"Attempt {retry_count}: {recovery_strategy['name']}")
+                    fixed_query = await apply_recovery_strategy(
+                        recovery_strategy, opal_query, query_result, error_type, 
+                        model, schema_info, request, dataset_id, recovery_strategies
+                    )
+                    strategy_name = recovery_strategy['name']
                 
                 if fixed_query and fixed_query != opal_query:
-                    print(f"[NLPQ_RELIABILITY] Trying strategy '{recovery_strategy['name']}': {fixed_query[:100]}...", file=sys.stderr)
+                    print(f"[NLPQ_RELIABILITY] Trying strategy '{strategy_name}': {fixed_query[:100]}...", file=sys.stderr)
                     
                     # Execute with retry logic for transient failures
                     query_result = await execute_with_retry(
@@ -323,11 +349,15 @@ OPAL Query:"""
                     )
                     opal_query = fixed_query
                 else:
-                    print(f"[NLPQ_RELIABILITY] Strategy '{recovery_strategy['name']}' did not generate a different query", file=sys.stderr)
-                    break
+                    print(f"[NLPQ_RELIABILITY] Strategy '{strategy_name}' did not generate a different query", file=sys.stderr)
+                    # Don't break early - try other strategies
+                    if retry_count == max_retries:
+                        print(f"[NLPQ_RELIABILITY] All strategies exhausted, giving up", file=sys.stderr)
+                        break
                     
             except Exception as e:
-                print(f"[NLPQ_RELIABILITY] Strategy '{recovery_strategy['name']}' failed: {e}", file=sys.stderr)
+                strategy_name = "Surgical fix" if retry_count == 1 else "Recovery strategy"
+                print(f"[NLPQ_RELIABILITY] Strategy '{strategy_name}' failed: {e}", file=sys.stderr)
                 if retry_count == max_retries:
                     query_result = f"Error: All recovery strategies failed. Last error: {str(e)}"
                 continue
@@ -407,17 +437,23 @@ def classify_error(query_result: str) -> tuple[str, bool]:
     if "timeout" in query_lower or "timed out" in query_lower:
         return ("timeout", True)
     
-    # OPAL syntax errors
-    if "unknown verb" in query_lower:
+    # Specific OPAL syntax errors (more targeted)
+    if "unknown verb" in query_lower or "unknown function" in query_lower:
         return ("unknown_verb", True)
-    if "syntax error" in query_lower or "parse error" in query_lower:
-        return ("syntax_error", True)
+    if "expected line continuation" in query_lower:
+        return ("line_continuation_error", True)
+    if "options argument" in query_lower and "not recognized" in query_lower:
+        return ("invalid_options", True)
+    if "does not exist among fields" in query_lower:
+        return ("field_not_found", True)
+    if "argument" in query_lower and "must be of type" in query_lower:
+        return ("type_mismatch", True)
     if "expected" in query_lower and ("," in query_lower or "(" in query_lower):
         return ("syntax_expected", True)
-    if "need to pick" in query_lower or "must select" in query_lower:
-        return ("missing_column", True)
     
-    # Field/schema errors
+    # Generic categories for fallback
+    if "syntax error" in query_lower or "parse error" in query_lower:
+        return ("syntax_error", True)
     if "unknown field" in query_lower or "field not found" in query_lower:
         return ("unknown_field", True)
     if "type mismatch" in query_lower or "invalid type" in query_lower:
@@ -442,9 +478,29 @@ def select_recovery_strategy(error_type: str, retry_count: int, schema_info: str
     # Strategy progression: specific -> general -> fallback
     strategies = {
         "unknown_verb": [
-            {"name": "verb_replacement", "approach": "specific_docs", "search_terms": "OPAL verbs filter statsby timechart distinct"},
-            {"name": "basic_syntax", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax examples"},
-            {"name": "simple_fallback", "approach": "minimal_query", "search_terms": "OPAL simple queries"}
+            {"name": "verb_replacement", "approach": "specific_docs", "search_terms": "OPAL verbs group_by statsby timechart filter in function"},
+            {"name": "basic_syntax", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax examples filter function"},
+            {"name": "simple_fallback", "approach": "minimal_query", "search_terms": "OPAL simple queries filter"}
+        ],
+        "line_continuation_error": [
+            {"name": "format_correction", "approach": "specific_docs", "search_terms": "OPAL multiline query format"},
+            {"name": "syntax_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL query structure"},
+            {"name": "simple_fallback", "approach": "minimal_query", "search_terms": "OPAL single line"}
+        ],
+        "invalid_options": [
+            {"name": "options_fix", "approach": "specific_docs", "search_terms": "OPAL timechart options bins empty_bins"},
+            {"name": "timechart_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL timechart examples"},
+            {"name": "basic_aggregation", "approach": "minimal_query", "search_terms": "OPAL statsby"}
+        ],
+        "field_not_found": [
+            {"name": "field_mapping", "approach": "schema_focused", "search_terms": "OPAL field names get_field JSON access"},
+            {"name": "schema_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic queries field access"},
+            {"name": "simple_count", "approach": "minimal_query", "search_terms": "OPAL simple filter"}
+        ],
+        "type_mismatch": [
+            {"name": "type_correction", "approach": "specific_docs", "search_terms": "OPAL data types function arguments get_field JSON"},
+            {"name": "aggregation_fix", "approach": "fundamental_rebuild", "search_terms": "OPAL aggregation functions type conversion"},
+            {"name": "basic_filter", "approach": "minimal_query", "search_terms": "OPAL filter boolean"}
         ],
         "syntax_error": [
             {"name": "syntax_correction", "approach": "specific_docs", "search_terms": "OPAL syntax comma parentheses"},
@@ -477,9 +533,9 @@ def select_recovery_strategy(error_type: str, retry_count: int, schema_info: str
             {"name": "basic_limit", "approach": "minimal_query", "search_terms": "OPAL limit"}
         ],
         "http_400": [
-            {"name": "request_correction", "approach": "specific_docs", "search_terms": "OPAL valid queries"},
-            {"name": "syntax_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax"},
-            {"name": "minimal_query", "approach": "minimal_query", "search_terms": "OPAL simple"}
+            {"name": "request_correction", "approach": "specific_docs", "search_terms": "OPAL valid queries in function filter boolean"},
+            {"name": "syntax_rebuild", "approach": "fundamental_rebuild", "search_terms": "OPAL basic syntax filter statsby"},
+            {"name": "minimal_query", "approach": "minimal_query", "search_terms": "OPAL simple filter"}
         ],
         "generic_error": [
             {"name": "general_fix", "approach": "specific_docs", "search_terms": "OPAL common errors"},
@@ -496,9 +552,200 @@ def select_recovery_strategy(error_type: str, retry_count: int, schema_info: str
     return strategy_list[strategy_index]
 
 
+def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, schema_info: str) -> str:
+    """
+    Apply targeted, surgical fixes to OPAL queries based on specific error messages.
+    This preserves the original query structure while fixing specific syntax issues.
+    """
+    fixed_query = failed_query
+    error_lower = error_result.lower()
+    
+    print(f"[SURGICAL_FIX] Applying targeted fix for {error_type}", file=sys.stderr)
+    print(f"[SURGICAL_FIX] Original query: {fixed_query[:100]}...", file=sys.stderr)
+    
+    # CRITICAL FIX: Remove invalid dataset references at query start
+    # These appear as "o::xxx:dataset:yyy | filter..." which breaks OPAL parsing
+    dataset_pattern = r'^o::[^|]+\s*\|\s*'
+    if re.match(dataset_pattern, fixed_query.strip()):
+        fixed_query = re.sub(dataset_pattern, '', fixed_query.strip())
+        print(f"[SURGICAL_FIX] Removed invalid dataset prefix from query", file=sys.stderr)
+    
+    # Handle HTTP 400 errors which often have dataset references or parsing issues
+    if error_type == "http_400":
+        if "expected one of" in error_lower:
+            # This is usually caused by dataset references at query start
+            dataset_ref_pattern = r'^o::[^|]*\|\s*'
+            if re.search(dataset_ref_pattern, fixed_query):
+                fixed_query = re.sub(dataset_ref_pattern, '', fixed_query)
+                print(f"[SURGICAL_FIX] Removed dataset reference causing HTTP 400", file=sys.stderr)
+        
+        # Fix multi-line statsby queries - common cause of HTTP 400
+        if "statsby" in fixed_query and "\n" in fixed_query:
+            lines = [line.strip() for line in fixed_query.split('\n') if line.strip()]
+            if len(lines) > 1 and lines[0].strip() == "statsby":
+                # Convert multi-line statsby to single line
+                aggregations = []
+                for line in lines[1:]:
+                    if line and not line.startswith('|'):
+                        # Remove trailing comma if present
+                        line = line.rstrip(',')
+                        aggregations.append(line)
+                    elif line.startswith('|'):
+                        # This is a new pipeline stage, stop collecting aggregations
+                        break
+                
+                if aggregations:
+                    single_line = f"statsby {', '.join(aggregations)}"
+                    # Add remaining pipeline if present
+                    remaining = fixed_query.split('|', 1)[1:] if '|' in fixed_query else []
+                    if remaining:
+                        fixed_query = f"{single_line} | {remaining[0]}"
+                    else:
+                        fixed_query = single_line
+                    print(f"[SURGICAL_FIX] Converted multi-line statsby to single line", file=sys.stderr)
+        
+        # Fix duration function string arguments
+        if "duration(" in fixed_query and '"' in fixed_query:
+            # Convert duration("100ms") to duration_ms(100) or similar
+            duration_pattern = r'duration\("([^"]+)"\)'
+            matches = re.findall(duration_pattern, fixed_query)
+            for match in matches:
+                if match.endswith('ms'):
+                    # Convert "100ms" to duration_ms(100)
+                    num = re.sub(r'[^\d.]', '', match)
+                    if num:
+                        fixed_query = re.sub(f'duration\\("{re.escape(match)}"\\)', f'duration_ms({num})', fixed_query)
+                        print(f"[SURGICAL_FIX] Fixed duration string: duration(\"{match}\") -> duration_ms({num})", file=sys.stderr)
+                elif match.endswith('s'):
+                    # Convert "1s" to 1000000000 (nanoseconds)
+                    num = re.sub(r'[^\d.]', '', match)
+                    if num:
+                        ns_value = int(float(num) * 1000000000)
+                        fixed_query = re.sub(f'duration\\("{re.escape(match)}"\\)', str(ns_value), fixed_query)
+                        print(f"[SURGICAL_FIX] Fixed duration string: duration(\"{match}\") -> {ns_value}ns", file=sys.stderr)
+    
+    elif error_type == "unknown_verb":
+        # Extract the specific unknown verb from error message
+        if "unknown verb" in error_lower:
+            # Pattern: "unknown verb \"by\""
+            match = re.search(r'unknown verb "([^"]+)"', error_result)
+            if match:
+                bad_verb = match.group(1)
+                if bad_verb == "by":
+                    # Replace standalone "by" with proper group_by() function
+                    fixed_query = re.sub(r'\s+by\s+([a-zA-Z_]\w*)', r', group_by(\1)', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed 'by' verb: {bad_verb} -> group_by()", file=sys.stderr)
+                    
+        if "unknown function" in error_lower:
+            # Pattern: "unknown function \"by\""
+            match = re.search(r'unknown function "([^"]+)"', error_result)
+            if match:
+                bad_func = match.group(1)
+                if bad_func == "by":
+                    # Fix "by(field)" to "group_by(field)" 
+                    fixed_query = re.sub(r'\bby\s*\(', 'group_by(', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> group_by()", file=sys.stderr)
+    
+    elif error_type == "line_continuation_error":
+        # Fix multi-line query formatting
+        lines = fixed_query.split('\n')
+        if len(lines) > 1:
+            # Join lines with proper OPAL continuation (no line breaks within statements)
+            fixed_lines = []
+            current_statement = ""
+            
+            for line in lines:
+                line = line.strip()
+                if line:
+                    if current_statement and not line.startswith('|'):
+                        current_statement += " " + line
+                    elif line.startswith('|') or not current_statement:
+                        if current_statement:
+                            fixed_lines.append(current_statement)
+                        current_statement = line
+                    
+            if current_statement:
+                fixed_lines.append(current_statement)
+                
+            fixed_query = " ".join(fixed_lines)
+            print(f"[SURGICAL_FIX] Fixed line continuation", file=sys.stderr)
+    
+    elif error_type == "invalid_options":
+        # Fix invalid timechart/statsby options
+        if "timechart" in error_lower and "size" in error_lower:
+            # Replace size option with valid bins option
+            fixed_query = re.sub(r'options\([^)]*size[^)]*\)', 'options(bins:10)', fixed_query)
+            print(f"[SURGICAL_FIX] Fixed invalid timechart options", file=sys.stderr)
+    
+    elif error_type == "field_not_found":
+        # Extract field name that doesn't exist and try to map it to schema
+        field_match = re.search(r'field "([^"]+)" does not exist among fields', error_result)
+        if field_match:
+            missing_field = field_match.group(1)
+            # Try to find similar field in schema (simple fuzzy matching)
+            schema_fields = re.findall(r"'name': '([^']+)'", schema_info)
+            
+            # Simple similarity matching
+            best_match = None
+            for field in schema_fields:
+                if missing_field.lower() in field.lower() or field.lower() in missing_field.lower():
+                    best_match = field
+                    break
+            
+            if best_match:
+                fixed_query = fixed_query.replace(missing_field, best_match)
+                print(f"[SURGICAL_FIX] Mapped field: {missing_field} -> {best_match}", file=sys.stderr)
+    
+    # NEW: Add fixes based on documented OPAL capabilities
+    # Fix filter syntax with multiple values - use IN operator 
+    if "filter" in fixed_query and ("=" in fixed_query or "==" in fixed_query):
+        # Look for patterns like: filter field == 'value1' or field == 'value2'
+        or_pattern = r"(\w+)\s*==?\s*'([^']+)'\s+or\s+\1\s*==?\s*'([^']+)'"
+        match = re.search(or_pattern, fixed_query)
+        if match:
+            field, val1, val2 = match.groups()
+            replacement = f"filter in({field}, '{val1}', '{val2}')"
+            fixed_query = re.sub(or_pattern, replacement.replace('filter ', ''), fixed_query)
+            print(f"[SURGICAL_FIX] Converted OR filter to IN operator: {field} == '{val1}' or {field} == '{val2}' -> in({field}, '{val1}', '{val2}')", file=sys.stderr)
+    
+    # Fix JSON field access - use get_field() or path navigation
+    if "." in fixed_query and not re.search(r'\bget_field\b', fixed_query):
+        # Look for patterns like: field.subfield
+        field_access_pattern = r'(\w+)\.(\w+)'
+        matches = re.findall(field_access_pattern, fixed_query)
+        for base_field, sub_field in matches:
+            # Replace with get_field function 
+            fixed_query = re.sub(rf'\b{base_field}\.{sub_field}\b', f"get_field({base_field}, '{sub_field}')", fixed_query)
+            print(f"[SURGICAL_FIX] Fixed JSON field access: {base_field}.{sub_field} -> get_field({base_field}, '{sub_field}')", file=sys.stderr)
+    
+    # Fix array/list filtering - suggest array functions
+    if "array" in error_lower or "list" in error_lower:
+        if "array_contains" not in fixed_query and "[" in fixed_query:
+            # Suggest array_contains for array filtering 
+            bracket_pattern = r"(\w+)\[(\d+)\]"
+            matches = re.findall(bracket_pattern, fixed_query)
+            if matches:
+                print(f"[SURGICAL_FIX] Array access detected - consider using array_contains() instead of index access", file=sys.stderr)
+    
+    elif error_type == "type_mismatch":
+        # Fix type mismatches (e.g., string instead of numeric for duration)
+        if "duration" in error_lower and "string" in error_lower:
+            # Common issue: using string field for duration calculation
+            # Look for duration function calls with string arguments
+            duration_pattern = r'duration\([^)]*"([^"]+)"[^)]*\)'
+            matches = re.findall(duration_pattern, fixed_query)
+            for match in matches:
+                # Try to convert string field references to proper field access
+                fixed_query = re.sub(f'duration\\([^)]*"{match}"[^)]*\\)', f'duration({match})', fixed_query)
+                print(f"[SURGICAL_FIX] Fixed duration type: \"{match}\" -> {match}", file=sys.stderr)
+    
+    print(f"[SURGICAL_FIX] Result: {fixed_query[:100]}...", file=sys.stderr)
+    return fixed_query
+
+
 async def apply_recovery_strategy(strategy: dict, failed_query: str, error_result: str, 
                                 error_type: str, model, schema_info: str, request: str, 
-                                dataset_id: str) -> str:
+                                dataset_id: str, recovery_history: list = None) -> str:
     """
     Apply the selected recovery strategy to generate a corrected query.
     """
@@ -533,6 +780,16 @@ async def apply_recovery_strategy(strategy: dict, failed_query: str, error_resul
         else:
             recovery_docs = "No specific recovery documentation found - using basic OPAL guidance"
         
+        # Build conversational context
+        conversation_context = ""
+        if recovery_history:
+            conversation_context = f"""
+PREVIOUS RECOVERY ATTEMPTS:
+{chr(10).join(recovery_history[-3:])}  # Show last 3 attempts
+
+LEARNING FROM FAILURES: The above attempts didn't work. Learn from these patterns and avoid repeating the same mistakes.
+"""
+
         # Create strategy-specific prompt
         if approach == "minimal_query":
             recovery_prompt = f"""The query failed with {error_type}. Generate the SIMPLEST possible OPAL query to get ANY data from this request.
@@ -540,24 +797,24 @@ async def apply_recovery_strategy(strategy: dict, failed_query: str, error_resul
 USER REQUEST: {request}
 FAILED QUERY: {failed_query}
 ERROR: {error_result[:200]}
+{conversation_context}
+AVAILABLE FIELDS FROM SCHEMA:
+{schema_info[:800]}
 
-SCHEMA INFO:
-{schema_info[:500]}
-
-RECOVERY GUIDANCE:
-{recovery_docs}
-
-STRATEGY: Create the most basic query possible - just count records or show basic data. Don't try to be fancy.
+STRATEGY: Create the most basic query possible using ONLY the fields listed above.
 
 CRITICAL RULES:
-- Use only basic verbs: filter, statsby, timechart, distinct, sort, limit
-- NEVER use time filtering in OPAL (time is handled by API parameters)
-- If aggregating, use: statsby count:count()
-- If grouping, use: group_by(field_name)
-- NEVER use made-up verbs
-- Keep it simple: limit 10 or statsby count:count()
+- Use ONLY these verbs: filter, statsby, timechart, fields, sort, limit
+- NEVER: pick, select, by, show, get (these cause 400 errors)
+- Use 'fields' not 'pick' for column selection
+- For aggregation: statsby count:count(), group_by(field_name)
+- For multiple values: use in(field, 'value1', 'value2', 'value3') function
+- For JSON fields: use get_field(object, 'key') to extract nested values
+- Field names must exist in the schema above
+- Percentiles: use 0.95, 0.99 (not 95, 99)
+- No time filtering - API handles time range
 
-Generate the simplest working OPAL query:"""
+Generate the simplest working OPAL query using only schema fields:"""
         
         elif approach == "schema_focused":
             recovery_prompt = f"""The query failed with {error_type}. Rebuild using ONLY fields from the schema.
@@ -565,7 +822,7 @@ Generate the simplest working OPAL query:"""
 USER REQUEST: {request}
 FAILED QUERY: {failed_query}
 ERROR: {error_result[:200]}
-
+{conversation_context}
 AVAILABLE SCHEMA:
 {schema_info}
 
@@ -576,6 +833,8 @@ STRATEGY: Carefully map the user request to available schema fields. Use exact f
 
 CRITICAL RULES:
 - ONLY use field names that appear in the schema above
+- For multiple values: use in(field, 'value1', 'value2') instead of OR conditions
+- For JSON objects: use get_field(object, 'key') to access nested fields
 - Check field types before using in aggregations
 - Use proper OPAL syntax from documentation
 - Start simple and build up
@@ -588,7 +847,7 @@ Generate a corrected OPAL query using schema fields:"""
 USER REQUEST: {request}
 FAILED QUERY: {failed_query}
 ERROR: {error_result[:200]}
-
+{conversation_context}
 SCHEMA INFO:
 {schema_info[:500]}
 
@@ -600,6 +859,10 @@ STRATEGY: Use the documentation above to fix the specific error while maintainin
 CRITICAL RULES:
 - Follow EXACT syntax from the documentation
 - Use only verbs shown in the recovery guidance
+- For multiple values: use in(field, 'value1', 'value2', 'value3') function
+- For JSON objects: use get_field(object, 'key') or path_exists() functions
+- Use proper boolean functions: contains(), starts_with(), ends_with()
+- For array data: use array_contains() instead of direct indexing
 - Respect field names from schema
 - Fix the specific error mentioned
 - For error rate analysis: Use statsby error_rate:avg(if(error, 1.0, 0.0)), group_by(service_field)
@@ -692,11 +955,35 @@ def validate_query_syntax(query: str, schema_info: str) -> list:
     issues = []
     query_lower = query.lower()
     
+    # Check for invalid verbs (most common issue)
+    invalid_verbs = ['pick', 'select', 'show', 'get', 'choose', 'find', 'by']
+    for verb in invalid_verbs:
+        if f'{verb}(' in query_lower or f' {verb} ' in query_lower:
+            if verb == 'pick':
+                issues.append("Invalid verb 'pick' - use 'fields' instead")
+            elif verb == 'by':
+                issues.append("Invalid verb 'by' - use 'group_by()' function")
+            else:
+                issues.append(f"Invalid verb '{verb}' - use valid OPAL verbs only")
+    
+    # Check for percentile range errors
+    if 'percentile(' in query_lower:
+        percentile_matches = re.findall(r'percentile\([^,]+,\s*(\d+)', query)
+        for match in percentile_matches:
+            if int(match) > 1:
+                issues.append(f"Percentile value {match} should be 0.{match} (decimal between 0-1)")
+    
     # Check for SQL syntax leakage
     sql_keywords = ['select', 'from', 'where', 'group by', 'order by', 'having', 'join']
     for keyword in sql_keywords:
         if keyword in query_lower:
             issues.append(f"SQL keyword '{keyword}' found - use OPAL syntax instead")
+    
+    # Check for forbidden field references
+    forbidden_fields = ['_c_timestamp', '@.now', 'now', '@."timestamp"']
+    for field in forbidden_fields:
+        if field.lower() in query_lower:
+            issues.append(f"Forbidden field reference '{field}' - check schema for valid field names")
     
     # Check for invalid OPAL patterns
     if 'filter options(' in query_lower:
@@ -752,6 +1039,25 @@ def fix_obvious_issues(query: str, issues: list) -> str:
     """
     fixed_query = query
     
+    # Fix invalid verbs first (most critical)
+    if "Invalid verb 'pick'" in str(issues):
+        fixed_query = fixed_query.replace(' pick ', ' | fields ')
+        fixed_query = fixed_query.replace('| pick ', '| fields ')
+    
+    if "Invalid verb 'by'" in str(issues):
+        # This is tricky - usually appears as "by service_name" and should be "group_by(service_name)"
+        fixed_query = re.sub(r'\s+by\s+(\w+)', r', group_by(\1)', fixed_query)
+    
+    # Fix percentile values
+    for issue in issues:
+        if "Percentile value" in issue and "should be 0." in issue:
+            # Extract the bad value and fix it
+            matches = re.findall(r'percentile\(([^,]+),\s*(\d+)\)', fixed_query)
+            for field, bad_val in matches:
+                if int(bad_val) > 1:
+                    good_val = f"0.{bad_val}" if int(bad_val) < 100 else "0.99"
+                    fixed_query = fixed_query.replace(f'percentile({field}, {bad_val})', f'percentile({field}, {good_val})')
+    
     for issue in issues:
         if "SQL keyword" in issue:
             # Remove common SQL keywords
@@ -776,12 +1082,10 @@ def fix_obvious_issues(query: str, issues: list) -> str:
         
         elif "dataset()" in issue:
             # Remove dataset() function calls
-            import re
             fixed_query = re.sub(r'dataset\([^)]*\)\s*\|\s*', '', fixed_query)
         
         elif "Time filtering detected" in issue:
             # Remove time filtering clauses - time is handled by API parameters
-            import re
             # Remove common time filtering patterns
             time_removal_patterns = [
                 r'filter\s+start_time\s*[><=]+[^|]*\|?',
@@ -800,7 +1104,6 @@ def fix_obvious_issues(query: str, issues: list) -> str:
         
         elif "Use if() function instead of case()" in issue:
             # Convert case() to if() function
-            import re
             # Pattern to match case(condition, true_value, false_value) and similar
             fixed_query = re.sub(r'\bcase\s*\(', 'if(', fixed_query, flags=re.IGNORECASE)
             # Handle complex case patterns like case(metric="x", value, true, 0)
@@ -809,7 +1112,6 @@ def fix_obvious_issues(query: str, issues: list) -> str:
         
         elif "Invalid sort syntax" in issue:
             # Fix sort syntax issues
-            import re
             # Fix sort -field to sort desc(field)
             fixed_query = re.sub(r'sort\s+-(\w+)', r'sort desc(\1)', fixed_query, flags=re.IGNORECASE)
             # Fix sort field desc to sort desc(field)
@@ -821,7 +1123,6 @@ def fix_obvious_issues(query: str, issues: list) -> str:
         
         elif "Invalid make_col syntax" in issue:
             # Fix make_col assignment operator (= to :)
-            import re
             # Fix make_col column = expression to make_col column:expression
             fixed_query = re.sub(r'make_col\s+(\w+)\s*=\s*', r'make_col \1:', fixed_query, flags=re.IGNORECASE)
         
