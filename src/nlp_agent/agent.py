@@ -743,6 +743,41 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                 # Fix aggregations missing colons like "count count()" -> "count:count()"
                 fixed_query = re.sub(r'\b(\w+)\s+(\w+\([^)]*\))', r'\1:\2', fixed_query)
                 print(f"[SURGICAL_FIX] Added missing colon in field assignment", file=sys.stderr)
+        
+        # Fix double pipe || syntax issues - OPAL uses single pipe |
+        if "||" in fixed_query:
+            # Replace double pipes with single pipes for OPAL pipeline
+            fixed_query = re.sub(r'\|\|', '|', fixed_query)
+            print(f"[SURGICAL_FIX] Fixed double pipe syntax: || -> |", file=sys.stderr)
+        
+        # Fix field selection syntax issues with pick/fields confusion
+        if "fields" in error_lower and "unknown" in error_lower:
+            # Handle cases where fields verb is used incorrectly
+            if re.search(r'\bfields\s+[^|]+\|', fixed_query):
+                # Incorrect: fields field1, field2 | next_stage
+                # Correct: pick_col field1, field2 | next_stage
+                fixed_query = re.sub(r'\bfields\b', 'pick_col', fixed_query)
+                print(f"[SURGICAL_FIX] Fixed field selection: fields -> pick_col", file=sys.stderr)
+        
+        # Fix pod/container field selection patterns
+        if "pick_col" in fixed_query and ("name" in fixed_query or "status" in fixed_query):
+            # Common issue: trying to select fields that don't exist in schema
+            # Replace common pod field patterns with available fields
+            pod_field_mappings = {
+                r'\bpod_name\b': 'podName',
+                r'\bpod\.name\b': 'podName', 
+                r'\bcontainer_name\b': 'containerName',
+                r'\bcontainer\.name\b': 'containerName',
+                r'\bnode_name\b': 'nodeName',
+                r'\bnode\.name\b': 'nodeName',
+                r'\bstatus\b(?!\s*[><=])': 'status',  # status not in comparison
+                r'\bphase\b': 'phase'
+            }
+            
+            for pattern, replacement in pod_field_mappings.items():
+                if re.search(pattern, fixed_query):
+                    fixed_query = re.sub(pattern, replacement, fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed pod field: {pattern} -> {replacement}", file=sys.stderr)
     
     elif error_type == "unknown_verb":
         # Extract the specific unknown verb from error message
@@ -782,6 +817,17 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                     # Common variations of empty check
                     fixed_query = re.sub(rf'\b{bad_func}\s*\(', 'is_null(', fixed_query)
                     print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> is_null()", file=sys.stderr)
+                elif bad_func == "bin_auto":
+                    # Fix "bin_auto()" to use explicit time binning
+                    # Common pattern: timechart bin_auto(field) -> timechart 5m, aggregation
+                    if "timechart" in fixed_query:
+                        # Replace bin_auto with standard time binning
+                        fixed_query = re.sub(r'\bbin_auto\s*\([^)]*\)', '5m', fixed_query)
+                        print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> 5m (explicit time bin)", file=sys.stderr)
+                    else:
+                        # In other contexts, bin_auto might be for histogram binning
+                        fixed_query = re.sub(r'\bbin_auto\s*\(([^)]+)\)', r'histogram(\1, 10)', fixed_query)
+                        print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> histogram() with 10 bins", file=sys.stderr)
     
     elif error_type == "line_continuation_error":
         # Fix multi-line query formatting
@@ -885,6 +931,66 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
             matches = re.findall(bracket_pattern, fixed_query)
             if matches:
                 print(f"[SURGICAL_FIX] Array access detected - consider using array_contains() instead of index access", file=sys.stderr)
+    
+        # Additional common OPAL syntax fixes for HTTP 400 errors
+        
+        # Fix incorrect aggregation syntax in statsby
+        if "statsby" in fixed_query:
+            # Fix missing group_by in statsby aggregations
+            if "group_by" not in fixed_query and ("by" in fixed_query or "group" in fixed_query):
+                # Pattern: statsby count(), field -> statsby count(), group_by(field)
+                statsby_pattern = r'statsby\s+([^|]+?)(?:,\s*by\s+(\w+)|,\s*group\s+(\w+)|,\s*(\w+)(?=\s*\|))'
+                match = re.search(statsby_pattern, fixed_query)
+                if match:
+                    aggregation = match.group(1).strip()
+                    group_field = match.group(2) or match.group(3) or match.group(4)
+                    if group_field and not group_field.startswith('group_by'):
+                        fixed_query = re.sub(statsby_pattern, f'statsby {aggregation}, group_by({group_field})', fixed_query)
+                        print(f"[SURGICAL_FIX] Fixed statsby grouping: added group_by({group_field})", file=sys.stderr)
+        
+        # Fix percentage/ratio calculations
+        if "percentage" in error_lower or "ratio" in error_lower:
+            # Common issue: trying to calculate percentages without proper aggregation
+            if "%" in fixed_query:
+                # Remove % symbols as they're not OPAL syntax
+                fixed_query = fixed_query.replace('%', '')
+                print(f"[SURGICAL_FIX] Removed percentage symbols (not OPAL syntax)", file=sys.stderr)
+        
+        # Fix time duration constants
+        time_duration_fixes = {
+            r'\b1min\b': '1m',
+            r'\b5min\b': '5m', 
+            r'\b10min\b': '10m',
+            r'\b30min\b': '30m',
+            r'\b1hour\b': '1h',
+            r'\b2hours\b': '2h',
+            r'\b24hours\b': '24h',
+            r'\b1week\b': '168h',
+            r'\b(\d+)\s*minutes?\b': r'\1m',
+            r'\b(\d+)\s*hours?\b': r'\1h',
+            r'\b(\d+)\s*days?\b': r'\1d'
+        }
+        
+        for pattern, replacement in time_duration_fixes.items():
+            if re.search(pattern, fixed_query, re.IGNORECASE):
+                fixed_query = re.sub(pattern, replacement, fixed_query, flags=re.IGNORECASE)
+                print(f"[SURGICAL_FIX] Fixed time duration: {pattern} -> {replacement}", file=sys.stderr)
+        
+        # Fix comparison operators
+        comparison_fixes = {
+            r'\bis\s+not\s+null\b': 'is not null',
+            r'\bis\s+null\b': 'is null',
+            r'\bnot\s+equal\s+to\b': '!=',
+            r'\bequals\s+to\b': '==',
+            r'\bgreater\s+than\b': '>',
+            r'\bless\s+than\b': '<',
+            r'\bcontains\b(?!\s*\()': '~'  # contains not as function
+        }
+        
+        for pattern, replacement in comparison_fixes.items():
+            if re.search(pattern, fixed_query, re.IGNORECASE):
+                fixed_query = re.sub(pattern, replacement, fixed_query, flags=re.IGNORECASE)
+                print(f"[SURGICAL_FIX] Fixed comparison operator: {pattern} -> {replacement}", file=sys.stderr)
     
     elif error_type == "type_mismatch":
         # Fix type mismatches (e.g., string instead of numeric for duration)
