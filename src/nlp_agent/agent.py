@@ -717,6 +717,32 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                         ns_value = int(float(num) * 1000000000)
                         fixed_query = re.sub(f'duration\\("{re.escape(match)}"\\)', str(ns_value), fixed_query)
                         print(f"[SURGICAL_FIX] Fixed duration string: duration(\"{match}\") -> {ns_value}ns", file=sys.stderr)
+        
+        # Fix field reference errors - common pattern: "field \"null\" does not exist"
+        if 'field "null" does not exist' in error_result:
+            # Replace references to literal null field with actual null checks
+            fixed_query = re.sub(r'\bnull\s*(?![=(])', 'is_null(field_name)', fixed_query)
+            print(f"[SURGICAL_FIX] Fixed null field reference", file=sys.stderr)
+        
+        elif 'field "undefined" does not exist' in error_result:
+            # Replace references to literal undefined field 
+            fixed_query = re.sub(r'\bundefined\s*(?![=(])', 'is_null(field_name)', fixed_query)
+            print(f"[SURGICAL_FIX] Fixed undefined field reference", file=sys.stderr)
+        
+        # Fix syntax errors - handle common comma/colon issues
+        if "expected ','" in error_result:
+            # Look for missing commas in function arguments or statsby aggregations
+            if "statsby" in fixed_query:
+                # Add commas between aggregation functions if missing
+                fixed_query = re.sub(r'(\w+\([^)]*\))\s+(\w+\()', r'\1, \2', fixed_query)
+                print(f"[SURGICAL_FIX] Added missing comma in statsby aggregation", file=sys.stderr)
+        
+        if "expected ':'" in error_result:
+            # Look for missing colons in field assignments or aggregations
+            if "statsby" in fixed_query:
+                # Fix aggregations missing colons like "count count()" -> "count:count()"
+                fixed_query = re.sub(r'\b(\w+)\s+(\w+\([^)]*\))', r'\1:\2', fixed_query)
+                print(f"[SURGICAL_FIX] Added missing colon in field assignment", file=sys.stderr)
     
     elif error_type == "unknown_verb":
         # Extract the specific unknown verb from error message
@@ -739,6 +765,23 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                     # Fix "by(field)" to "group_by(field)" 
                     fixed_query = re.sub(r'\bby\s*\(', 'group_by(', fixed_query)
                     print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> group_by()", file=sys.stderr)
+                elif bad_func == "isempty":
+                    # Fix "isempty(field)" to "is_null(field)"
+                    fixed_query = re.sub(r'\bisempty\s*\(', 'is_null(', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> is_null()", file=sys.stderr)
+                elif bad_func == "length":
+                    # Fix "length(field)" to "strlen(field)" for strings or "array_length(field)" for arrays
+                    # Default to strlen for safety since most length calls are on strings
+                    fixed_query = re.sub(r'\blength\s*\(', 'strlen(', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> strlen()", file=sys.stderr)
+                elif bad_func == "size":
+                    # Fix "size(field)" to "array_length(field)" for arrays
+                    fixed_query = re.sub(r'\bsize\s*\(', 'array_length(', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> array_length()", file=sys.stderr)
+                elif bad_func in ["empty", "isEmpty"]:
+                    # Common variations of empty check
+                    fixed_query = re.sub(rf'\b{bad_func}\s*\(', 'is_null(', fixed_query)
+                    print(f"[SURGICAL_FIX] Fixed function: {bad_func}() -> is_null()", file=sys.stderr)
     
     elif error_type == "line_continuation_error":
         # Fix multi-line query formatting
@@ -763,6 +806,28 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                 
             fixed_query = " ".join(fixed_lines)
             print(f"[SURGICAL_FIX] Fixed line continuation", file=sys.stderr)
+    
+    # Universal multi-line query fixes - apply to all error types
+    if '\n' in fixed_query:
+        # Fix JSON nested in OPAL causing line break issues
+        if '{' in fixed_query and '}' in fixed_query:
+            # Convert multi-line JSON to single line within OPAL
+            json_pattern = r'\{\s*([^}]+)\s*\}'
+            def fix_json(match):
+                content = match.group(1)
+                # Remove line breaks and normalize whitespace within JSON
+                content = re.sub(r'\s+', ' ', content.replace('\n', ' '))
+                return '{' + content + '}'
+            
+            fixed_query = re.sub(json_pattern, fix_json, fixed_query, flags=re.DOTALL)
+            print(f"[SURGICAL_FIX] Fixed nested JSON formatting", file=sys.stderr)
+        
+        # Remove line breaks that aren't part of string literals
+        if not ('"""' in fixed_query or "'''" in fixed_query):
+            # Safe to join lines - no multi-line strings
+            lines = [line.strip() for line in fixed_query.split('\n') if line.strip()]
+            fixed_query = ' '.join(lines)
+            print(f"[SURGICAL_FIX] Collapsed multi-line query to single line", file=sys.stderr)
     
     elif error_type == "invalid_options":
         # Fix invalid timechart/statsby options
@@ -832,6 +897,17 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
                 # Try to convert string field references to proper field access
                 fixed_query = re.sub(f'duration\\([^)]*"{match}"[^)]*\\)', f'duration({match})', fixed_query)
                 print(f"[SURGICAL_FIX] Fixed duration type: \"{match}\" -> {match}", file=sys.stderr)
+    
+    # Final cleanup: fix escape sequences and normalize whitespace
+    fixed_query = fixed_query.replace('\\n', ' ').replace('\\t', ' ')
+    fixed_query = re.sub(r'\s+', ' ', fixed_query).strip()
+    
+    # Remove any remaining dataset references that might cause issues
+    fixed_query = re.sub(r'^o::[^|]*\|\s*', '', fixed_query)
+    
+    # Ensure proper OPAL syntax structure
+    if fixed_query and not re.match(r'^(filter|statsby|timechart|fields|sort|limit)', fixed_query):
+        print(f"[SURGICAL_FIX] Warning: Query doesn't start with valid OPAL verb", file=sys.stderr)
     
     print(f"[SURGICAL_FIX] Result: {fixed_query[:100]}...", file=sys.stderr)
     return fixed_query
