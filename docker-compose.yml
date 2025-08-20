@@ -6,6 +6,8 @@ services:
     container_name: observe-mcp-server
     ports:
       - "8000:8000"
+    depends_on:
+      - postgres
     environment:
       # Pinecone configuration
       - PINECONE_API_KEY=${PINECONE_API_KEY}
@@ -26,6 +28,17 @@ services:
       - SMART_TOOLS_MODEL=${SMART_TOOLS_MODEL:-claude-sonnet-4-20250514}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       
+      # OPAL Memory System (PostgreSQL)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=opal_memory
+      - POSTGRES_USER=opal
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - OPAL_MEMORY_ENABLED=${OPAL_MEMORY_ENABLED:-true}
+      - OPAL_MEMORY_SIMILARITY_THRESHOLD=${OPAL_MEMORY_SIMILARITY_THRESHOLD:-0.85}
+      - OPAL_MEMORY_MAX_ENTRIES_PER_DATASET=${OPAL_MEMORY_MAX_ENTRIES_PER_DATASET:-50000}
+      - OPAL_MEMORY_CLEANUP_DAYS=${OPAL_MEMORY_CLEANUP_DAYS:-90}
+      
       # Docs and runbooks directories (inside container)
       - OBSERVE_DOCS_DIR=/app/observe-docs
       - OBSERVE_RUNBOOKS_DIR=/app/runbooks
@@ -42,6 +55,26 @@ services:
       retries: 3
       start_period: 40s
 
+  # PostgreSQL database for OPAL memory system with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: observe-opal-memory
+    environment:
+      POSTGRES_DB: opal_memory
+      POSTGRES_USER: opal
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"  # Optional: expose for debugging
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opal -d opal_memory"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Optional: Add a simple nginx proxy for production deployments
   nginx:
     image: nginx:alpine
@@ -57,6 +90,10 @@ services:
     restart: unless-stopped
     profiles:
       - production  # Only start with: docker-compose --profile production up
+
+volumes:
+  postgres_data:
+    driver: local
 
 networks:
   default:

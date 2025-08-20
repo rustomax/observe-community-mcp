@@ -631,6 +631,159 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
 
 # --- Smart Tools (LLM-powered) ---
 
+# --- OPAL Memory System Management Tools ---
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def get_opal_memory_stats(ctx: Context) -> Dict[str, Any]:
+    """
+    Get statistics and status information about the OPAL memory system.
+    
+    Returns information about:
+    - Number of stored successful queries
+    - Memory system health status
+    - Hit rates and performance metrics
+    - Configuration settings
+    """
+    try:
+        from src.opal_memory.queries import get_memory_stats
+        stats = await get_memory_stats()
+        return {"success": True, "stats": stats}
+    except ImportError:
+        return {"success": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def cleanup_opal_memory(ctx: Context, days_old: Optional[int] = None, dataset_id: Optional[str] = None, max_entries: Optional[int] = None) -> Dict[str, Any]:
+    """
+    Perform cleanup operations on the OPAL memory system.
+    
+    Args:
+        days_old: Remove entries older than this many days (default: from config)
+        dataset_id: If specified, only cleanup this dataset
+        max_entries: Maximum entries to keep per dataset (default: from config)
+        
+    Returns:
+        Cleanup results including number of entries removed
+    """
+    try:
+        from src.opal_memory.queries import cleanup_memory
+        result = await cleanup_memory(days_old, dataset_id, max_entries)
+        return result
+    except ImportError:
+        return {"success": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def opal_memory_health_check(ctx: Context) -> Dict[str, Any]:
+    """
+    Check the health status of the OPAL memory system.
+    
+    Returns:
+        Health status, database connectivity, and system recommendations
+    """
+    try:
+        from src.opal_memory.queries import health_check
+        result = await health_check()
+        return result
+    except ImportError:
+        return {"enabled": False, "healthy": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"enabled": True, "healthy": False, "error": str(e)}
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def perform_opal_memory_maintenance(ctx: Context) -> Dict[str, Any]:
+    """
+    Perform comprehensive maintenance check on the OPAL memory system.
+    
+    Returns:
+        Detailed maintenance report with recommendations and warnings
+    """
+    try:
+        from src.opal_memory.cleanup import perform_maintenance_check
+        result = await perform_maintenance_check()
+        return result
+    except ImportError:
+        return {"success": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def emergency_opal_memory_cleanup(ctx: Context, dataset_id: Optional[str] = None, max_entries: Optional[int] = 10000) -> Dict[str, Any]:
+    """
+    Perform emergency cleanup when the OPAL memory system is overwhelmed.
+    More aggressive than regular cleanup.
+    
+    Args:
+        dataset_id: If specified, only clean this dataset
+        max_entries: Maximum entries to keep per dataset (default: 10000)
+        
+    Returns:
+        Emergency cleanup results
+    """
+    try:
+        from src.opal_memory.cleanup import emergency_cleanup
+        result = await emergency_cleanup(dataset_id, max_entries)
+        return result
+    except ImportError:
+        return {"success": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@mcp.tool()
+@requires_scopes(['admin'])
+async def get_opal_memory_semantic_stats(ctx: Context) -> Dict[str, Any]:
+    """
+    Get statistics about the semantic search capabilities of the OPAL memory system.
+    
+    Returns:
+        Information about embedding model, dimensions, availability, and matching configuration
+    """
+    try:
+        from src.opal_memory.semantic import create_semantic_matcher
+        from src.opal_memory.embeddings import get_embedding_generator
+        
+        # Get semantic matcher stats
+        matcher = create_semantic_matcher()
+        matching_stats = matcher.get_matching_stats()
+        
+        # Get embedding generator stats  
+        generator = get_embedding_generator()
+        embedding_stats = {
+            "available": generator.is_available,
+            "model_name": generator.model_name if generator.is_available else None,
+            "embedding_dimension": generator.embedding_dimension,
+        }
+        
+        # Get domain mapper info
+        from src.opal_memory.domain import get_domain_mapper
+        domain_mapper = get_domain_mapper()
+        domain_stats = {
+            "concept_groups": len(domain_mapper.concept_groups),
+            "total_concepts": sum(len(concepts) for concepts in domain_mapper.concept_groups.values()),
+            "intent_patterns": len(domain_mapper.intent_patterns),
+        }
+        
+        return {
+            "success": True,
+            "semantic_matching": matching_stats,
+            "embeddings": embedding_stats,
+            "domain_knowledge": domain_stats,
+        }
+        
+    except ImportError:
+        return {"success": False, "error": "OPAL memory system not available (missing dependencies)"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# --- Smart Tools (LLM-powered) ---
+
 @mcp.tool()
 @requires_scopes(['smart_tools', 'admin'])
 async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:

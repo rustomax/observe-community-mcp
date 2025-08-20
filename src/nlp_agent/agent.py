@@ -114,6 +114,68 @@ async def execute_nlp_query(
         from src.observe import get_dataset_info as observe_get_dataset_info
         from src.observe import execute_opal_query as observe_execute_opal_query
         
+        # NEW: Check memory system for existing successful patterns
+        print(f"[NLPQ_MEMORY] Checking memory for existing patterns", file=sys.stderr)
+        try:
+            from src.opal_memory.queries import find_matching_queries, store_successful_query
+            
+            matching_queries = await find_matching_queries(dataset_id, request, time_range, max_matches=1)
+            
+            if matching_queries:
+                best_match = matching_queries[0]
+                print(f"[NLPQ_MEMORY] Found {best_match.match_type} match with {best_match.similarity_score:.2f} similarity, confidence: {best_match.confidence:.2f}", file=sys.stderr)
+                
+                # Execute the cached OPAL query
+                cached_query = best_match.query.opal_query
+                print(f"[NLPQ_MEMORY] Executing cached query: {cached_query[:100]}...", file=sys.stderr)
+                
+                try:
+                    cached_result = await observe_execute_opal_query(
+                        query=cached_query,
+                        dataset_id=dataset_id, 
+                        time_range=time_range,
+                        start_time=start_time,
+                        end_time=end_time,
+                        row_count=50
+                    )
+                    
+                    # Check if cached query was successful
+                    error_type, is_error = classify_error(cached_result)
+                    if not is_error:
+                        # Success! Return the cached result
+                        print(f"[NLPQ_MEMORY] Cached query executed successfully", file=sys.stderr)
+                        
+                        # Parse and format the results
+                        lines = cached_result.split('\n')
+                        if len(lines) > 1:
+                            data_lines = [line for line in lines[1:] if line.strip()]
+                            
+                            result = f"**Analysis for: {request}** (from memory)\n\n"
+                            result += f"**Dataset:** {dataset_id}\n"
+                            result += f"**Time Range:** {time_range}\n"
+                            result += f"**OPAL Query:** `{cached_query}` (cached {best_match.match_type} match)\n\n"
+                            result += f"**Results:**\n```\n{cached_result[:1000]}{'...' if len(cached_result) > 1000 else ''}\n```\n\n"
+                            result += f"**Summary:** Found {len(data_lines)} records from cached pattern (similarity: {best_match.similarity_score:.1%})."
+                            
+                            return result
+                        else:
+                            result = f"**Cached query executed** (from memory)\n\nQuery: `{cached_query}`\nResult: {cached_result}\nSimilarity: {best_match.similarity_score:.1%}"
+                            return result
+                            
+                    else:
+                        print(f"[NLPQ_MEMORY] Cached query failed ({error_type}), falling back to LLM generation", file=sys.stderr)
+                        
+                except Exception as cached_error:
+                    print(f"[NLPQ_MEMORY] Error executing cached query: {cached_error}, falling back to LLM generation", file=sys.stderr)
+            else:
+                print(f"[NLPQ_MEMORY] No matching patterns found in memory", file=sys.stderr)
+                
+        except ImportError:
+            print(f"[NLPQ_MEMORY] Memory system not available (missing dependencies)", file=sys.stderr)
+        except Exception as memory_error:
+            print(f"[NLPQ_MEMORY] Memory system error: {memory_error}, continuing with LLM generation", file=sys.stderr)
+        
+        # Continue with normal LLM-based query generation if no cached result
         print(f"[NLPQ_INFO] Step 1: Getting dataset schema", file=sys.stderr)
         schema_info = await observe_get_dataset_info(dataset_id=dataset_id)
         
@@ -395,6 +457,23 @@ OPAL Query:"""
             header = lines[0] if lines[0] else "Results"
             data_lines = [line for line in lines[1:] if line.strip()]
             
+            # NEW: Store successful query pattern in memory system
+            print(f"[NLPQ_MEMORY] Storing successful query pattern", file=sys.stderr)
+            try:
+                success_stored = await store_successful_query(
+                    dataset_id=dataset_id,
+                    nlp_query=request,
+                    opal_query=opal_query,
+                    row_count=len(data_lines),
+                    time_range=time_range
+                )
+                if success_stored:
+                    print(f"[NLPQ_MEMORY] Successfully stored query pattern for future use", file=sys.stderr)
+                else:
+                    print(f"[NLPQ_MEMORY] Failed to store query pattern (memory system may be disabled)", file=sys.stderr)
+            except Exception as store_error:
+                print(f"[NLPQ_MEMORY] Error storing successful query: {store_error}", file=sys.stderr)
+            
             result = f"**Analysis for: {request}**\n\n"
             result += f"**Dataset:** {dataset_id}\n"
             result += f"**Time Range:** {time_range}\n"
@@ -406,6 +485,21 @@ OPAL Query:"""
             
             return result
         else:
+            # Also store successful queries that return no data (they're still valid)
+            print(f"[NLPQ_MEMORY] Storing successful query pattern (no data returned)", file=sys.stderr)
+            try:
+                success_stored = await store_successful_query(
+                    dataset_id=dataset_id,
+                    nlp_query=request,
+                    opal_query=opal_query,
+                    row_count=0,
+                    time_range=time_range
+                )
+                if success_stored:
+                    print(f"[NLPQ_MEMORY] Successfully stored query pattern for future use", file=sys.stderr)
+            except Exception as store_error:
+                print(f"[NLPQ_MEMORY] Error storing successful query: {store_error}", file=sys.stderr)
+                
             return f"**No data found**\n\nQuery: `{opal_query}`\nResult: {query_result}"
             
     except Exception as e:

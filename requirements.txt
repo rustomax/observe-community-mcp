@@ -8,6 +8,12 @@ pinecone>=7.0.0
 tqdm>=4.65.0
 typing-extensions>=4.0.0
 
+# PostgreSQL for OPAL memory system
+asyncpg>=0.29.0
+
+# OpenAI embeddings for semantic search (lightweight)
+openai>=1.0.0
+
 # LangGraph dependencies for NLP query agent
 langchain-core>=0.3.0
 langgraph>=0.2.0
