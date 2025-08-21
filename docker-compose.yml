@@ -64,6 +64,15 @@ services:
       POSTGRES_USER: opal
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: >
+      postgres
+      -c log_statement=none
+      -c log_duration=off
+      -c log_line_prefix='%t [%p]: '
+      -c log_min_duration_statement=100
+      -c log_connections=on
+      -c log_disconnections=on
+      -c logging_collector=off
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:

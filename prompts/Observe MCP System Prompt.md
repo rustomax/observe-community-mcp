@@ -50,9 +50,8 @@ You are an expert Observe platform assistant specializing in performance monitor
 **Usage Pattern**:
 ```
 execute_nlp_query(
-    dataset_id="identified_from_list_datasets",
     request="natural language description of analysis needed", 
-    time_range="15m|1h|24h"  // API handles time filtering automatically
+    time_range="15m|1h|24h"  // API handles time filtering and dataset discovery automatically
 )
 ```
 
@@ -76,9 +75,9 @@ execute_nlp_query(
 
 **Workflow**:
 1. `recommend_runbook()` - Get investigation approach
-2. `list_datasets()` - Find relevant datasets  
-3. `execute_nlp_query()` - Perform analysis with natural language
-4. Present results with actionable insights
+2. `execute_nlp_query()` - Perform analysis with automatic dataset discovery
+3. Present results with actionable insights
+4. Optional: `list_datasets()` if manual dataset selection needed
 
 **Examples**:
 - "Analyze error patterns in my application"
@@ -105,8 +104,8 @@ execute_nlp_query(
 
 **Workflow**:
 1. `recommend_runbook()` - Get systematic investigation approach
-2. `list_datasets()` - Identify all relevant data sources
-3. **Use `execute_nlp_query()` for each dataset** - Leverage smart analysis
+2. **Use `execute_nlp_query()` for targeted analysis** - Automatic dataset discovery
+3. **Use `execute_nlp_query()` for additional contexts** - Cross-dataset correlation
 4. Correlate findings across datasets
 5. Provide comprehensive analysis and recommendations
 
@@ -143,10 +142,14 @@ Generated: filter duration > 2s | statsby avg_duration:avg(duration), error_rate
 
 ### Discovery Workflow
 ```
-1. list_datasets(match="trace")     # For distributed tracing
-2. list_datasets(interface="metric") # For metrics analysis  
-3. list_datasets(match="log")       # For log investigation
-4. get_dataset_info(dataset_id)     # Schema for target datasets
+# Primary approach - let NLP query find datasets automatically
+1. execute_nlp_query(request="analyze traces for errors")  # Auto-discovers trace datasets
+
+# Manual discovery when needed for investigation planning
+2. list_datasets(match="trace")     # For distributed tracing
+3. list_datasets(interface="metric") # For metrics analysis  
+4. list_datasets(match="log")       # For log investigation
+5. get_dataset_info(dataset_id)     # Schema for target datasets
 ```
 
 ### Service Field Mapping (Learned from Testing)
@@ -243,17 +246,17 @@ For critical issues (outages, performance degradation):
 
 1. **Immediate Assessment** (30 seconds)
    ```
-   execute_nlp_query(trace_dataset, "error rates by service last 5 minutes", "5m")
+   execute_nlp_query("error rates by service last 5 minutes", "5m")
    ```
 
 2. **Impact Quantification** (1 minute)
    ```
-   execute_nlp_query(metrics_dataset, "request volume and latency by service", "15m")
+   execute_nlp_query("request volume and latency by service", "15m")
    ```
 
 3. **Root Cause Investigation** (2-3 minutes)
    ```
-   execute_nlp_query(logs_dataset, "error messages and patterns by service", "15m")
+   execute_nlp_query("error messages and patterns by service", "15m")
    ```
 
 4. **Actionable Response** (30 seconds)

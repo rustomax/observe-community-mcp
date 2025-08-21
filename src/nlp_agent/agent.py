@@ -89,7 +89,6 @@ def create_opal_agent():
 
 
 async def execute_nlp_query(
-    dataset_id: str,
     request: str, 
     time_range: Optional[str] = "1h",
     start_time: Optional[str] = None,
@@ -100,7 +99,8 @@ async def execute_nlp_query(
     """
     Execute a natural language query using a simplified, efficient approach.
     
-    This implementation minimizes LLM API calls and focuses on tool execution.
+    This implementation automatically discovers relevant datasets using semantic search
+    and minimizes LLM API calls while focusing on tool execution.
     """
     
     # Set up MCP context for tools
@@ -113,8 +113,51 @@ async def execute_nlp_query(
         # Import the actual MCP functions directly
         from src.observe import get_dataset_info as observe_get_dataset_info
         from src.observe import execute_opal_query as observe_execute_opal_query
+        from src.observe import list_datasets as observe_list_datasets
         
-        # NEW: Check memory system for existing successful patterns
+        # Step 1: Discover relevant datasets using semantic search
+        print(f"[NLPQ_DISCOVERY] Finding relevant datasets for query", file=sys.stderr)
+        
+        # Try DIRECT dataset selection first (field-based approach)
+        try:
+            from src.dataset_intelligence.direct_selection import find_datasets_direct
+            
+            print(f"[NLPQ_DISCOVERY] Trying direct field-based dataset selection...", file=sys.stderr)
+            relevant_datasets = await find_datasets_direct(request, limit=3)
+            
+            if relevant_datasets:
+                # Use the best matching dataset
+                best_dataset = relevant_datasets[0]
+                dataset_id = best_dataset["dataset_id"]
+                score = best_dataset.get("selection_score", 0)
+                print(f"[NLPQ_DISCOVERY] Selected dataset via direct selection: {best_dataset['name']} (ID: {dataset_id}, Score: {score})", file=sys.stderr)
+            else:
+                print(f"[NLPQ_DISCOVERY] Direct selection found no datasets, trying semantic fallback...", file=sys.stderr)
+                
+                # Fallback to semantic search
+                from src.dataset_intelligence.search import find_relevant_datasets, find_datasets_by_keywords
+                
+                relevant_datasets = await find_relevant_datasets(request, limit=3, similarity_threshold=0.5)
+                
+                if not relevant_datasets:
+                    print(f"[NLPQ_DISCOVERY] Semantic search found no results, trying keyword search...", file=sys.stderr)
+                    relevant_datasets = await find_datasets_by_keywords(request, limit=3)
+                
+                if relevant_datasets:
+                    best_dataset = relevant_datasets[0]
+                    dataset_id = best_dataset["dataset_id"]
+                    print(f"[NLPQ_DISCOVERY] Selected dataset via semantic fallback: {best_dataset['name']} (ID: {dataset_id})", file=sys.stderr)
+                else:
+                    # Final fallback: use a known good dataset
+                    dataset_id = "42160987"  # ServiceExplorer/Service Edge
+                    print(f"[NLPQ_DISCOVERY] No datasets found via any method, using hardcoded fallback: {dataset_id}", file=sys.stderr)
+                
+        except Exception as e:
+            print(f"[NLPQ_DISCOVERY] Error in dataset discovery: {e}", file=sys.stderr)
+            dataset_id = "42160987"  # ServiceExplorer/Service Edge
+            print(f"[NLPQ_DISCOVERY] Using fallback dataset due to error: {dataset_id}", file=sys.stderr)
+        
+        # Check memory system for existing successful patterns with discovered dataset
         print(f"[NLPQ_MEMORY] Checking memory for existing patterns", file=sys.stderr)
         try:
             from src.opal_memory.queries import find_matching_queries, store_successful_query
@@ -238,6 +281,7 @@ async def execute_nlp_query(
             opal_docs = "Error accessing documentation - using basic OPAL guidance:\\n\\nBasic OPAL syntax: filter, distinct, statsby, timechart, sort, limit"
         
         # Step 3: Create a single, focused LLM prompt
+        import os  # Ensure os is available locally
         model = ChatAnthropic(
             model=os.getenv("SMART_TOOLS_MODEL", "claude-sonnet-4-20250514"),
             temperature=0,

@@ -786,19 +786,19 @@ async def get_opal_memory_semantic_stats(ctx: Context) -> Dict[str, Any]:
 
 @mcp.tool()
 @requires_scopes(['smart_tools', 'admin'])
-async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
     """
     Execute a natural language query request using LangGraph agent.
     
     This tool uses LangGraph's conversation-aware agent to:
-    1. Understand the user request with proper context
-    2. Get dataset schema information
-    3. Generate appropriate OPAL queries
-    4. Handle errors and retry with learned context
-    5. Analyze real results without hallucination
+    1. Automatically discover relevant datasets using semantic search
+    2. Understand the user request with proper context
+    3. Get dataset schema information
+    4. Generate appropriate OPAL queries
+    5. Handle errors and retry with learned context
+    6. Analyze real results without hallucination
     
     Args:
-        dataset_id: The ID of the dataset to query
         request: Natural language description of what data you want
         time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
@@ -808,7 +808,7 @@ async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_ra
         The actual query results from the Observe dataset with analysis
         
     Example:
-        execute_nlp_query("42160988", "Show me error rates by service in the last hour")
+        execute_nlp_query("Show me error rates by service in the last hour")
     """
     # Check if required environment variables are available
     if not os.getenv("ANTHROPIC_API_KEY"):
@@ -822,7 +822,6 @@ async def execute_nlp_query(ctx: Context, dataset_id: str, request: str, time_ra
         
         # Execute the LangGraph agent with MCP context
         result = await langgraph_execute_nlp_query(
-            dataset_id=dataset_id,
             request=request,
             time_range=time_range,
             start_time=start_time,
