@@ -184,12 +184,71 @@ class DirectDatasetSelector:
                              if keyword in name or keyword in description)
         score += keyword_matches * 2
         
-        # Score 4: Direct query keywords in dataset (bonus points)
+        # Score 4: Direct dataset name mentions (high priority!)
+        # If user explicitly mentions a dataset category, give huge bonus
+        explicit_dataset_mentions = self._check_explicit_dataset_mentions(query_lower, name)
+        if explicit_dataset_mentions > 0:
+            score += explicit_dataset_mentions * 50  # Very high weight for explicit mentions
+            print(f"[DIRECT_SELECTOR]     🎯 Explicit dataset mention bonus: +{explicit_dataset_mentions * 50}")
+        
+        # Score 5: General query keywords in dataset name (smaller bonus)
         query_words = query_lower.split()
         name_matches = sum(1 for word in query_words if len(word) > 3 and word in name)
         score += name_matches * 5
         
         return score
+    
+    def _check_explicit_dataset_mentions(self, query_lower: str, dataset_name_lower: str) -> int:
+        """
+        Check if the user explicitly mentions a dataset type or category.
+        Returns the number of explicit mentions found.
+        """
+        explicit_mentions = 0
+        
+        # Define common dataset patterns that users explicitly reference
+        dataset_patterns = [
+            # Infrastructure/K8s patterns
+            ("kubernetes", ["kubernetes"]),
+            ("k8s", ["k8s", "kubernetes"]), 
+            ("logs", ["logs", "log"]),
+            ("opentelemetry", ["opentelemetry", "otel"]),
+            ("prometheus", ["prometheus", "metrics"]),
+            
+            # Service patterns  
+            ("service", ["service", "serviceexplorer"]),
+            ("trace", ["trace", "tracing"]),
+            ("span", ["span", "spans"]),
+            
+            # Business patterns
+            ("hero", ["hero", "journey"]),
+            ("cdp", ["cdp", "customer"]),
+            ("product", ["product"]),
+        ]
+        
+        # Check if query contains explicit dataset references
+        for pattern_name, variations in dataset_patterns:
+            # If user mentions the pattern AND the dataset name contains it
+            if any(var in query_lower for var in variations):
+                if pattern_name in dataset_name_lower:
+                    explicit_mentions += 1
+        
+        # Special case: if user says "kubernetes logs" and dataset is "kubernetes explorer/kubernetes logs"
+        combined_phrases = [
+            ("kubernetes logs", "kubernetes.*logs"),
+            ("kubernetes entity", "kubernetes.*entity"), 
+            ("opentelemetry logs", "opentelemetry.*logs"),
+            ("service metrics", "service.*metrics"),
+            ("prometheus metrics", "prometheus.*metrics")
+        ]
+        
+        for phrase, pattern in combined_phrases:
+            if phrase in query_lower and any(word in dataset_name_lower for word in phrase.split()):
+                # Check if the words appear in the right context
+                import re
+                if re.search(pattern, dataset_name_lower):
+                    explicit_mentions += 2  # Higher weight for exact phrase matches
+        
+        return explicit_mentions
     
     def _general_dataset_ranking(self, available_datasets: List[Dict]) -> List[Dict]:
         """Fallback ranking when we can't classify the query."""

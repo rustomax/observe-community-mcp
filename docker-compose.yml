@@ -23,10 +23,12 @@ services:
       - PUBLIC_KEY_PEM=${PUBLIC_KEY_PEM}
       
       # Smart Tools Configuration (LLM-powered tools)
-      - SMART_TOOLS_LLM_PROVIDER=${SMART_TOOLS_LLM_PROVIDER:-anthropic}
+      - SMART_TOOLS_LLM_PROVIDER=${SMART_TOOLS_LLM_PROVIDER:-openai}
       - SMART_TOOLS_API_KEY=${SMART_TOOLS_API_KEY}
-      - SMART_TOOLS_MODEL=${SMART_TOOLS_MODEL:-claude-sonnet-4-20250514}
+      - SMART_TOOLS_MODEL=${SMART_TOOLS_MODEL:-gpt-5}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-5}
       
       # OPAL Memory System (PostgreSQL)
       - POSTGRES_HOST=postgres

@@ -8,6 +8,9 @@ import sys
 from typing import Optional, Dict, Any
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
+import anthropic
+import openai
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 from langgraph.checkpoint.memory import MemorySaver
@@ -26,12 +29,14 @@ def create_opal_agent():
     in execute_nlp_query is now preferred to avoid rate limiting.
     """
     
-    # Initialize the language model
-    model = ChatAnthropic(
-        model=os.getenv("SMART_TOOLS_MODEL", "claude-sonnet-4-20250514"),
-        temperature=0,
-        api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-    )
+    # Initialize the language models with fallback
+    primary_model, fallback_model = create_model_with_fallback()
+    
+    # For the agent, we'll use a wrapper that handles fallbacks
+    def safe_invoke(messages):
+        return invoke_with_fallback(primary_model, fallback_model, messages, "agent invocation")
+    
+    model = primary_model  # Keep the interface the same for now
     
     # Bind tools to the model
     model_with_tools = model.bind_tools(OPAL_TOOLS)
@@ -46,8 +51,28 @@ def create_opal_agent():
     def chatbot_node(state: OPALAgentState):
         """Node that invokes the LLM with tools."""
         messages = state["messages"]
-        response = model_with_tools.invoke(messages)
-        return {"messages": [response]}
+        try:
+            # Try primary model first
+            response = model_with_tools.invoke(messages)
+            return {"messages": [response]}
+        except Exception as e:
+            # Check for OpenAI-specific rate limit or overload errors  
+            error_type = type(e).__name__
+            if "RateLimitError" in error_type or (hasattr(e, 'status_code') and e.status_code in [429, 503, 529]):
+                print(f"[AGENT_FALLBACK] OpenAI overloaded/rate-limited ({error_type}), using Anthropic fallback: {e}", file=sys.stderr)
+            else:
+                print(f"[AGENT_FALLBACK] OpenAI failed ({error_type}), using Anthropic fallback: {e}", file=sys.stderr)
+            
+            # Fallback to Anthropic with tools
+            fallback_with_tools = fallback_model.bind_tools(OPAL_TOOLS)
+            response = fallback_with_tools.invoke(messages)
+            return {"messages": [response]}
+        except Exception as e:
+            print(f"[AGENT_FALLBACK] Primary model failed, using OpenAI fallback: {e}", file=sys.stderr)
+            # Fallback to OpenAI with tools
+            fallback_with_tools = fallback_model.bind_tools(OPAL_TOOLS)
+            response = fallback_with_tools.invoke(messages)
+            return {"messages": [response]}
     
     workflow.add_node("chatbot", chatbot_node)
     
@@ -86,6 +111,62 @@ def create_opal_agent():
     app = workflow.compile(checkpointer=memory)
     
     return app
+
+
+def create_model_with_fallback():
+    """
+    Create an LLM instance with fallback from OpenAI to Anthropic.
+    Returns tuple of (primary_model, fallback_model).
+    """
+    # Primary: OpenAI model (using GPT-5 - the most advanced model available!)
+    primary_model = ChatOpenAI(
+        model=os.getenv("SMART_TOOLS_MODEL", "gpt-5"),
+        temperature=0,
+        api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("OPENAI_API_KEY"),
+        timeout=45  # GPT-5 should be faster than o1 models
+    )
+    
+    # Fallback: Anthropic model
+    fallback_model = ChatAnthropic(
+        model="claude-sonnet-4-20250514",
+        temperature=0,
+        api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
+        timeout=30,
+        stop=None
+    )
+    
+    return primary_model, fallback_model
+
+
+def invoke_with_fallback(primary_model, fallback_model, messages, context="query generation"):
+    """
+    Invoke LLM with automatic fallback from OpenAI to Anthropic on overload errors.
+    Returns the response from whichever model succeeds.
+    """
+    print(f"[NLPQ_FALLBACK] Attempting {context} with OpenAI model...", file=sys.stderr)
+    
+    try:
+        # Try OpenAI first
+        response = primary_model.invoke(messages)
+        print(f"[NLPQ_FALLBACK] OpenAI model succeeded for {context}", file=sys.stderr)
+        return response
+        
+    except Exception as e:
+        # Check for OpenAI-specific rate limit or overload errors
+        error_type = type(e).__name__
+        if "RateLimitError" in error_type or (hasattr(e, 'status_code') and e.status_code in [429, 503, 529]):
+            print(f"[NLPQ_FALLBACK] OpenAI API overloaded/rate-limited ({error_type}): {e}, falling back to Anthropic...", file=sys.stderr)
+        else:
+            print(f"[NLPQ_FALLBACK] OpenAI model failed ({error_type}): {e}, falling back to Anthropic...", file=sys.stderr)
+        
+        try:
+            response = fallback_model.invoke(messages)
+            print(f"[NLPQ_FALLBACK] Anthropic fallback succeeded for {context}", file=sys.stderr)
+            return response
+            
+        except Exception as fallback_error:
+            print(f"[NLPQ_FALLBACK] Anthropic fallback failed: {fallback_error}", file=sys.stderr)
+            raise Exception(f"Both models failed. OpenAI error: {e}, Anthropic error: {fallback_error}")
 
 
 async def execute_nlp_query(
@@ -280,15 +361,9 @@ async def execute_nlp_query(
             print(f"[NLPQ_INFO] Error searching docs: {e}", file=sys.stderr)
             opal_docs = "Error accessing documentation - using basic OPAL guidance:\\n\\nBasic OPAL syntax: filter, distinct, statsby, timechart, sort, limit"
         
-        # Step 3: Create a single, focused LLM prompt
+        # Step 3: Create models with fallback capability
         import os  # Ensure os is available locally
-        model = ChatAnthropic(
-            model=os.getenv("SMART_TOOLS_MODEL", "claude-sonnet-4-20250514"),
-            temperature=0,
-            api_key=os.getenv("SMART_TOOLS_API_KEY") or os.getenv("ANTHROPIC_API_KEY"),
-            timeout=30,
-            stop=None
-        )
+        primary_model, fallback_model = create_model_with_fallback()
         
         prompt = f"""You are an OPAL query expert. Generate ONE working OPAL query based on the information below.
 
@@ -367,7 +442,7 @@ OPAL Query:"""
         print(f"[NLPQ_INFO] Prompt length: {len(prompt)} chars", file=sys.stderr)
         print(f"[NLPQ_INFO] Prompt preview: {prompt[:500]}...", file=sys.stderr)
         
-        response = model.invoke([HumanMessage(content=prompt)])
+        response = invoke_with_fallback(primary_model, fallback_model, [HumanMessage(content=prompt)], "OPAL query generation")
         opal_query = response.content.strip()
         
         # Clean up the query (remove markdown, extra text, SQL keywords)
@@ -442,7 +517,7 @@ OPAL Query:"""
                     recovery_strategies.append(f"Attempt {retry_count}: {recovery_strategy['name']}")
                     fixed_query = await apply_recovery_strategy(
                         recovery_strategy, opal_query, query_result, error_type, 
-                        model, schema_info, request, dataset_id, recovery_strategies
+                        primary_model, fallback_model, schema_info, request, dataset_id, recovery_strategies
                     )
                     strategy_name = recovery_strategy['name']
                 
@@ -1064,7 +1139,7 @@ def apply_surgical_fix(failed_query: str, error_result: str, error_type: str, sc
 
 
 async def apply_recovery_strategy(strategy: dict, failed_query: str, error_result: str, 
-                                error_type: str, model, schema_info: str, request: str, 
+                                error_type: str, primary_model, fallback_model, schema_info: str, request: str, 
                                 dataset_id: str, recovery_history: list = None) -> str:
     """
     Apply the selected recovery strategy to generate a corrected query.
@@ -1191,7 +1266,7 @@ CRITICAL RULES:
 Generate a corrected OPAL query:"""
         
         # Generate recovery query
-        recovery_response = model.invoke([HumanMessage(content=recovery_prompt)])
+        recovery_response = invoke_with_fallback(primary_model, fallback_model, [HumanMessage(content=recovery_prompt)], "recovery strategy")
         fixed_query = recovery_response.content.strip()
         
         # Clean the response
