@@ -7,15 +7,23 @@ with flexible time parameter support.
 
 import sys
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from .client import make_observe_request
 from .config import validate_observe_config
+from .dataset_aliases import (
+    validate_multi_dataset_query,
+    resolve_dataset_aliases, 
+    build_dataset_context
+)
 
 
 async def execute_opal_query(
     query: str, 
-    dataset_id: str, 
+    dataset_id: str = None,
+    primary_dataset_id: str = None,
+    secondary_dataset_ids: Optional[List[str]] = None,
+    dataset_aliases: Optional[Dict[str, str]] = None,
     time_range: Optional[str] = "1h", 
     start_time: Optional[str] = None, 
     end_time: Optional[str] = None, 
@@ -23,11 +31,14 @@ async def execute_opal_query(
     format: Optional[str] = "csv"
 ) -> str:
     """
-    Execute an OPAL query on a dataset.
+    Execute an OPAL query on single or multiple datasets.
     
     Args:
         query: The OPAL query to execute
-        dataset_id: The ID of the dataset to query
+        dataset_id: DEPRECATED: Use primary_dataset_id instead. Kept for backward compatibility.
+        primary_dataset_id: The ID of the primary dataset to query
+        secondary_dataset_ids: Optional list of secondary dataset IDs for joins/unions
+        dataset_aliases: Optional mapping of aliases to dataset IDs (e.g., {"volumes": "44508111"})
         time_range: Time range for the query (e.g., "1h", "1d", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
@@ -36,6 +47,18 @@ async def execute_opal_query(
         
     Returns:
         Query results as a formatted string
+        
+    Examples:
+        # Single dataset query (backward compatible)
+        execute_opal_query("filter metric = 'CPUUtilization'", dataset_id="44508123")
+        
+        # Multi-dataset join query
+        execute_opal_query(
+            query="join on(instanceId=@volumes.instanceId), volume_size:@volumes.size",
+            primary_dataset_id="44508123",  # EC2 Instance Metrics
+            secondary_dataset_ids=["44508111"],  # EBS Volumes
+            dataset_aliases={"volumes": "44508111"}
+        )
     """
     # Validate configuration
     config_error = validate_observe_config()
@@ -43,10 +66,30 @@ async def execute_opal_query(
         return config_error
     
     try:
+        # Handle backward compatibility
+        if dataset_id is not None and primary_dataset_id is None:
+            primary_dataset_id = dataset_id
+        elif primary_dataset_id is None:
+            return "Error: Either dataset_id or primary_dataset_id must be specified"
+        
+        # Validate multi-dataset query if secondary datasets are provided
+        if secondary_dataset_ids and len(secondary_dataset_ids) > 0:
+            is_valid, validation_errors = validate_multi_dataset_query(
+                query=query,
+                primary_dataset_id=primary_dataset_id,
+                secondary_dataset_ids=secondary_dataset_ids,
+                dataset_aliases=dataset_aliases
+            )
+            
+            if not is_valid:
+                return f"Multi-dataset query validation failed: {'; '.join(validation_errors)}"
+        
         # Validate and prepare parameters
         validated_params = _validate_query_parameters(
             query=query,
-            dataset_id=dataset_id,
+            primary_dataset_id=primary_dataset_id,
+            secondary_dataset_ids=secondary_dataset_ids,
+            dataset_aliases=dataset_aliases,
             time_range=time_range,
             start_time=start_time,
             end_time=end_time,
@@ -60,7 +103,11 @@ async def execute_opal_query(
         payload, params, headers = validated_params
         
         # Log the request details
-        print(f"DEBUG: Executing OPAL query on dataset {dataset_id}", file=sys.stderr)
+        print(f"DEBUG: Executing OPAL query on primary dataset {primary_dataset_id}", file=sys.stderr)
+        if secondary_dataset_ids:
+            print(f"DEBUG: Secondary datasets: {secondary_dataset_ids}", file=sys.stderr)
+        if dataset_aliases:
+            print(f"DEBUG: Dataset aliases: {dataset_aliases}", file=sys.stderr)
         print(f"DEBUG: Time parameters: {params}", file=sys.stderr)
         print(f"DEBUG: Format: {format}", file=sys.stderr)
         print(f"DEBUG: Query: {query}", file=sys.stderr)
@@ -84,7 +131,9 @@ async def execute_opal_query(
 
 def _validate_query_parameters(
     query: str,
-    dataset_id: str,
+    primary_dataset_id: str,
+    secondary_dataset_ids: Optional[List[str]],
+    dataset_aliases: Optional[Dict[str, str]],
     time_range: Optional[str],
     start_time: Optional[str],
     end_time: Optional[str],
@@ -92,7 +141,7 @@ def _validate_query_parameters(
     format: Optional[str]
 ) -> tuple:
     """
-    Validate and prepare query parameters.
+    Validate and prepare query parameters for single or multi-dataset queries.
     
     Returns:
         Tuple of (payload, params, headers) or error string
@@ -102,17 +151,40 @@ def _validate_query_parameters(
         row_count = 100000
         print(f"WARNING: Row count limited to maximum of 100000", file=sys.stderr)
     
+    # Prepare input datasets for the query
+    input_datasets = [
+        {
+            "inputName": "main",
+            "datasetId": primary_dataset_id
+        }
+    ]
+    
+    # Add secondary datasets if provided
+    if secondary_dataset_ids:
+        for i, secondary_id in enumerate(secondary_dataset_ids):
+            # Use alias if provided, otherwise generate a name
+            input_name = None
+            if dataset_aliases:
+                # Find alias for this dataset ID
+                for alias, dataset_id_val in dataset_aliases.items():
+                    if dataset_id_val == secondary_id:
+                        input_name = alias
+                        break
+            
+            if not input_name:
+                input_name = f"dataset_{i+1}"
+            
+            input_datasets.append({
+                "inputName": input_name,
+                "datasetId": secondary_id
+            })
+    
     # Prepare query payload according to the API specification
     payload = {
         "query": {
             "stages": [
                 {
-                    "input": [
-                        {
-                            "inputName": "main",
-                            "datasetId": dataset_id
-                        }
-                    ],
+                    "input": input_datasets,
                     "stageID": "query_stage",
                     "pipeline": query
                 }
@@ -234,8 +306,10 @@ class QueryBuilder:
     Helper class for building OPAL queries programmatically.
     """
     
-    def __init__(self, dataset_id: str):
-        self.dataset_id = dataset_id
+    def __init__(self, primary_dataset_id: str, secondary_dataset_ids: Optional[List[str]] = None, dataset_aliases: Optional[Dict[str, str]] = None):
+        self.primary_dataset_id = primary_dataset_id
+        self.secondary_dataset_ids = secondary_dataset_ids or []
+        self.dataset_aliases = dataset_aliases or {}
         self.pipeline_steps = []
     
     def filter(self, condition: str) -> 'QueryBuilder':
@@ -269,7 +343,9 @@ class QueryBuilder:
         query = self.build()
         return await execute_opal_query(
             query=query,
-            dataset_id=self.dataset_id,
+            primary_dataset_id=self.primary_dataset_id,
+            secondary_dataset_ids=self.secondary_dataset_ids,
+            dataset_aliases=self.dataset_aliases,
             time_range=time_range,
             start_time=start_time,
             end_time=end_time,

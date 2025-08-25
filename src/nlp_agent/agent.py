@@ -256,7 +256,7 @@ async def execute_nlp_query(
                 try:
                     cached_result = await observe_execute_opal_query(
                         query=cached_query,
-                        dataset_id=dataset_id, 
+                        primary_dataset_id=dataset_id, 
                         time_range=time_range,
                         start_time=start_time,
                         end_time=end_time,
@@ -478,16 +478,26 @@ OPAL Query:"""
             opal_query = fix_obvious_issues(opal_query, validation_issues)
             print(f"[NLPQ_RELIABILITY] Pre-validation corrected query: {opal_query}", file=sys.stderr)
         
-        # Step 4: Execute the query
+        # Step 3.6: Analyze query for multi-dataset patterns
+        multi_dataset_info = detect_multi_dataset_query(opal_query, request)
+        
+        # Step 4: Execute the query (single or multi-dataset)
         print(f"[NLPQ_INFO] Step 4: Executing query", file=sys.stderr)
-        query_result = await observe_execute_opal_query(
-            query=opal_query,
-            dataset_id=dataset_id, 
-            time_range=time_range,
-            start_time=start_time,
-            end_time=end_time,
-            row_count=50  # Limit for efficiency
-        )
+        if multi_dataset_info["is_multi_dataset"]:
+            print(f"[NLPQ_MULTI] Multi-dataset query detected: {multi_dataset_info}", file=sys.stderr)
+            query_result = await execute_multi_dataset_query(
+                opal_query, dataset_id, multi_dataset_info, 
+                time_range, start_time, end_time
+            )
+        else:
+            query_result = await observe_execute_opal_query(
+                query=opal_query,
+                primary_dataset_id=dataset_id, 
+                time_range=time_range,
+                start_time=start_time,
+                end_time=end_time,
+                row_count=50  # Limit for efficiency
+            )
         
         # Step 5: Multi-tier error recovery with progressive strategies
         retry_count = 0
@@ -525,9 +535,15 @@ OPAL Query:"""
                     print(f"[NLPQ_RELIABILITY] Trying strategy '{strategy_name}': {fixed_query[:100]}...", file=sys.stderr)
                     
                     # Execute with retry logic for transient failures
-                    query_result = await execute_with_retry(
-                        fixed_query, dataset_id, time_range, start_time, end_time
-                    )
+                    if multi_dataset_info["is_multi_dataset"]:
+                        query_result = await execute_multi_dataset_query(
+                            fixed_query, dataset_id, multi_dataset_info, 
+                            time_range, start_time, end_time
+                        )
+                    else:
+                        query_result = await execute_with_retry(
+                            fixed_query, dataset_id, time_range, start_time, end_time
+                        )
                     opal_query = fixed_query
                 else:
                     print(f"[NLPQ_RELIABILITY] Strategy '{strategy_name}' did not generate a different query", file=sys.stderr)
@@ -1325,7 +1341,7 @@ async def execute_with_retry(query: str, dataset_id: str, time_range: str,
             
             result = await observe_execute_opal_query(
                 query=query,
-                dataset_id=dataset_id,
+                primary_dataset_id=dataset_id,
                 time_range=time_range,
                 start_time=start_time,
                 end_time=end_time,
@@ -1548,3 +1564,212 @@ def fix_obvious_issues(query: str, issues: list) -> str:
                 fixed_query += ')' * open_count
     
     return fixed_query.strip()
+
+
+def detect_multi_dataset_query(opal_query: str, request: str) -> dict:
+    """
+    Detect if an OPAL query requires multiple datasets by analyzing patterns.
+    
+    Returns dict with multi-dataset information:
+    {
+        "is_multi_dataset": bool,
+        "join_patterns": list,
+        "dataset_references": list,
+        "suggested_datasets": list
+    }
+    """
+    query_lower = opal_query.lower()
+    request_lower = request.lower()
+    
+    # Multi-dataset indicators in OPAL query
+    multi_dataset_patterns = [
+        r'@[\w"]+',  # Dataset references like @volumes or @"dataset_name"
+        r'\bjoin\b',  # Join operations
+        r'\bleftjoin\b',  # Left join operations  
+        r'\bfulljoin\b',  # Full join operations
+        r'\blookup\b',  # Lookup operations
+        r'\bunion\b',  # Union operations
+        r'\bexists\b'  # Exists operations
+    ]
+    
+    detected_patterns = []
+    dataset_references = []
+    
+    for pattern in multi_dataset_patterns:
+        matches = re.findall(pattern, query_lower)
+        if matches:
+            detected_patterns.extend(matches)
+            if pattern.startswith(r'@'):
+                dataset_references.extend(matches)
+    
+    # Multi-dataset indicators in natural language request
+    nl_multi_dataset_patterns = [
+        'correlate', 'correlation', 'join', 'merge', 'combine',
+        'with', 'and', 'compare', 'relationship', 'link',
+        'volumes', 'instances', 'containers', 'pods', 'services',
+        'metrics with', 'logs with', 'events with'
+    ]
+    
+    nl_indicators = [pattern for pattern in nl_multi_dataset_patterns 
+                     if pattern in request_lower]
+    
+    is_multi_dataset = len(detected_patterns) > 0 or len(nl_indicators) > 2
+    
+    # Suggest related datasets based on common patterns
+    suggested_datasets = []
+    if 'volume' in request_lower or 'ebs' in request_lower:
+        suggested_datasets.append({"name": "aws/EC2 EBS Volume", "alias": "volumes"})
+    if 'instance' in request_lower or 'ec2' in request_lower:
+        suggested_datasets.append({"name": "aws/EC2 Instance", "alias": "instances"})  
+    if 'cloudtrail' in request_lower or 'events' in request_lower:
+        suggested_datasets.append({"name": "aws/EC2 CloudTrail Events", "alias": "events"})
+    if 'container' in request_lower or 'pod' in request_lower:
+        suggested_datasets.append({"name": "kubernetes/Pod", "alias": "pods"})
+    
+    return {
+        "is_multi_dataset": is_multi_dataset,
+        "join_patterns": detected_patterns,
+        "dataset_references": dataset_references,
+        "nl_indicators": nl_indicators,
+        "suggested_datasets": suggested_datasets
+    }
+
+
+async def execute_multi_dataset_query(
+    opal_query: str, 
+    primary_dataset_id: str, 
+    multi_dataset_info: dict,
+    time_range: str,
+    start_time: str, 
+    end_time: str
+) -> str:
+    """
+    Execute a multi-dataset OPAL query by discovering and linking related datasets.
+    """
+    from src.observe import execute_opal_query as observe_execute_opal_query
+    from src.observe import list_datasets as observe_list_datasets
+    
+    try:
+        # Step 1: Discover potential secondary datasets
+        print(f"[NLPQ_MULTI] Discovering secondary datasets for multi-dataset query", file=sys.stderr)
+        
+        secondary_datasets = []
+        dataset_aliases = {}
+        
+        # Use smart dataset discovery to find related datasets
+        try:
+            from src.observe.dataset_discovery import discover_related_datasets, suggest_dataset_for_query_intent
+            from src.observe import get_dataset_info as observe_get_dataset_info
+            
+            # Get list of available datasets
+            datasets_response = await observe_list_datasets()
+            available_datasets = []
+            
+            if datasets_response and not datasets_response.startswith("Error"):
+                lines = datasets_response.strip().split('\n')
+                for line in lines[1:]:  # Skip header
+                    parts = [p.strip('"') for p in line.split(',')]
+                    if len(parts) >= 2:
+                        available_datasets.append({
+                            'id': parts[0],
+                            'name': parts[1] if len(parts) > 1 else f"Dataset {parts[0]}"
+                        })
+            
+            if available_datasets:
+                print(f"[NLPQ_MULTI] Found {len(available_datasets)} available datasets for discovery", file=sys.stderr)
+                
+                # Get primary dataset schema for relationship analysis
+                primary_schema = await observe_get_dataset_info(dataset_id=primary_dataset_id)
+                
+                # Discover related datasets using smart discovery
+                suggestions = await discover_related_datasets(
+                    primary_dataset_id=primary_dataset_id,
+                    primary_schema=primary_schema,
+                    available_datasets=available_datasets,
+                    max_suggestions=3
+                )
+                
+                # Also try intent-based discovery 
+                intent_suggestions = await suggest_dataset_for_query_intent(
+                    query_intent=request,
+                    available_datasets=available_datasets,
+                    max_suggestions=2
+                )
+                
+                # Combine suggestions (prefer relationship-based over intent-based)
+                all_suggestions = suggestions + [s for s in intent_suggestions if s.dataset_id not in [sg.dataset_id for sg in suggestions]]
+                
+                # Use top suggestions
+                for suggestion in all_suggestions[:3]:
+                    secondary_datasets.append(suggestion.dataset_id)
+                    dataset_aliases[suggestion.suggested_alias] = suggestion.dataset_id
+                    print(f"[NLPQ_MULTI] Smart discovery found: {suggestion.dataset_name} -> {suggestion.dataset_id} (alias: {suggestion.suggested_alias}, score: {suggestion.relevance_score:.2f})", file=sys.stderr)
+            
+        except ImportError:
+            print(f"[NLPQ_MULTI] Smart discovery not available, falling back to simple pattern matching", file=sys.stderr)
+            
+            # Fallback: Look for suggested datasets based on query content
+            for suggested in multi_dataset_info["suggested_datasets"]:
+                # Try to find this dataset by name pattern matching
+                datasets_response = await observe_list_datasets(match=suggested["name"].split("/")[-1])
+                
+                if datasets_response and not datasets_response.startswith("Error"):
+                    # Parse the response to find dataset IDs
+                    lines = datasets_response.strip().split('\n')
+                    for line in lines[1:]:  # Skip header
+                        if suggested["name"].lower() in line.lower() or suggested["alias"] in line.lower():
+                            # Extract dataset ID from the line (assuming CSV format)
+                            parts = line.split(',')
+                            if len(parts) > 0:
+                                dataset_id = parts[0].strip('"')
+                                secondary_datasets.append(dataset_id)
+                                dataset_aliases[suggested["alias"]] = dataset_id
+                                print(f"[NLPQ_MULTI] Found secondary dataset: {suggested['name']} -> {dataset_id} (alias: {suggested['alias']})", file=sys.stderr)
+                                break
+        
+        except Exception as e:
+            print(f"[NLPQ_MULTI] Error in smart discovery: {e}, falling back to simple pattern matching", file=sys.stderr)
+        
+        # Step 2: Try to execute with discovered datasets
+        if secondary_datasets:
+            print(f"[NLPQ_MULTI] Executing with {len(secondary_datasets)} secondary datasets", file=sys.stderr)
+            
+            result = await observe_execute_opal_query(
+                query=opal_query,
+                primary_dataset_id=primary_dataset_id,
+                secondary_dataset_ids=secondary_datasets,
+                dataset_aliases=dataset_aliases,
+                time_range=time_range,
+                start_time=start_time,
+                end_time=end_time,
+                row_count=50
+            )
+            
+            return result
+        else:
+            print(f"[NLPQ_MULTI] No secondary datasets found, falling back to single dataset", file=sys.stderr)
+            # Fall back to single dataset execution
+            result = await observe_execute_opal_query(
+                query=opal_query,
+                primary_dataset_id=primary_dataset_id,
+                time_range=time_range,
+                start_time=start_time,
+                end_time=end_time,
+                row_count=50
+            )
+            
+            return result
+            
+    except Exception as e:
+        print(f"[NLPQ_MULTI] Error in multi-dataset execution: {e}", file=sys.stderr)
+        # Fall back to single dataset execution
+        result = await observe_execute_opal_query(
+            query=opal_query,
+            primary_dataset_id=primary_dataset_id,
+            time_range=time_range,
+            start_time=start_time,
+            end_time=end_time,
+            row_count=50
+        )
+        
+        return result

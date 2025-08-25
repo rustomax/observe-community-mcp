@@ -212,22 +212,58 @@ async def get_auth_token_info(ctx: Context) -> Dict[str, Any]:
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
-async def execute_opal_query(ctx: Context, query: str, dataset_id: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, row_count: Optional[int] = 1000, format: Optional[str] = "csv") -> str:
+async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, row_count: Optional[int] = 1000, format: Optional[str] = "csv") -> str:
     """
-    Execute an OPAL query on a dataset.
+    Execute an OPAL query on single or multiple datasets.
     
     Args:
         query: The OPAL query to execute
-        dataset_id: The ID of the dataset to query
+        dataset_id: DEPRECATED: Use primary_dataset_id instead. Kept for backward compatibility.
+        primary_dataset_id: The ID of the primary dataset to query
+        secondary_dataset_ids: Optional JSON string list of secondary dataset IDs (e.g., '["44508111"]')
+        dataset_aliases: Optional JSON string mapping of aliases to dataset IDs (e.g., '{"volumes": "44508111"}')
         time_range: Time range for the query (e.g., "1h", "1d", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
         row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
+    
+    Examples:
+        # Single dataset query (backward compatible)
+        execute_opal_query(query="filter metric = 'CPUUtilization'", dataset_id="44508123")
+        
+        # Multi-dataset join query
+        execute_opal_query(
+            query="join on(instanceId=@volumes.instanceId), volume_size:@volumes.size",
+            primary_dataset_id="44508123",  # EC2 Instance Metrics
+            secondary_dataset_ids='["44508111"]',  # EBS Volumes (JSON string)
+            dataset_aliases='{"volumes": "44508111"}'  # Aliases (JSON string)
+        )
     """
+    import json
+    
+    # Parse JSON string parameters if provided
+    parsed_secondary_dataset_ids = None
+    parsed_dataset_aliases = None
+    
+    if secondary_dataset_ids:
+        try:
+            parsed_secondary_dataset_ids = json.loads(secondary_dataset_ids)
+        except (json.JSONDecodeError, TypeError) as e:
+            return f"Error parsing secondary_dataset_ids: {e}. Expected JSON array like ['44508111']"
+    
+    if dataset_aliases:
+        try:
+            parsed_dataset_aliases = json.loads(dataset_aliases)
+        except (json.JSONDecodeError, TypeError) as e:
+            return f"Error parsing dataset_aliases: {e}. Expected JSON object like {{\"volumes\": \"44508111\"}}"
+    
     return await observe_execute_opal_query(
         query=query,
         dataset_id=dataset_id,
+        primary_dataset_id=primary_dataset_id,
+        secondary_dataset_ids=parsed_secondary_dataset_ids,
+        dataset_aliases=parsed_dataset_aliases,
         time_range=time_range,
         start_time=start_time,
         end_time=end_time,

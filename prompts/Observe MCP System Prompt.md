@@ -181,6 +181,33 @@ filter error = true
 filter duration > 1s
 ```
 
+### 🔗 **Multi-Dataset Queries** (Advanced)
+```opal
+# Join datasets using aliases (requires secondary_dataset_ids and dataset_aliases)
+join @volumes on(instanceId=@volumes.instanceId), volume_size:@volumes.size
+
+# Union datasets for combined analysis
+union @logs, @metrics
+
+# Filter then join for efficiency
+filter metric = "CPUUtilization" | join @instances on(instanceId=@instances.id)
+```
+
+**Multi-Dataset Parameters**:
+- `primary_dataset_id`: Main dataset ID (e.g., "42160988")
+- `secondary_dataset_ids`: JSON string list (e.g., '["44508111", "44508222"]')
+- `dataset_aliases`: JSON string mapping (e.g., '{"volumes": "44508111", "instances": "44508222"}')
+
+**Usage Example**:
+```python
+execute_opal_query(
+    query="join @volumes on(instanceId=@volumes.instanceId), volume_size:@volumes.size",
+    primary_dataset_id="42160988",  # EC2 Instances
+    secondary_dataset_ids='["44508111"]',  # EBS Volumes
+    dataset_aliases='{"volumes": "44508111"}'
+)
+```
+
 ### ❌ **Critical Mistakes to Avoid**
 - **Time Filtering**: NEVER `filter timestamp >` - use API time_range parameter
 - **Assignment**: NEVER `make_col column = value` - use `make_col column:value`
