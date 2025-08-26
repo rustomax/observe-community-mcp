@@ -175,6 +175,56 @@ async def execute_nlp_query(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     get_relevant_docs_func=None,
+    mock_context=None,
+    timeout: float = 120.0
+) -> str:
+    """
+    Execute a natural language query with timeout protection.
+    
+    This function wraps the core NLP query logic with timeout handling to prevent hanging.
+    """
+    print(f"[NLPQ_INFO] Starting NLP query with {timeout}s timeout", file=sys.stderr)
+    
+    try:
+        result = await asyncio.wait_for(
+            _execute_nlp_query_core(request, time_range, start_time, end_time, get_relevant_docs_func, mock_context),
+            timeout=timeout
+        )
+        print(f"[NLPQ_INFO] NLP query completed within timeout", file=sys.stderr)
+        return result
+    except asyncio.TimeoutError:
+        print(f"[NLPQ_TIMEOUT] Query execution timed out after {timeout}s", file=sys.stderr)
+        return f"""**Query Timeout**
+
+Your natural language query took longer than {timeout} seconds to execute and was cancelled to prevent hanging.
+
+**Original Request:** {request[:200]}{'...' if len(request) > 200 else ''}
+
+**What happened:** The query processing (dataset discovery, LLM analysis, or OPAL execution) exceeded the timeout limit.
+
+**Suggestions to resolve:**
+1. **Simplify your request** - Try asking for less data or a more specific query
+2. **Use direct OPAL tools** - Try `execute_opal_query` and `get_dataset_info` for more control
+3. **Reduce time range** - Use shorter time periods like '15m' or '1h' instead of '24h' or '7d'
+4. **Try basic queries first** - Start with simple filters or counts
+
+**Quick alternatives you can try:**
+- `execute_opal_query("limit 10", dataset_id="42160987")` (see recent data)
+- `execute_opal_query("statsby count:count()", dataset_id="42160987")` (count records)
+- `list_datasets(match="service")` (find relevant datasets)
+
+The timeout helps prevent queries from hanging indefinitely. You can try again with a simpler request."""
+    except Exception as e:
+        print(f"[NLPQ_TIMEOUT] Error in timeout wrapper: {e}", file=sys.stderr)
+        return f"Error in NLP query execution: {str(e)}"
+
+
+async def _execute_nlp_query_core(
+    request: str, 
+    time_range: Optional[str] = "1h",
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    get_relevant_docs_func=None,
     mock_context=None
 ) -> str:
     """

@@ -212,7 +212,7 @@ async def get_auth_token_info(ctx: Context) -> Dict[str, Any]:
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
-async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, row_count: Optional[int] = 1000, format: Optional[str] = "csv") -> str:
+async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, row_count: Optional[int] = 1000, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
     """
     Execute an OPAL query on single or multiple datasets.
     
@@ -227,6 +227,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
         row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
+        timeout: Request timeout in seconds (default: uses client default of 30s)
     
     Examples:
         # Single dataset query (backward compatible)
@@ -268,7 +269,8 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         start_time=start_time,
         end_time=end_time,
         row_count=row_count,
-        format=format
+        format=format,
+        timeout=timeout
     )
 
 @mcp.tool()
@@ -822,7 +824,7 @@ async def get_opal_memory_semantic_stats(ctx: Context) -> Dict[str, Any]:
 
 @mcp.tool()
 @requires_scopes(['smart_tools', 'admin'])
-async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None) -> str:
+async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, timeout: Optional[float] = 120.0) -> str:
     """
     Execute a natural language query request using LangGraph agent.
     
@@ -839,6 +841,7 @@ async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str
         time_range: Time range for the query (e.g., "1h", "24h", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
+        timeout: Maximum execution time in seconds (default: 120.0)
         
     Returns:
         The actual query results from the Observe dataset with analysis
@@ -863,7 +866,8 @@ async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str
             start_time=start_time,
             end_time=end_time,
             get_relevant_docs_func=get_relevant_docs,
-            mock_context=ctx
+            mock_context=ctx,
+            timeout=timeout
         )
         
         print(f"[LANGGRAPH] Generated result: {len(result)} characters", file=sys.stderr)

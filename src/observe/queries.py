@@ -28,7 +28,8 @@ async def execute_opal_query(
     start_time: Optional[str] = None, 
     end_time: Optional[str] = None, 
     row_count: Optional[int] = 1000, 
-    format: Optional[str] = "csv"
+    format: Optional[str] = "csv",
+    timeout: Optional[float] = None
 ) -> str:
     """
     Execute an OPAL query on single or multiple datasets.
@@ -44,6 +45,7 @@ async def execute_opal_query(
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
         row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
+        timeout: Request timeout in seconds (default: uses client default of 30s)
         
     Returns:
         Query results as a formatted string
@@ -118,7 +120,8 @@ async def execute_opal_query(
             endpoint="v1/meta/export/query",
             params=params,
             json_data=payload,
-            headers=headers
+            headers=headers,
+            timeout=timeout if timeout is not None else 30.0
         )
         
         return _process_query_response(response)
