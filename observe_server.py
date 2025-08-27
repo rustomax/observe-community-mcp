@@ -882,5 +882,125 @@ async def execute_nlp_query(ctx: Context, request: str, time_range: Optional[str
         traceback.print_exc(file=sys.stderr)
         return f"Error in LangGraph NLP query: {str(e)}"
 
+
+@mcp.tool()
+@requires_scopes(['admin', 'read'])
+async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_score: float = 0.1, categories: Optional[str] = None) -> str:
+    """
+    Query the semantic dataset graph to find the most relevant datasets for analysis.
+    
+    This tool uses multi-strategy ranking combining semantic similarity, categorical matching,
+    field relevance, and schema intelligence to find the most promising datasets for your query.
+    
+    Args:
+        query: Natural language description of what data you're looking for
+        limit: Maximum number of recommendations to return (default: 10, max: 50)
+        min_score: Minimum relevance score threshold 0.0-1.0 (default: 0.1)
+        categories: Optional JSON array of business categories to filter by (e.g., '["Infrastructure", "Application"]')
+    
+    Returns:
+        Formatted list of recommended datasets with explanations
+        
+    Examples:
+        query_semantic_graph("Show me service error rates and performance issues")
+        query_semantic_graph("Find CPU and memory usage for containers", categories='["Infrastructure"]')
+        query_semantic_graph("Database connection problems", limit=5, min_score=0.3)
+    """
+    try:
+        # Import the recommendation engine
+        from src.dataset_intelligence.recommendations import query_semantic_graph as rec_engine
+        
+        # Validate and normalize parameters
+        if limit is None:
+            limit = 10
+        if min_score is None:
+            min_score = 0.1
+            
+        limit = min(max(int(limit), 1), 50)  # Clamp between 1 and 50
+        min_score = max(min(float(min_score), 1.0), 0.0)  # Clamp between 0.0 and 1.0
+        
+        # Parse categories JSON if provided
+        parsed_categories = None
+        if categories:
+            try:
+                import json
+                parsed_categories = json.loads(categories)
+                if not isinstance(parsed_categories, list):
+                    return "Error: categories must be a JSON array of strings"
+            except json.JSONDecodeError as e:
+                return f"Error parsing categories JSON: {e}"
+        
+        print(f"[DATASET_REC_TOOL] Processing query: {query[:100]}...", file=sys.stderr)
+        print(f"[DATASET_REC_TOOL] Raw parameters: limit={repr(limit)} ({type(limit)}), min_score={repr(min_score)} ({type(min_score)}), categories={repr(categories)}", file=sys.stderr)
+        print(f"[DATASET_REC_TOOL] Processed parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
+        
+        # Get recommendations
+        recommendations = await rec_engine(
+            query=query,
+            limit=limit,
+            min_score=min_score,
+            categories=parsed_categories
+        )
+        
+        if not recommendations:
+            return f"""**No Dataset Recommendations Found**
+
+Your query: "{query}"
+
+No datasets met the minimum relevance threshold of {min_score:.1f}.
+
+**Suggestions:**
+- Try lowering the min_score parameter (e.g., 0.1)
+- Use broader or more general terms in your query
+- Remove category filters if you used any
+- Check available categories with: `list_datasets()`
+
+**Available business categories:** Infrastructure, Application, Monitoring, Database, Security, Network, Storage"""
+        
+        # Format results
+        result = f"**Dataset Recommendations for:** {query}\n\n"
+        result += f"**Found {len(recommendations)} relevant datasets** (min score: {min_score:.1f}):\n\n"
+        
+        for i, rec in enumerate(recommendations, 1):
+            result += f"**{i}. {rec.name}**\n"
+            result += f"   - **Dataset ID:** `{rec.dataset_id}`\n"
+            result += f"   - **Type:** {rec.dataset_type} | **Category:** {rec.business_category}/{rec.technical_category}\n"
+            result += f"   - **Relevance Score:** {rec.relevance_score:.3f}\n"
+            
+            if rec.key_fields:
+                key_fields_str = ", ".join(rec.key_fields[:5])
+                if len(rec.key_fields) > 5:
+                    key_fields_str += f" (+{len(rec.key_fields)-5} more)"
+                result += f"   - **Key Fields:** {key_fields_str}\n"
+            
+            if rec.match_reasons:
+                result += f"   - **Why recommended:** {rec.match_reasons[0]}\n"
+                if len(rec.match_reasons) > 1:
+                    for reason in rec.match_reasons[1:2]:  # Show max 2 reasons
+                        result += f"     • {reason}\n"
+            
+            if rec.sample_fields:
+                sample_fields = list(rec.sample_fields.keys())[:3]
+                result += f"   - **Sample Fields:** {', '.join(sample_fields)}\n"
+            
+            result += "\n"
+        
+        result += f"**Next Steps:**\n"
+        result += f"1. Use `get_dataset_info()` to see full schema\n"
+        result += f"2. Use `execute_opal_query()` to sample data"
+        #result += f"3. Use `execute_nlp_query(\"[your analysis]\")` for automated query generation\n"
+        
+        print(f"[DATASET_REC_TOOL] Returning {len(recommendations)} recommendations", file=sys.stderr)
+        return result
+        
+    except ImportError as e:
+        return f"Dataset recommendation system not available. Missing dependencies: {str(e)}"
+    except Exception as e:
+        print(f"[DATASET_REC_TOOL] Error: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return f"Error in dataset recommendation: {str(e)}"
+
+
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
