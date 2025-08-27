@@ -664,7 +664,7 @@ async def get_llm_recommendation_engine() -> LLMDatasetRecommendationEngine:
             'port': int(os.getenv('POSTGRES_PORT', 5432)),
             'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
             'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
-            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', '')
+            'password': os.getenv('POSTGRES_PASSWORD', os.getenv('SEMANTIC_GRAPH_PASSWORD', ''))
         }
         
         _llm_recommendation_engine = LLMDatasetRecommendationEngine(db_config)

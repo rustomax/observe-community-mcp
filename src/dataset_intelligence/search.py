@@ -20,7 +20,7 @@ async def get_db_connection():
         port=5432,
         database=os.getenv("POSTGRES_DB", "semantic_graph"), 
         user=os.getenv("POSTGRES_USER", "semantic_graph"),
-        password=os.getenv("SEMANTIC_GRAPH_PASSWORD", "semantic_graph_secure_2024!")
+        password=os.getenv("POSTGRES_PASSWORD", os.getenv("SEMANTIC_GRAPH_PASSWORD", "semantic_graph_secure_2024!"))
     )
 
 
