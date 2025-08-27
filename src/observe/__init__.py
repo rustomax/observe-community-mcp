@@ -2,7 +2,7 @@
 Observe API client package
 
 Provides organized modules for interacting with the Observe platform API,
-including datasets, queries, monitors, and worksheet operations.
+including datasets and queries operations.
 """
 
 from .client import make_observe_request, make_observe_request_strict, ObserveAPIError
@@ -16,8 +16,6 @@ from .config import (
 )
 from .datasets import list_datasets, get_dataset_info
 from .queries import execute_opal_query, QueryBuilder
-from .monitors import create_monitor, list_monitors, get_monitor, convert_to_nanoseconds
-from .worksheets import export_worksheet, WorksheetExporter
 
 __all__ = [
     # Client functions
@@ -39,15 +37,5 @@ __all__ = [
     
     # Query operations
     'execute_opal_query',
-    'QueryBuilder',
-    
-    # Monitor operations
-    'create_monitor',
-    'list_monitors', 
-    'get_monitor',
-    'convert_to_nanoseconds',
-    
-    # Worksheet operations
-    'export_worksheet',
-    'WorksheetExporter'
+    'QueryBuilder'
 ]
