@@ -1,24 +1,24 @@
 # Observe Community MCP Server
 
-![Python](https://img.shields.io/badge/Python-3.9+-blue?style=flat-square&logo=python&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.95+-009688?style=flat-square&logo=fastapi&logoColor=white)
 ![Pinecone](https://img.shields.io/badge/Pinecone-Vector_Search-FF6C37?style=flat-square&logo=pinecone&logoColor=white)
 ![Model Context Protocol](https://img.shields.io/badge/MCP-Compatible-6366F1?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJMMTMuMDkgOC4yNkwyMCA5TDEzLjA5IDE1Ljc0TDEyIDIyTDEwLjkxIDE1Ljc0TDQgOUwxMC45MSA4LjI2TDEyIDJaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K&logoColor=white)
-![Observe](https://img.shields.io/badge/Observe-Platform-FF8C00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPGNpcmNsZSBjeD0iMTIiIGN5PSIxMiIgcj0iOCIgZmlsbD0id2hpdGUiLz4KPC9zdmc+&logoColor=white)
+![Observe](https://img.shields.io/badge/Observe-Platform-FF8C00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KY2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4=&logoColor=white)
 
-A streamlined Model Context Protocol (MCP) server providing essential access to [Observe](https://observeinc.com) platform functionality through semantic search and dataset intelligence.
+A Model Context Protocol (MCP) server that provides LLMs with access to [Observe](https://observeinc.com) platform functionality through semantic search and LLM-powered dataset intelligence.
 
 ## Purpose
 
-This MCP server provides LLMs with direct access to Observe platform data through a curated set of 6 essential tools. It bridges third-party LLMs with your Observe environment while maintaining security and performance.
+This MCP server enables LLMs to interact with Observe platform data through a set of 6 tools. It includes dataset discovery capabilities powered by LLM reasoning, OPAL query execution, and semantic search for documentation.
 
-**Key Benefits:**
-- **Dataset Discovery**: Find and understand your Observe datasets with intelligent search
-- **OPAL Query Execution**: Execute queries against your observability data
-- **Knowledge Integration**: Access OPAL documentation through semantic search
-- **Expert Guidance**: Get troubleshooting runbooks and investigation strategies
+**Key capabilities:**
+- Dataset discovery using LLM-powered semantic analysis
+- OPAL query execution against Observe datasets
+- Vector-based search for OPAL documentation and runbooks
+- JWT-based authentication with role-based access control
 
-> **⚠️ DISCLAIMER**: This is an experimental MCP server for testing and collaboration. Use at your own risk. A production-ready version is available to Observe customers.
+> **⚠️ DISCLAIMER**: This is an experimental MCP server for testing and collaboration. Use at your own risk. A production-ready version, based on a completely different code base, is available to Observe customers.
 
 ## Table of Contents
 
@@ -28,6 +28,7 @@ This MCP server provides LLMs with direct access to Observe platform data throug
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
   - [Environment Setup](#environment-setup)
+  - [Database Setup](#database-setup)
   - [Initialize Vector Database](#initialize-vector-database)
 - [Running the Server](#running-the-server)
   - [Docker (Recommended)](#docker-recommended)
@@ -35,6 +36,7 @@ This MCP server provides LLMs with direct access to Observe platform data throug
 - [Authentication Setup](#authentication-setup)
 - [Using with Claude Desktop](#using-with-claude-desktop)
 - [Architecture Overview](#architecture-overview)
+- [Dataset Intelligence System](#dataset-intelligence-system)
 - [Maintenance](#maintenance)
 
 ## Available MCP Tools
@@ -42,18 +44,18 @@ This MCP server provides LLMs with direct access to Observe platform data throug
 This MCP server provides 6 core tools for Observe platform access:
 
 ### Dataset Intelligence
-- **`query_semantic_graph`**: Discover relevant datasets using intelligent semantic search and schema analysis
-- **`list_datasets`**: List all available datasets with filtering options
-- **`get_dataset_info`**: Get detailed schema information about specific datasets
+- **`query_semantic_graph`**: Find relevant datasets using LLM-powered analysis of query intent and dataset metadata. This uses a chached and semantically enriched dataset metadata.
+- **`list_datasets`**: List available datasets with filtering options (a direct API call to Observe)
+- **`get_dataset_info`**: Get detailed schema information about specific datasets (a direct API call to Observe)
 
 ### Query Execution
-- **`execute_opal_query`**: Execute OPAL queries against Observe datasets with comprehensive error handling
+- **`execute_opal_query`**: Execute OPAL queries against Observe datasets with error handling and multi-dataset support (a direct API call to Observe)
 
 ### Knowledge & Documentation
-- **`get_relevant_docs`**: Search OPAL documentation using semantic vector search
-- **`get_system_prompt`**: Get the system prompt that configures LLMs as Observe experts
+- **`get_relevant_docs`**: Search Observe documentation, include OPAL language reference (semantic vector search)
+- **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as an Observe expert
 
-Each tool includes comprehensive error handling, authentication, and detailed result formatting to ensure reliable LLM integration.
+Each tool includes error handling, authentication validation, and structured result formatting.
 
 ![Claude Desktop using Observe MCP Server](./images/claude_investigation.png)
 
@@ -61,10 +63,11 @@ Each tool includes comprehensive error handling, authentication, and detailed re
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.11+
 - Docker and Docker Compose (recommended)
 - Pinecone account with API key
 - Observe API credentials (customer ID and token)
+- OpenAI API key (for LLM-powered dataset intelligence)
 
 ### Installation
 
@@ -83,30 +86,58 @@ cp .env.example .env
 ```
 
 Required variables:
-- `OBSERVE_CUSTOMER_ID`: Your Observe customer ID
-- `OBSERVE_TOKEN`: Your Observe API token  
-- `OBSERVE_DOMAIN`: Your Observe domain (e.g., observeinc.com)
-- `PINECONE_API_KEY`: Your Pinecone API key
-- `PUBLIC_KEY_PEM`: Public key for JWT token verification
-- `POSTGRES_PASSWORD`: Secure password for the PostgreSQL database
+
+```bash
+# Observe Platform
+OBSERVE_CUSTOMER_ID=your_customer_id
+OBSERVE_TOKEN=your_api_token  
+OBSERVE_DOMAIN=observeinc.com
+
+# Vector Search (Pinecone)
+PINECONE_API_KEY=your_pinecone_key
+PINECONE_DOCS_INDEX=observe-docs
+PINECONE_RUNBOOKS_INDEX=observe-runbooks
+
+# LLM Intelligence (OpenAI)
+OPENAI_API_KEY=your_openai_key
+
+# Database (Dataset Intelligence)
+POSTGRES_PASSWORD=secure_password
+
+# Security
+PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
+your_public_key_here
+-----END PUBLIC KEY-----"
+```
+
+### Database Setup
+
+The server requires a PostgreSQL database with pgvector extension for dataset intelligence functionality. This is automatically configured when using Docker Compose.
+
+**Important**: The dataset intelligence system requires populating the database with dataset metadata before first use.
 
 ### Initialize Vector Database
 
-Populate the Pinecone indices with documentation and runbooks:
+Populate the Pinecone indices with documentation:
 
 ```bash
-# Populate documentation index (requires observe-docs directory)
+# Populate documentation index
 python scripts/populate_docs_index.py
 
-# Populate runbooks index
-python scripts/populate_runbooks_index.py
+# Initialize dataset intelligence database (REQUIRED)
+# This populates PostgreSQL with dataset metadata and embeddings
+python scripts/populate_dataset_intelligence.py
 ```
 
 > **Note**: If you don't have access to Observe documentation files, contact your Observe representative.
 
-Options for both scripts:
+Options for all scripts:
 - `--force`: Recreate the index from scratch
 - `--verbose`: Enable detailed logging
+
+### Runbooks
+
+In the current iteration of the MCP server, runbooks are not supported. They were used in the previous version, and make come back in the future, so I am leaving the script to populate vector database and runbooks themselves in the repo.
 
 ## Running the Server
 
@@ -127,91 +158,64 @@ For development:
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Initialize database (required before first run)
+python scripts/populate_dataset_intelligence.py
+
+# Start server
 python observe_server.py
 ```
 
-## Architecture Overview
+## Authentication Setup
 
-The MCP server uses a clean, modular architecture:
+> **⚠️ CRITICAL: READ THIS SECTION COMPLETELY**
 
-| Component | Purpose |
-|-----------|---------|
-| `observe_server.py` | Main MCP server with 6 tool definitions |
-| `src/observe/` | Observe API integration (queries, datasets, client) |
-| `src/dataset_intelligence/` | Semantic dataset discovery with PostgreSQL + pgvector |
-| `src/pinecone/` | Vector database operations for documentation search |
-| `src/auth/` | JWT authentication and scope-based authorization |
-| `scripts/` | Database population scripts |
+There are two types of authentication mechanisms used in this server:
 
-**Key Features:**
-- **Dataset Intelligence**: Semantic search to find relevant datasets
-- **OPAL Query Execution**: Direct access to Observe data
-- **Documentation Search**: Vector-powered OPAL syntax assistance
-- **Authentication**: JWT-based security with scope control
-- **PostgreSQL Integration**: Dataset schema caching and semantic search
+**Observe API authentication (Observe API bearer token)** - Uses your Observe API token to access platform data. This token inherits the permissions of the user who created it.
 
+> **⚠️ IMPORTANT**: Once a user is authenticated to the MCP server, they assume the identity of the user who generated the Observe token, not their own identity. Use RBAC and limit the Observe API token to specific roles and permissions you want available to MCP server users.
 
-
-
-## Setting up Authentication
-
-> **⚠️ CRITICAL: DO NOT SKIP THIS SECTION. READ IT IN ITS ENTIRETY.**
-
-There are two types of authentication mechanisms used in this server: Observe API authentication and MCP authentication.
-
-**Observe API authentication (Observe API bearer token)** - this inherits the context of the token that is used to authenticate the user who created the token to the Observe platform. This token should be considered secret and is never exposed to the MCP users.
-
-> **⚠️ DANGER ZONE**: The consequence of the above is that once a user is authenticated to the MCP server, they will **NOT** assume their identity in Observe, but the **identity of the user who generated the Observe token**. Make sure to use RBAC and limit access for the Observe API token to specific roles and permissions that you want to make available to the Observe MCP server users.
-
-**MCP authentication (MCP bearer token)** - this is the authentication that is used to authorize the user to access and use the functionality of the MCP server. This token is generated by the server administrator and is exposed to the MCP users, for instance to use in Claude Desktop or other MCP clients.
-
-This second layer of authentication is necessary because the server exposes resource-intensive APIs (like Pinecone) to MCP users. It allows server administrators to control access and prevent resource abuse. 
+**MCP authentication (MCP bearer token)** - Controls access to the MCP server itself. This is necessary because the server exposes resource-intensive APIs (Pinecone, OpenAI).
 
 ![Authentication](./images/mcp_auth.png)
 
-**IMPORTANT**: Current implementation of the MCP server also includes a basic RBAC via predefined roles: `admin`, `read`, `write`. These **DO NOT** map into any roles in Observe. They are used to control access to the MCP server tools.
+The MCP server includes basic RBAC with predefined roles: `admin`, `read`, `write`. These do not map to Observe roles and only control MCP server tool access.
 
-**Local-only deployment**: If you're running the server locally without public access, you can disable MCP authentication by modifying `observe_server.py` and removing the `Authorization` header from the MCP client configuration.
+### Setting up MCP Authentication
 
-## Setting up MCP authentication
-
-Create private and public key files in a secure location, i.e. in `_secure` directory.
+Create private and public key files:
 
 ```bash
 openssl genrsa -out private_key.pem 2048
 openssl rsa -in private_key.pem -pubout -out public_key.pem
 ```
 
-This will create two files:
-- `private_key.pem` - the private key file. Keep this secret - you will need it to sign the MCP bearer tokens.
-- `public_key.pem` - the public key file. You will need to add this to the `observe_server.py` file.
+This creates:
+- `private_key.pem` - Keep this secret. Used to sign MCP bearer tokens.
+- `public_key.pem` - Add to the server configuration for token verification.
+
+Copy the public key to your `.env` file:
 
 ```bash
 cat public_key.pem
+# Copy output to .env as PUBLIC_KEY_PEM
 ```
 
-Copy the public key and add it to the `.env` file:
+Generate user tokens:
 
 ```bash
-# Public PEM key for MCP token verification
-PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
-<your_public_key_here>
------END PUBLIC KEY-----"
+cd ./scripts
+generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
 ```
 
-Sign the bearer token with the private key:
+> **Security**: Keep token expiration times short (hours rather than days).
 
-```bash
-./generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
-```
+**Local-only deployment**: If running locally without public access, you can disable MCP authentication by modifying the server configuration.
 
-> **Security Best Practice**: Keep token expiration times short (hours rather than days). Avoid issuing long-lived tokens to minimize security risks.
+## Using with Claude Desktop
 
-## Using in Claude Desktop
-
-Add the following to your `claude_desktop_config.json` if you are running the MPC server locally, or provide the URL if you exposed the server publically. 
-
-> **Network Configuration Note**: MCP clients typically restrict HTTP access to localhost only. For internet-accessible deployments, implement an HTTPS reverse proxy (Nginx, Caddy, etc.) with proper DNS configuration and SSL certificates.
+Add the following to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -222,20 +226,78 @@ Add the following to your `claude_desktop_config.json` if you are running the MP
         "mcp-remote@latest",
         "http://localhost:8000/sse",
         "--header",
-        "Authorization: Bearer bearer_token"
+        "Authorization: Bearer your_mcp_token_here"
       ]
     }
   }
 }
 ```
 
-The server will be available at `http://localhost:8000` with 6 MCP tools for dataset discovery, query execution, and documentation search.
+> **Network Configuration Note**: MCP clients typically restrict HTTP access to localhost only. For internet-accessible deployments, implement an HTTPS reverse proxy with proper DNS configuration and SSL certificates.
+
+The server will be available with 6 MCP tools for dataset discovery, query execution, and documentation search.
 
 ![Claude Desktop using Observe MCP Server](./images/claude_tools.png)
 
+## Architecture Overview
+
+The MCP server uses a modular architecture:
+
+| Component | Purpose |
+|-----------|---------| 
+| `observe_server.py` | Main MCP server with 6 tool definitions |
+| `src/observe/` | Observe API integration (queries, datasets, client) |
+| `src/dataset_intelligence/` | LLM-powered dataset discovery with PostgreSQL + pgvector |
+| `src/pinecone/` | Vector database operations for documentation search |
+| `src/auth/` | JWT authentication and scope-based authorization |
+| `scripts/` | Database population and maintenance scripts |
+
+**Technology Stack:**
+- **MCP Server**: FastAPI + MCP Protocol
+- **Dataset Intelligence**: PostgreSQL + pgvector + OpenAI GPT-4
+- **Query Engine**: Python asyncio + Observe API
+- **Vector Search**: Pinecone + OpenAI embeddings
+- **Authentication**: JWT + RSA keys
+- **Caching**: PostgreSQL-based dataset metadata caching
+
+## Dataset Semantic Search System
+
+The dataset semantic search system uses LLM reasoning to understand user queries and match them with relevant Observe datasets.
+
+### How It Works
+
+1. **Query Analysis**: Analyzes user queries to detect explicit dataset mentions, domain keywords, and intent
+2. **Candidate Selection**: Retrieves relevant datasets from PostgreSQL cache with smart sampling
+3. **LLM Ranking**: Uses GPT-4 to rank datasets based on relevance with detailed explanations  
+4. **Result Enhancement**: Applies quality filters and diversity balancing
+
+### Key Features
+
+**Explicit Dataset Detection**: Recognizes when users mention specific datasets by name
+```
+"Give me k8s logs" → Kubernetes Explorer/Kubernetes Logs (prioritized)
+"Show me span data" → OpenTelemetry/Span (prioritized)
+```
+
+**Domain Intelligence**: Maps query domains to appropriate dataset types
+```
+"database performance" → Database Call datasets
+"trace analysis" → OpenTelemetry/Span datasets  
+"error investigation" → Log datasets + Error spans
+```
+
+**Smart Prioritization**: Applies observability expertise
+- OpenTelemetry/Span always ranks first for trace/performance queries
+- Log datasets prioritized for debugging/error queries
+- Database datasets top-ranked for SQL/performance queries
+
+### Performance
+
+The system provides dataset recommendations typically within 1-3 seconds, with high accuracy for domain-specific queries. It maintains a local cache of dataset metadata in PostgreSQL for performance.
+
 ## Maintenance
 
-To update the vector databases:
+### Update Vector Databases
 
 ```bash
 # Update documentation index
@@ -243,6 +305,30 @@ python scripts/populate_docs_index.py --force
 
 # Update runbooks index  
 python scripts/populate_runbooks_index.py --force
+
+# Update dataset intelligence cache
+python scripts/populate_dataset_intelligence.py --force
 ```
 
-Both scripts support `--force` to recreate indices and `--verbose` for detailed logging.
+### Monitor Performance
+
+```bash
+# Check logs for performance metrics
+docker logs observe-mcp-server | grep "DATASET_REC"
+
+# Check database status
+docker exec observe-opal-memory psql -U opal -d opal_memory -c "\dt"
+```
+
+### Common Issues
+
+1. **No dataset recommendations**: Verify OpenAI API key and database population
+2. **Slow responses**: Check PostgreSQL connection and dataset cache
+3. **Authentication errors**: Validate JWT token and public key configuration
+4. **Missing documentation**: Run populate scripts with `--force` flag
+
+All scripts support `--force` to recreate indices and `--verbose` for detailed logging.
+
+---
+
+> **Contributing**: Issues, feature requests, and pull requests are welcome. This project demonstrates LLM-native observability tooling approaches.
