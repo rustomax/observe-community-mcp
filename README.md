@@ -314,7 +314,7 @@ python scripts/populate_dataset_intelligence.py --force
 
 ```bash
 # Check logs for performance metrics
-docker logs observe-mcp-server | grep "DATASET_REC"
+docker logs observe-mcp-server | grep "[SEMANTIC_GRAPH]"
 
 # Check database status
 docker exec observe-opal-memory psql -U opal -d opal_memory -c "\dt"
