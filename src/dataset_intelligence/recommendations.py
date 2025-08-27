@@ -909,9 +909,9 @@ async def get_recommendation_engine() -> DatasetRecommendationEngine:
         db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', 5432)),
-            'database': os.getenv('POSTGRES_DB', 'opal_memory'),
-            'user': os.getenv('POSTGRES_USER', 'opal'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', '')
         }
         
         _recommendation_engine = DatasetRecommendationEngine(db_config)

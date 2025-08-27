@@ -12,15 +12,15 @@ from .intent_classification import IntentClassifier, DatasetScorer
 
 
 async def get_db_connection():
-    """Get a connection to the dataset intelligence database."""
+    """Get a connection to the semantic graph database."""
     # Use Docker service name when running in container, localhost for local development
     host = os.getenv("POSTGRES_HOST", "localhost")
     return await asyncpg.connect(
         host=host,
         port=5432,
-        database="opal_memory", 
-        user="opal",
-        password="opal_memory_secure_2024!"
+        database=os.getenv("POSTGRES_DB", "semantic_graph"), 
+        user=os.getenv("POSTGRES_USER", "semantic_graph"),
+        password=os.getenv("SEMANTIC_GRAPH_PASSWORD", "semantic_graph_secure_2024!")
     )
 
 

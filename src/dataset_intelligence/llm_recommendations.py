@@ -1,7 +1,7 @@
 """
-LLM-based dataset recommendation system for intelligent dataset discovery.
+LLM-based semantic graph system for intelligent dataset discovery.
 
-This module provides a simplified approach to dataset recommendations using
+This module provides a simplified approach to semantic graph recommendations using
 LLM reasoning instead of complex pattern matching and scoring algorithms.
 Designed for A/B testing against the existing multi-strategy system.
 """
@@ -662,9 +662,9 @@ async def get_llm_recommendation_engine() -> LLMDatasetRecommendationEngine:
         db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', 5432)),
-            'database': os.getenv('POSTGRES_DB', 'opal_memory'),
-            'user': os.getenv('POSTGRES_USER', 'opal'),
-            'password': os.getenv('POSTGRES_PASSWORD', '')
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', '')
         }
         
         _llm_recommendation_engine = LLMDatasetRecommendationEngine(db_config)

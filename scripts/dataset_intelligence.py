@@ -201,9 +201,9 @@ class DatasetIntelligenceAnalyzer:
         db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'opal_memory'),
-            'user': os.getenv('POSTGRES_USER', 'opal'),
-            'password': os.getenv('POSTGRES_PASSWORD', 'opal_memory_secure_2024!')
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', 'semantic_graph_secure_2024!')
         }
         
         try:

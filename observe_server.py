@@ -503,12 +503,12 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
         return result
         
     except ImportError as e:
-        return f"Dataset recommendation system not available. Missing dependencies: {str(e)}"
+        return f"Semantic graph system not available. Missing dependencies: {str(e)}"
     except Exception as e:
         print(f"[DATASET_REC_TOOL] Error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
-        return f"Error in dataset recommendation: {str(e)}"
+        return f"Error in semantic graph: {str(e)}"
 
 
 print("Python MCP server starting...", file=sys.stderr)
