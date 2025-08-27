@@ -81,7 +81,7 @@ cd observe-community-mcp
 Copy the example environment file and configure your credentials:
 
 ```bash
-cp .env.example .env
+cp .env.template .env
 # Edit .env with your API keys and configuration
 ```
 
