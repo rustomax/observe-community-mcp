@@ -392,40 +392,43 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
 # OPAL memory and NLP agent tools removed - keeping only core functionality
 
 
+
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_score: float = 0.1, categories: Optional[str] = None) -> str:
+async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_score: float = 0.5, categories: Optional[str] = None) -> str:
     """
     Query the semantic dataset graph to find the most relevant datasets for analysis.
     
-    This tool uses multi-strategy ranking combining semantic similarity, categorical matching,
-    field relevance, and schema intelligence to find the most promising datasets for your query.
+    This tool uses advanced LLM reasoning to intelligently rank dataset relevance,
+    providing superior domain understanding and explicit dataset detection compared
+    to traditional pattern matching approaches.
     
     Args:
         query: Natural language description of what data you're looking for
-        limit: Maximum number of recommendations to return (default: 10, max: 50)
-        min_score: Minimum relevance score threshold 0.0-1.0 (default: 0.1)
+        limit: Maximum number of recommendations to return (default: 10, max: 20)
+        min_score: Minimum relevance score threshold 0.0-1.0 (default: 0.5)
         categories: Optional JSON array of business categories to filter by (e.g., '["Infrastructure", "Application"]')
     
     Returns:
-        Formatted list of recommended datasets with explanations
+        Formatted list of recommended datasets with LLM explanations
         
     Examples:
         query_semantic_graph("Show me service error rates and performance issues")
         query_semantic_graph("Find CPU and memory usage for containers", categories='["Infrastructure"]')
-        query_semantic_graph("Database connection problems", limit=5, min_score=0.3)
+        query_semantic_graph("Database connection problems", limit=5, min_score=0.6)
+        query_semantic_graph("Give me top 100 lines from k8s logs")
     """
     try:
-        # Import the recommendation engine
-        from src.dataset_intelligence.recommendations import query_semantic_graph as rec_engine
+        # Import the LLM recommendation engine
+        from src.dataset_intelligence.llm_recommendations import query_datasets_llm
         
         # Validate and normalize parameters
         if limit is None:
             limit = 10
         if min_score is None:
-            min_score = 0.1
+            min_score = 0.5
             
-        limit = min(max(int(limit), 1), 50)  # Clamp between 1 and 50
+        limit = min(max(int(limit), 1), 20)  # Cap at 20 for LLM approach
         min_score = max(min(float(min_score), 1.0), 0.0)  # Clamp between 0.0 and 1.0
         
         # Parse categories JSON if provided
@@ -440,11 +443,10 @@ async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_sc
                 return f"Error parsing categories JSON: {e}"
         
         print(f"[DATASET_REC_TOOL] Processing query: {query[:100]}...", file=sys.stderr)
-        print(f"[DATASET_REC_TOOL] Raw parameters: limit={repr(limit)} ({type(limit)}), min_score={repr(min_score)} ({type(min_score)}), categories={repr(categories)}", file=sys.stderr)
-        print(f"[DATASET_REC_TOOL] Processed parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
+        print(f"[DATASET_REC_TOOL] Parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
         
-        # Get recommendations
-        recommendations = await rec_engine(
+        # Get LLM-based recommendations
+        recommendations = await query_datasets_llm(
             query=query,
             limit=limit,
             min_score=min_score,
@@ -452,17 +454,17 @@ async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_sc
         )
         
         if not recommendations:
-            return f"""**No Dataset Recommendations Found**
+            return f"""**Dataset Recommendations - No Results Found**
 
 Your query: "{query}"
 
 No datasets met the minimum relevance threshold of {min_score:.1f}.
 
 **Suggestions:**
-- Try lowering the min_score parameter (e.g., 0.1)
-- Use broader or more general terms in your query
+- Try lowering the min_score parameter (e.g., 0.3)
+- Use more descriptive terms in your query
 - Remove category filters if you used any
-- Check available categories with: `list_datasets()`
+- Check available datasets with: `list_datasets()`
 
 **Available business categories:** Infrastructure, Application, Monitoring, Database, Security, Network, Storage"""
         
@@ -474,7 +476,16 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
             result += f"**{i}. {rec.name}**\n"
             result += f"   - **Dataset ID:** `{rec.dataset_id}`\n"
             result += f"   - **Type:** {rec.dataset_type} | **Category:** {rec.business_category}/{rec.technical_category}\n"
-            result += f"   - **Relevance Score:** {rec.relevance_score:.3f}\n"
+            result += f"   - **Relevance Score:** {rec.relevance_score:.3f} (confidence: {rec.confidence:.2f})\n"
+            
+            # Show LLM explanation
+            result += f"   - **Why recommended:** {rec.explanation}\n"
+            
+            if rec.matching_factors:
+                factors_str = ", ".join(rec.matching_factors[:4])
+                if len(rec.matching_factors) > 4:
+                    factors_str += f" (+{len(rec.matching_factors)-4} more)"
+                result += f"   - **Key Factors:** {factors_str}\n"
             
             if rec.key_fields:
                 key_fields_str = ", ".join(rec.key_fields[:5])
@@ -482,22 +493,11 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
                     key_fields_str += f" (+{len(rec.key_fields)-5} more)"
                 result += f"   - **Key Fields:** {key_fields_str}\n"
             
-            if rec.match_reasons:
-                result += f"   - **Why recommended:** {rec.match_reasons[0]}\n"
-                if len(rec.match_reasons) > 1:
-                    for reason in rec.match_reasons[1:2]:  # Show max 2 reasons
-                        result += f"     • {reason}\n"
-            
-            if rec.sample_fields:
-                sample_fields = list(rec.sample_fields.keys())[:3]
-                result += f"   - **Sample Fields:** {', '.join(sample_fields)}\n"
-            
             result += "\n"
         
         result += f"**Next Steps:**\n"
         result += f"1. Use `get_dataset_info()` to see full schema\n"
         result += f"2. Use `execute_opal_query()` to sample data"
-        #result += f"3. Use `execute_nlp_query(\"[your analysis]\")` for automated query generation\n"
         
         print(f"[DATASET_REC_TOOL] Returning {len(recommendations)} recommendations", file=sys.stderr)
         return result
