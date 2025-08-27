@@ -7,8 +7,12 @@ This script has been refactored to use the centralized src.pinecone modules.
 """
 
 import os
+import sys
 import argparse
 from dotenv import load_dotenv
+
+# Add parent directory to Python path so we can import src modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Load environment variables
 load_dotenv()

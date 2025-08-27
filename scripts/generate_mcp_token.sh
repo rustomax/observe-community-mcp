@@ -22,7 +22,7 @@ EXPIRATION="$3"
 # Fixed values
 ISSUER="https://observeinc.com"
 AUDIENCE="observe-community"
-PRIVATE_KEY="_secure/private_key.pem"
+PRIVATE_KEY="../_secure/private_key.pem"
 
 # Check if private key exists
 if [ ! -f "$PRIVATE_KEY" ]; then
