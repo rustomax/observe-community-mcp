@@ -1,7 +1,7 @@
 """
 Pinecone indexing operations
 
-Provides unified indexing functionality for documents and runbooks,
+Provides unified indexing functionality for documents,
 with support for chunking, embedding generation, and batch upserts.
 """
 
@@ -36,7 +36,7 @@ def chunk_markdown(file_path: str, chunk_size: int = 1000, chunk_type: str = "do
     Args:
         file_path: Path to the markdown file
         chunk_size: Target size for each chunk in characters
-        chunk_type: Type of chunks ("docs" or "runbooks") for field naming
+        chunk_type: Type of chunks ("docs") for field naming
         
     Returns:
         List of chunk dictionaries with appropriate field names
@@ -111,19 +111,11 @@ def _create_chunk_dict(text_content: str, file_path: str, title: str, chunk_type
     # Convert absolute path to relative path
     relative_path = os.path.relpath(file_path, start=os.getcwd())
     
-    if chunk_type == "runbooks":
-        return {
-            "chunk_text": text_content,
-            "source": relative_path,
-            "title": title,
-            "type": "runbook"
-        }
-    else:  # docs
-        return {
-            "text": text_content,
-            "source": relative_path,
-            "title": title
-        }
+    return {
+        "text": text_content,
+        "source": relative_path,
+        "title": title
+    }
 
 
 def index_documents(docs_dir: str, batch_size: int = 50, force_recreate: bool = False) -> int:
@@ -184,69 +176,6 @@ def index_documents(docs_dir: str, batch_size: int = 50, force_recreate: bool = 
         return 0
 
 
-def index_runbooks(runbooks_dir: str, force_recreate: bool = False) -> int:
-    """
-    Index runbooks from a directory into the runbooks Pinecone index
-    
-    Args:
-        runbooks_dir: Directory containing runbook markdown files
-        force_recreate: Whether to delete and recreate the index
-        
-    Returns:
-        Number of chunks successfully indexed
-    """
-    try:
-        print(f"Indexing runbooks from: {runbooks_dir}", file=sys.stderr)
-        
-        # Initialize Pinecone for runbooks
-        pc, index = initialize_pinecone(index_type="runbooks")
-        
-        # Handle force recreation
-        if force_recreate:
-            print("Force recreation requested - deleting existing index", file=sys.stderr)
-            try:
-                config = get_index_config(index_type="runbooks")
-                index_name = config["index_name"]
-                if pc.has_index(index_name):
-                    pc.delete_index(index_name)
-                    import time
-                    time.sleep(5)  # Wait for deletion
-                # Reinitialize after deletion
-                pc, index = initialize_pinecone(index_type="runbooks")
-            except Exception as e:
-                print(f"Error during force recreation: {e}", file=sys.stderr)
-        
-        # Find and process markdown files
-        runbooks_dir = os.path.abspath(runbooks_dir)
-        md_files = find_markdown_files(runbooks_dir)
-        print(f"Found {len(md_files)} runbook files", file=sys.stderr)
-        
-        # Process files into chunks
-        all_records = []
-        chunk_id = 1
-        
-        for file_path in tqdm(md_files, desc="Processing files"):
-            try:
-                chunks = chunk_markdown(file_path, chunk_type="runbooks")
-                
-                # Add unique ID to each chunk
-                for chunk in chunks:
-                    record_id = f"runbook-{chunk_id}"
-                    chunk_id += 1
-                    all_records.append({"_id": record_id, **chunk})
-                    
-            except Exception as e:
-                print(f"Error processing file {file_path}: {e}", file=sys.stderr)
-        
-        print(f"Collected {len(all_records)} chunks from {len(md_files)} files", file=sys.stderr)
-        
-        return _upsert_runbooks_to_index(pc, index, all_records)
-        
-    except Exception as e:
-        print(f"Error during runbook indexing: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return 0
 
 
 def _upsert_chunks_to_index(pc, index, chunks: List[Dict[str, Any]], batch_size: int, chunk_type: str) -> int:
@@ -304,35 +233,3 @@ def _upsert_chunks_to_index(pc, index, chunks: List[Dict[str, Any]], batch_size:
     return total_chunks_added
 
 
-def _upsert_runbooks_to_index(pc, index, records: List[Dict[str, Any]]) -> int:
-    """Upsert runbook records to Pinecone index using the runbooks-specific format"""
-    total_chunks_added = 0
-    
-    # Upsert records in batches of 95 to stay within Pinecone's limit
-    batch_size = 95
-    for i in range(0, len(records), batch_size):
-        batch = records[i:i+batch_size]
-        batch_num = i//batch_size + 1
-        total_batches = (len(records) + batch_size - 1) // batch_size
-        
-        try:
-            print(f"Upserting batch {batch_num}/{total_batches} with {len(batch)} records", file=sys.stderr)
-            index.upsert_records(
-                namespace="runbooks",
-                records=batch
-            )
-            print(f"Successfully upserted batch {batch_num}/{total_batches}", file=sys.stderr)
-            total_chunks_added += len(batch)
-        except Exception as e:
-            print(f"Error upserting batch {batch_num}/{total_batches}: {e}", file=sys.stderr)
-            print("Falling back to individual record upserts for this batch...", file=sys.stderr)
-            # Try one by one if batch fails
-            for record in batch:
-                try:
-                    index.upsert_records(namespace="runbooks", records=[record])
-                    total_chunks_added += 1
-                    print(f"Upserted single record: {record['_id']}", file=sys.stderr)
-                except Exception as e2:
-                    print(f"Error upserting single record {record['_id']}: {e2}", file=sys.stderr)
-    
-    return total_chunks_added

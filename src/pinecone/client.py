@@ -2,7 +2,7 @@
 Pinecone client initialization and connection management
 
 Provides centralized Pinecone client setup with consistent error handling
-and support for different indexes (docs, runbooks, custom).
+and support for different indexes (docs, custom).
 """
 
 import os
@@ -24,10 +24,6 @@ INDEX_CONFIGS = {
     "docs": {
         "index_name": os.getenv("PINECONE_DOCS_INDEX", "observe-docs"),
         "field_map": {"text": "text"}
-    },
-    "runbooks": {
-        "index_name": os.getenv("PINECONE_RUNBOOKS_INDEX", "observe-runbooks"),
-        "field_map": {"text": "chunk_text"}
     }
 }
 
@@ -37,7 +33,7 @@ def initialize_pinecone(index_type: str = "docs", index_name: Optional[str] = No
     Initialize Pinecone client and ensure index exists
     
     Args:
-        index_type: Type of index ("docs" or "runbooks") for configuration lookup
+        index_type: Type of index ("docs") for configuration lookup
         index_name: Optional explicit index name. If not provided, uses config for index_type
     
     Returns:
@@ -118,7 +114,7 @@ def get_index_config(index_type: str) -> dict:
     Get configuration for a specific index type
     
     Args:
-        index_type: Type of index ("docs" or "runbooks")
+        index_type: Type of index ("docs")
         
     Returns:
         Dictionary with index configuration

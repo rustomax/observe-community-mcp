@@ -26,7 +26,6 @@ services:
       # === Vector Search (Pinecone) ===
       - PINECONE_API_KEY=${PINECONE_API_KEY}
       - PINECONE_DOCS_INDEX=${PINECONE_DOCS_INDEX:-observe-docs}
-      - PINECONE_RUNBOOKS_INDEX=${PINECONE_RUNBOOKS_INDEX:-observe-runbooks}
       
       # === Database (Semantic Graph) ===
       - POSTGRES_HOST=postgres
@@ -40,14 +39,12 @@ services:
       
       # === Content Directories ===
       - OBSERVE_DOCS_DIR=/app/observe-docs
-      - OBSERVE_RUNBOOKS_DIR=/app/runbooks
       
       # === Runtime ===
       - PYTHONUNBUFFERED=1
     volumes:
-      # Documentation and runbooks (always read-only)
+      # Documentation (always read-only)
       - ./observe-docs:/app/observe-docs:ro
-      - ./runbooks:/app/runbooks:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM); sock.settimeout(5); result = sock.connect_ex(('localhost', 8000)); sock.close(); exit(0 if result == 0 else 1)"]

@@ -96,7 +96,6 @@ OBSERVE_DOMAIN=observeinc.com
 # Vector Search (Pinecone)
 PINECONE_API_KEY=your_pinecone_key
 PINECONE_DOCS_INDEX=observe-docs
-PINECONE_RUNBOOKS_INDEX=observe-runbooks
 
 # LLM Intelligence (OpenAI)
 OPENAI_API_KEY=your_openai_key
@@ -135,9 +134,6 @@ Options for all scripts:
 - `--force`: Recreate the index from scratch
 - `--verbose`: Enable detailed logging
 
-### Runbooks
-
-In the current iteration of the MCP server, runbooks are not supported. They were used in the previous version, and make come back in the future, so I am leaving the script to populate vector database and runbooks themselves in the repo.
 
 ## Running the Server
 
@@ -302,9 +298,6 @@ The system provides dataset recommendations typically within 1-3 seconds, with h
 ```bash
 # Update documentation index
 python scripts/populate_docs_index.py --force
-
-# Update runbooks index  
-python scripts/populate_runbooks_index.py --force
 
 # Update dataset intelligence cache
 python scripts/populate_dataset_intelligence.py --force

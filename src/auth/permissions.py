@@ -282,7 +282,6 @@ def check_tool_access(tool_name: str, user_scopes: Optional[List[str]] = None) -
         "get_dataset_info": checker.can_read_data,
         "export_worksheet": checker.can_export_worksheets,
         "get_relevant_docs": checker.can_read_data,
-        "recommend_runbook": checker.can_read_data,
         "execute_nlp_query": checker.can_use_smart_tools
     }
     

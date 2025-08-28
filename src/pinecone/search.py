@@ -1,7 +1,7 @@
 """
 Pinecone semantic search operations
 
-Provides unified semantic search functionality for both docs and runbooks,
+Provides unified semantic search functionality for docs,
 with consistent error handling and result formatting.
 """
 
@@ -18,7 +18,7 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
     Args:
         query: Search query text
         n_results: Number of results to return (default: 5)
-        index_type: Type of index to search ("docs" or "runbooks")
+        index_type: Type of index to search ("docs")
         namespace: Optional namespace to search within
         
     Returns:
@@ -96,11 +96,8 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         for match in results.get("matches", []):
             metadata = match.get("metadata", {})
             
-            # Handle different field mappings for docs vs runbooks
-            if index_type == "runbooks":
-                text_content = metadata.get("chunk_text", "")
-            else:
-                text_content = metadata.get("text", "")
+            # Get text content
+            text_content = metadata.get("text", "")
             
             formatted_results.append({
                 "id": match.get("id", "unknown"),
@@ -125,18 +122,6 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         }]
 
 
-def search_runbooks(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-    """
-    Convenience function for searching runbooks specifically
-    
-    Args:
-        query: Search query text
-        n_results: Number of results to return (default: 5)
-        
-    Returns:
-        List of runbook search results with metadata
-    """
-    return semantic_search(query, n_results=n_results, index_type="runbooks", namespace="runbooks")
 
 
 def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:

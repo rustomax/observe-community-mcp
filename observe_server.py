@@ -71,7 +71,7 @@ try:
     
     # Import organized Pinecone helpers
     print("Attempting to import src.pinecone modules...", file=sys.stderr)
-    from src.pinecone.search import search_docs, search_runbooks
+    from src.pinecone.search import search_docs
     print("Successfully imported search functions from src.pinecone", file=sys.stderr)
 except ImportError as e:
     print(f"Error importing Pinecone or helpers: {e}", file=sys.stderr)
@@ -79,15 +79,6 @@ except ImportError as e:
     # Define fallback search functions
     def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
         print(f"FALLBACK search_docs called with query: {query}", file=sys.stderr)
-        return [{
-            "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
-            "source": "error", 
-            "title": "Pinecone Not Available", 
-            "score": 1.0
-        }]
-    
-    def search_runbooks(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        print(f"FALLBACK search_runbooks called with query: {query}", file=sys.stderr)
         return [{
             "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
             "source": "error", 
