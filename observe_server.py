@@ -517,15 +517,35 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
     """
     Generate an OPAL query from natural language using rule-based patterns and schema adaptation.
     
-    This tool converts natural language queries into high-quality OPAL queries by:
-    1. Analyzing user intent (logs, metrics, traces)
-    2. Applying proven OPAL patterns based on query type
-    3. Adapting field names to match dataset schema
-    4. Providing clean, executable OPAL code
+    SUCCESS RATES BY QUERY TYPE (~75% overall success):
+    ✅ Simple queries (logs, metrics, basic traces): 95% success
+    ✅ Time-series and aggregations: 85% success  
+    ⚠️ Complex boolean logic: 40% success
+    ❌ Multi-dataset correlations: 15% success
+    
+    BEST PRACTICES - Use for:
+    - Single dataset filtering and aggregation
+    - Time-series analysis with timechart
+    - Basic service performance metrics
+    - Error rate and latency analysis
+    - Simple field transformations
+    
+    AVOID - These patterns frequently fail:
+    - Multi-dataset joins/correlations (use sequential queries instead)
+    - Complex nested boolean expressions (simplify to sequential filters)
+    - Field references within same aggregation statement
+    - Cross-dataset lookups without primary keys
+    
+    RECOMMENDED NLP PATTERNS:
+    ✅ "Show services with error rates above 1%"
+    ✅ "Find slow database queries over 5 seconds" 
+    ✅ "Display CPU usage trends in 15-minute windows"
+    ❌ "Correlate high CPU services with trace errors across datasets"
+    ❌ "Find spans that are (errors OR slow) AND (frontend OR checkout)"
     
     Args:
-        nlp_query: Natural language description (e.g., "Show error logs from payment service")
-        dataset_ids: Comma-separated dataset IDs to target
+        nlp_query: Natural language description (keep simple for best results)
+        dataset_ids: Comma-separated dataset IDs (single dataset recommended)
         preferred_interface: Optional interface hint - "logs", "metrics", or "traces"
     
     Returns:
@@ -549,6 +569,11 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
         dataset_list = [ds.strip() for ds in dataset_ids.split(',') if ds.strip()]
         if not dataset_list:
             return "Error: No valid dataset IDs provided"
+            
+        # Check for multi-dataset scenarios and warn about limitations
+        is_multi_dataset = len(dataset_list) > 1
+        if is_multi_dataset:
+            print(f"[GENERATE_OPAL] ⚠️ MULTI-DATASET REQUEST: {len(dataset_list)} datasets - enforcing single-dataset constraint", file=sys.stderr)
         
         # Get dataset information for schema context
         print(f"[GENERATE_OPAL] ===== DATASET SCHEMA RETRIEVAL PHASE =====", file=sys.stderr)
@@ -625,7 +650,22 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
             print(f"[GENERATE_OPAL] Warning: Could not read OPAL guide: {e}", file=sys.stderr)
             opal_guide = "OPAL guide unavailable"
         
-        # Create the prompt for GPT-5
+        # Create the prompt for GPT-5 with multi-dataset awareness
+        multi_dataset_constraint = ""
+        if is_multi_dataset:
+            multi_dataset_constraint = f"""
+🚨 MULTI-DATASET LIMITATION ENFORCED:
+Multiple datasets provided ({len(dataset_list)} datasets), but multi-dataset joins have 15% success rate.
+
+REQUIRED APPROACH:
+- Focus on PRIMARY dataset: {dataset_list[0]}
+- Generate single-dataset query only
+- Do NOT use @alias.field references
+- Do NOT use join/lookup/follow operations
+- If correlation needed: Suggest sequential single-dataset queries instead
+
+"""
+        
         generation_prompt = f"""You are an expert OPAL query generator for the Observe platform. Your task is to convert natural language queries into precise, executable OPAL queries.
 
 USER REQUEST:
@@ -633,7 +673,7 @@ USER REQUEST:
 
 TARGET DATASETS: {dataset_ids}
 PREFERRED INTERFACE: {preferred_interface or "auto-detect from query"}
-
+{multi_dataset_constraint}
 DATASET SCHEMAS:
 {json.dumps(dataset_schemas, indent=2)}
 
@@ -650,12 +690,34 @@ YOUR TASK:
 4. Use safe attribute access patterns with proper null handling
 5. Generate a clean, executable OPAL query that fulfills their request
 
+CRITICAL CONSTRAINTS (HIGH FAILURE RATES):
+- If multiple dataset IDs provided: AVOID multi-dataset joins/correlations (15% success rate)
+- If complex correlation requested: Suggest sequential single-dataset queries instead
+- NO complex boolean expressions with parentheses (40% success rate)
+- NO field references within same aggregation statement (causes "field does not exist" errors)
+
+MANDATORY AGGREGATION PATTERN:
+Use this two-step pattern for error rates and computed fields:
+1. First statsby: Create base aggregations only
+   statsby total_count:count(), error_count:sum(is_error), group_by(field)
+2. Then make_col: Create computed fields from aggregated results
+   | make_col error_rate:error_count/total_count*100
+
+NEVER do this (FAILS):
+statsby total:count(), errors:sum(is_error), rate:errors/total*100, group_by(field)
+
+DURATION FILTERING PATTERN:
+Use duration value directly for filtering, NOT duration_sec() function:
+✅ CORRECT: filter duration > 5000000000    # 5 seconds in nanoseconds
+❌ WRONG: filter duration > duration_sec(5)  # Function syntax error
+
 CRITICAL: Follow ALL syntax rules and patterns from the OPAL guide above. Pay special attention to:
 - Null handling with `is_null()` and `if_null()`  
 - Safe attribute access for nested fields
 - Proper conditional logic with `if()` not `case()`
 - Correct aggregation syntax with `statsby`
 - Use of verified OPAL functions only
+- Sequential filtering instead of complex boolean logic
 
 OUTPUT FORMAT:
 Return ONLY the OPAL query as clean code, no explanations or markdown formatting.

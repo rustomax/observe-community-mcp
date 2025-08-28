@@ -616,7 +616,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
         print(f"[SEMANTIC_GRAPH] Processing query: {query[:100]}...", file=sys.stderr)
         
         # Step 1: Get dataset candidates from database
-        max_candidates = min(25, limit * 3)  # Get 3x limit for good selection
+        max_candidates = min(10, limit * 2)  # Get 2x limit for good selection
         candidates = await self.get_dataset_candidates(query, max_candidates)
         
         if not candidates:
