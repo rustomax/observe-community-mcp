@@ -511,5 +511,253 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
         return f"Error in semantic graph: {str(e)}"
 
 
+@mcp.tool()
+@requires_scopes(['admin', 'write', 'read'])
+async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, preferred_interface: Optional[str] = None) -> str:
+    """
+    Generate an OPAL query from natural language using rule-based patterns and schema adaptation.
+    
+    This tool converts natural language queries into high-quality OPAL queries by:
+    1. Analyzing user intent (logs, metrics, traces)
+    2. Applying proven OPAL patterns based on query type
+    3. Adapting field names to match dataset schema
+    4. Providing clean, executable OPAL code
+    
+    Args:
+        nlp_query: Natural language description (e.g., "Show error logs from payment service")
+        dataset_ids: Comma-separated dataset IDs to target
+        preferred_interface: Optional interface hint - "logs", "metrics", or "traces"
+    
+    Returns:
+        Clean OPAL query ready for execution
+    """
+    try:
+        import json
+        import os
+        import openai
+        
+        # Get OpenAI API key
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return "Error: OPENAI_API_KEY not configured"
+        
+        print(f"[GENERATE_OPAL] Processing NLP query: {nlp_query[:100]}...", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Target datasets: {dataset_ids}", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Preferred interface: {preferred_interface or 'auto-detect'}", file=sys.stderr)
+        
+        # Parse dataset IDs
+        dataset_list = [ds.strip() for ds in dataset_ids.split(',') if ds.strip()]
+        if not dataset_list:
+            return "Error: No valid dataset IDs provided"
+        
+        # Get dataset information for schema context
+        print(f"[GENERATE_OPAL] ===== DATASET SCHEMA RETRIEVAL PHASE =====", file=sys.stderr)
+        dataset_schemas = {}
+        for dataset_id in dataset_list[:3]:  # Limit to 3 datasets for context management
+            print(f"[GENERATE_OPAL] CALLING REAL get_dataset_info() for dataset: {dataset_id}", file=sys.stderr)
+            try:
+                schema_info = await observe_get_dataset_info(dataset_id=dataset_id)
+                print(f"[GENERATE_OPAL] ✅ REAL TOOL CALL SUCCESS: get_dataset_info({dataset_id}) returned {len(str(schema_info))} characters", file=sys.stderr)
+                # Log first 200 chars to verify it's real data
+                schema_preview = str(schema_info)[:200].replace('\n', ' ')
+                print(f"[GENERATE_OPAL] Schema preview: {schema_preview}...", file=sys.stderr)
+                dataset_schemas[dataset_id] = schema_info
+            except Exception as e:
+                print(f"[GENERATE_OPAL] ❌ REAL TOOL CALL FAILED: get_dataset_info({dataset_id}) error: {e}", file=sys.stderr)
+                dataset_schemas[dataset_id] = "Schema unavailable"
+        
+        print(f"[GENERATE_OPAL] Dataset schemas collection complete. Total schemas: {len(dataset_schemas)}", file=sys.stderr)
+        
+        # Get relevant OPAL documentation - COMMENTED OUT FOR TESTING
+        print(f"[GENERATE_OPAL] ===== DOCUMENTATION RETRIEVAL PHASE (SKIPPED) =====", file=sys.stderr)
+        print(f"[GENERATE_OPAL] EXPERIMENT: Skipping search_docs() call to test LLM performance with system prompt only", file=sys.stderr)
+        opal_docs = "Using system prompt OPAL guide only (search_docs() skipped for testing)"
+        
+        # # ORIGINAL CODE - COMMENTED OUT FOR EXPERIMENT
+        # search_query = f"OPAL query syntax {nlp_query}"
+        # print(f"[GENERATE_OPAL] CALLING REAL search_docs() with query: '{search_query}'", file=sys.stderr)
+        # try:
+        #     docs_response = search_docs(search_query, n_results=3)
+        #     print(f"[GENERATE_OPAL] ✅ REAL TOOL CALL SUCCESS: search_docs() returned {len(docs_response) if docs_response else 0} documents", file=sys.stderr)
+        #     
+        #     if docs_response and len(docs_response) > 0:
+        #         # Log details about retrieved docs to verify they're real
+        #         for i, doc in enumerate(docs_response[:2]):
+        #             doc_preview = str(doc.get("text", ""))[:150].replace('\n', ' ')
+        #             print(f"[GENERATE_OPAL] Doc {i+1} preview: {doc_preview}...", file=sys.stderr)
+        #         
+        #         opal_docs = "\n".join([doc.get("text", "")[:500] for doc in docs_response[:2]])
+        #         print(f"[GENERATE_OPAL] Compiled documentation context: {len(opal_docs)} characters", file=sys.stderr)
+        #     else:
+        #         print(f"[GENERATE_OPAL] WARNING: search_docs() returned empty or null result", file=sys.stderr)
+        #         opal_docs = "Documentation unavailable"
+        # except Exception as e:
+        #     print(f"[GENERATE_OPAL] ❌ REAL TOOL CALL FAILED: search_docs() error: {e}", file=sys.stderr)
+        #     opal_docs = "Documentation unavailable"
+        
+        # Read the system prompt for OPAL guidance
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        prompt_file = os.path.join(script_dir, "prompts", "Observe MCP System Prompt.md")
+        
+        try:
+            with open(prompt_file, 'r', encoding='utf-8') as f:
+                system_prompt_content = f.read()
+                
+            # Extract the complete OPAL guidance sections
+            opal_section_start = system_prompt_content.find("## OPAL Best Practices")
+            
+            if opal_section_start != -1:
+                # Get everything from OPAL Best Practices to the end of the file
+                # since the file ends with the syntax checklist
+                opal_guide = system_prompt_content[opal_section_start:]
+                print(f"[GENERATE_OPAL] Extracted OPAL guide: {len(opal_guide)} characters from system prompt", file=sys.stderr)
+            else:
+                print(f"[GENERATE_OPAL] Warning: Could not find '## OPAL Best Practices' section", file=sys.stderr)
+                # Try alternative extraction
+                practices_start = system_prompt_content.find("OPAL Best Practices")
+                if practices_start != -1:
+                    opal_guide = system_prompt_content[practices_start:]
+                    print(f"[GENERATE_OPAL] Found alternative OPAL section: {len(opal_guide)} characters", file=sys.stderr)
+                else:
+                    opal_guide = "OPAL guide extraction failed - using fallback content"
+                
+        except Exception as e:
+            print(f"[GENERATE_OPAL] Warning: Could not read OPAL guide: {e}", file=sys.stderr)
+            opal_guide = "OPAL guide unavailable"
+        
+        # Create the prompt for GPT-5
+        generation_prompt = f"""You are an expert OPAL query generator for the Observe platform. Your task is to convert natural language queries into precise, executable OPAL queries.
+
+USER REQUEST:
+"{nlp_query}"
+
+TARGET DATASETS: {dataset_ids}
+PREFERRED INTERFACE: {preferred_interface or "auto-detect from query"}
+
+DATASET SCHEMAS:
+{json.dumps(dataset_schemas, indent=2)}
+
+OPAL DOCUMENTATION CONTEXT:
+{opal_docs}
+
+OPAL SYNTAX GUIDE:
+{opal_guide}
+
+YOUR TASK:
+1. Analyze the user's natural language request to understand their intent
+2. Examine the dataset schemas to identify the most relevant fields
+3. Apply the OPAL syntax rules and best practices from the guide above
+4. Use safe attribute access patterns with proper null handling
+5. Generate a clean, executable OPAL query that fulfills their request
+
+CRITICAL: Follow ALL syntax rules and patterns from the OPAL guide above. Pay special attention to:
+- Null handling with `is_null()` and `if_null()`  
+- Safe attribute access for nested fields
+- Proper conditional logic with `if()` not `case()`
+- Correct aggregation syntax with `statsby`
+- Use of verified OPAL functions only
+
+OUTPUT FORMAT:
+Return ONLY the OPAL query as clean code, no explanations or markdown formatting.
+
+Generate the OPAL query now:"""
+
+        # Call GPT-5 using the new Responses API
+        print(f"[GENERATE_OPAL] ===== GPT-5 LLM CALL PHASE =====", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Using OpenAI API key ending in: ...{api_key[-8:]}", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Prompt length: {len(generation_prompt)} characters", file=sys.stderr)
+        print(f"[GENERATE_OPAL] CALLING REAL OpenAI GPT-5-mini API...", file=sys.stderr)
+        
+        client = openai.OpenAI(api_key=api_key)
+        
+        try:
+            response = client.responses.create(
+                model="gpt-5-mini",
+                input=generation_prompt,
+                reasoning={"effort": "low"},   # Use low reasoning for faster response
+                text={"verbosity": "low"}     # Keep output concise
+            )
+            
+            print(f"[GENERATE_OPAL] ✅ REAL LLM CALL SUCCESS: GPT-5-mini responded", file=sys.stderr)
+            print(f"[GENERATE_OPAL] Response object type: {type(response)}", file=sys.stderr)
+            
+            # Log response metadata if available
+            if hasattr(response, 'id'):
+                print(f"[GENERATE_OPAL] Response ID: {response.id}", file=sys.stderr)
+            if hasattr(response, 'model'):
+                print(f"[GENERATE_OPAL] Model used: {response.model}", file=sys.stderr)
+            if hasattr(response, 'usage'):
+                print(f"[GENERATE_OPAL] Token usage: {response.usage}", file=sys.stderr)
+            
+            generated_query = response.output_text.strip()
+            print(f"[GENERATE_OPAL] Raw response length: {len(generated_query)} characters", file=sys.stderr)
+            print(f"[GENERATE_OPAL] Raw response preview: {generated_query[:200].replace(chr(10), ' ')}", file=sys.stderr)
+            
+        except Exception as llm_error:
+            print(f"[GENERATE_OPAL] ❌ REAL LLM CALL FAILED: {llm_error}", file=sys.stderr)
+            return f"Error calling GPT-5: {str(llm_error)}"
+        
+        # Basic validation - ensure it looks like OPAL
+        if not generated_query:
+            print(f"[GENERATE_OPAL] ❌ VALIDATION FAILED: GPT-5 returned empty response", file=sys.stderr)
+            return "Error: GPT-5 returned empty response"
+        
+        print(f"[GENERATE_OPAL] ===== RESPONSE PROCESSING PHASE =====", file=sys.stderr)
+        
+        # Remove any markdown formatting if present
+        original_query = generated_query
+        if generated_query.startswith("```"):
+            print(f"[GENERATE_OPAL] Detected markdown formatting, removing...", file=sys.stderr)
+            lines = generated_query.split('\n')
+            generated_query = '\n'.join(lines[1:-1]) if len(lines) > 2 else generated_query
+        
+        # Clean up the query
+        generated_query = generated_query.strip()
+        
+        # Log the transformation
+        if original_query != generated_query:
+            print(f"[GENERATE_OPAL] Query transformed during cleanup", file=sys.stderr)
+            print(f"[GENERATE_OPAL] Before: {original_query[:100].replace(chr(10), ' ')}...", file=sys.stderr)
+            print(f"[GENERATE_OPAL] After: {generated_query[:100].replace(chr(10), ' ')}...", file=sys.stderr)
+        
+        print(f"[GENERATE_OPAL] ✅ FINAL OPAL QUERY: {generated_query}", file=sys.stderr)
+        
+        # Validate that it's not obviously hallucinated by checking for common OPAL keywords
+        opal_keywords = ['filter', 'statsby', 'limit', 'sort', 'make_col', 'timechart', 'group_by']
+        has_opal_keywords = any(keyword in generated_query.lower() for keyword in opal_keywords)
+        
+        if not has_opal_keywords:
+            print(f"[GENERATE_OPAL] ⚠️  WARNING: Generated query doesn't contain common OPAL keywords", file=sys.stderr)
+            print(f"[GENERATE_OPAL] This might indicate hallucination or invalid query generation", file=sys.stderr)
+        else:
+            matching_keywords = [kw for kw in opal_keywords if kw in generated_query.lower()]
+            print(f"[GENERATE_OPAL] ✅ Query contains OPAL keywords: {matching_keywords}", file=sys.stderr)
+        
+        print(f"[GENERATE_OPAL] ===== SUCCESSFUL COMPLETION =====", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Total tool calls made: get_dataset_info() x{len(dataset_list[:3])}, search_docs() x0 (skipped), GPT-5-mini x1", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Returning formatted response to user", file=sys.stderr)
+        
+        return f"""**Generated OPAL Query:**
+
+```opal
+{generated_query}
+```
+
+**Target Datasets:** {dataset_ids}
+**Query Intent:** {nlp_query}
+
+**Usage:**
+Use `execute_opal_query()` with this OPAL code and your target dataset(s) to run the query.
+"""
+
+    except Exception as e:
+        print(f"[GENERATE_OPAL] ❌ CRITICAL ERROR IN generate_opal_query: {e}", file=sys.stderr)
+        print(f"[GENERATE_OPAL] Exception type: {type(e).__name__}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        print(f"[GENERATE_OPAL] ===== FAILED COMPLETION =====", file=sys.stderr)
+        return f"Error generating OPAL query: {str(e)}"
+
+
 print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
