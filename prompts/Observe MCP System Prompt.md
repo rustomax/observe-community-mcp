@@ -343,17 +343,24 @@ make_col is_error:if(error = true, 1, 0)
 
 #### Filtering Patterns (Tested)
 ```opal
-# String pattern matching
+# String pattern matching - Simple OR only
 filter contains(body, "error") or contains(body, "ERROR")
 
-# Boolean and numeric filtering
+# Boolean and numeric filtering - Simple AND chains
 filter error = true and duration > 1000000
 
-# Multiple conditions with null safety
-filter not is_null(service_name) and service_name in ("frontend", "backend") and error = false
+# Multiple conditions - Use sequential filtering for reliability
+filter not is_null(service_name) 
+| filter service_name = "frontend" or service_name = "backend" 
+| filter error = false
 
 # Safe attribute filtering
 filter if_null(attributes.http_status_code, 200) >= 400
+
+# Multiple service filtering - Use separate queries instead of complex OR
+# Query 1: filter service_name = "checkoutservice"  
+# Query 2: filter service_name = "paymentservice"
+# Then correlate results manually
 ```
 
 #### Sorting and Limiting (Tested)
@@ -588,6 +595,55 @@ present()                       # Function doesn't exist
 case()                          # Use if() instead
 ```
 
+#### ⚠️ BOOLEAN EXPRESSION LIMITATIONS
+
+**CRITICAL**: Complex boolean patterns consistently cause "logic expression term must be boolean" errors.
+
+#### ❌ COMPLEX BOOLEAN PATTERNS - Cause Syntax Errors
+```opal
+# FAILS - Complex parenthetical grouping
+filter field1 = "value" and (field2 = "a" or field2 = "b")
+
+# FAILS - Multi-level boolean nesting  
+filter (condition1 and condition2) or (condition3 and condition4)
+
+# FAILS - Mixed logical operators in single statement
+filter not is_null(field) and (contains(field, "a") or contains(field, "b"))
+
+# FAILS - Complex multi-service selection
+filter service_name in ("service1", "service2") or contains(service_name, "checkout")
+```
+
+#### ✅ WORKING ALTERNATIVES for Complex Logic
+
+**Sequential Filtering (Most Reliable)**
+```opal
+# Instead of complex boolean, use pipes for reliability
+filter not is_null(service_name)
+| filter service_name = "checkoutservice" or service_name = "paymentservice"  
+| filter error = true or duration > 10000000
+```
+
+**Multi-Query Approach for Complex OR Conditions**
+```opal
+# For service A - separate query
+filter service_name = "serviceA" | statsby metrics, group_by(fields)
+
+# For service B - separate query  
+filter service_name = "serviceB" | statsby metrics, group_by(fields)
+# Manually combine results in analysis
+```
+
+**Simple Patterns Only**
+```opal
+# ✅ WORKS - Simple OR within single field
+filter contains(body, "ERROR") or contains(body, "Error")
+filter error = true or duration > threshold
+
+# ✅ WORKS - Simple AND chains (no parentheses)
+filter service_name = "frontend" and error = true and duration > 1000000
+```
+
 ---
 
 ### QUERY CONSTRUCTION BEST PRACTICES
@@ -694,6 +750,8 @@ Before generating OPAL queries, ensure:
 6. **Multi-dataset syntax**: Use proper `@alias.field` references and dataset compatibility matrix
 7. **Complex nested access**: Keep field extraction simple - avoid deep object casting
 8. **Inconsistent null filtering**: ALWAYS include `filter not is_null(field)` before aggregations
+9. **Complex boolean expressions**: NEVER use parenthetical grouping - use sequential filtering instead
+10. **Multi-service selection**: Use separate queries instead of complex OR conditions
 
 ---
 
@@ -759,3 +817,5 @@ Before running any OPAL query, verify:
 - [ ] **CRITICAL**: Simple nested field access only - no complex object casting
 - [ ] **CRITICAL**: All aggregation queries include `filter not is_null(field)` for consistency
 - [ ] **CRITICAL**: Multi-dataset queries follow compatibility matrix (Event+Interval, Event+Event, etc.)
+- [ ] **CRITICAL**: No complex boolean expressions with parentheses - use sequential filtering instead
+- [ ] **CRITICAL**: Simple OR/AND chains only - no nested boolean logic
