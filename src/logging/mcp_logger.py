@@ -5,11 +5,16 @@ Uses Python's built-in logging with structured session correlation.
 
 import logging
 import sys
+import os
 from typing import Optional, Dict, Any
+
+# Get log level from environment variable, default to INFO
+log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level_value = getattr(logging, log_level, logging.INFO)
 
 # Configure root logger with basic format
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level_value,
     format='%(levelname)s %(name)s %(message)s',
     stream=sys.stderr
 )

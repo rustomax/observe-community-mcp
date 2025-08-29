@@ -42,6 +42,8 @@ services:
       
       # === Runtime ===
       - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=INFO
+
     volumes:
       # Documentation (always read-only)
       - ./observe-docs:/app/observe-docs:ro
