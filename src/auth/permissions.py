@@ -35,12 +35,9 @@ def get_user_permissions(scopes: Optional[List[str]] = None) -> Dict[str, bool]:
         "read_access": "read" in effective_scopes,
         "write_access": "write" in effective_scopes,
         "smart_tools_access": "smart_tools" in effective_scopes,
-        "monitor_create": "admin" in effective_scopes or "write" in effective_scopes,
-        "monitor_read": any(s in effective_scopes for s in ["admin", "write", "read"]),
         "system_info": "admin" in effective_scopes,
         "query_execute": any(s in effective_scopes for s in ["admin", "write", "read"]),
-        "dataset_access": any(s in effective_scopes for s in ["admin", "read"]),
-        "worksheet_export": any(s in effective_scopes for s in ["admin", "write", "read"])
+        "dataset_access": any(s in effective_scopes for s in ["admin", "read"])
     }
 
 
@@ -208,10 +205,6 @@ class PermissionChecker:
         """Check if user can access admin-only tools."""
         return self.permissions["admin_access"]
     
-    def can_create_monitors(self) -> bool:
-        """Check if user can create monitors."""
-        return self.permissions["monitor_create"]
-    
     def can_read_data(self) -> bool:
         """Check if user can read data (datasets, queries, etc.)."""
         return self.permissions["read_access"]
@@ -223,10 +216,6 @@ class PermissionChecker:
     def can_execute_queries(self) -> bool:
         """Check if user can execute OPAL queries."""
         return self.permissions["query_execute"]
-    
-    def can_export_worksheets(self) -> bool:
-        """Check if user can export worksheets."""
-        return self.permissions["worksheet_export"]
     
     def can_use_smart_tools(self) -> bool:
         """Check if user can use LLM-powered smart tools."""
@@ -274,13 +263,9 @@ def check_tool_access(tool_name: str, user_scopes: Optional[List[str]] = None) -
     # Tool access mapping
     tool_requirements = {
         "admin_system_info": checker.can_access_admin_tools,
-        "create_monitor": checker.can_create_monitors,
-        "list_monitors": checker.can_read_data,
-        "get_monitor": checker.can_read_data,
         "execute_opal_query": checker.can_execute_queries,
         "list_datasets": checker.can_read_data,
         "get_dataset_info": checker.can_read_data,
-        "export_worksheet": checker.can_export_worksheets,
         "get_relevant_docs": checker.can_read_data,
         "execute_nlp_query": checker.can_use_smart_tools
     }

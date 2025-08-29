@@ -15,78 +15,32 @@ except ImportError:
     from typing import TypedDict
 
 # Type definitions for better type safety
-class MonitorResponse(TypedDict):
-    id: str
-    name: str
-    ruleKind: str
-    description: str
-
 class ErrorResponse(TypedDict):
     error: bool
     message: str
 
-class SystemInfo(TypedDict):
-    python_version: str
-    python_path: List[str]
-    environment: Dict[str, str]
-    server_time: str
-    server_pid: int
-
-class AuthPermissions(TypedDict):
-    admin_access: bool
-    read_access: bool
-    write_access: bool
-
-class AuthTokenInfo(TypedDict):
-    authenticated: bool
-    client_id: str
-    token_type: str
-    scopes: List[str]
-    permissions: AuthPermissions
-
-# Add debugging statements to help diagnose import issues
-print("Starting observe_server.py", file=sys.stderr)
-print(f"Python version: {sys.version}", file=sys.stderr)
-print(f"Python path: {sys.path}", file=sys.stderr)
 
 try:
     import httpx
     from dotenv import load_dotenv
-    print("Basic imports successful", file=sys.stderr)
+    pass
 except Exception as e:
-    print(f"Error importing basic modules: {e}", file=sys.stderr)
+    pass
     raise
 
-# Try to import Pinecone and related helpers with detailed error reporting
+# Try to import Pinecone and related helpers
 try:
-    print("Attempting to import pinecone module...", file=sys.stderr)
     import pinecone
-    
-    # Try to get version, but don't fail if it's not available
-    try:
-        version = getattr(pinecone, '__version__', 'unknown')
-        print(f"Pinecone import successful. Version: {version}", file=sys.stderr)
-    except (AttributeError, Exception):
-        print("Pinecone import successful. Version: unknown", file=sys.stderr)
-    
-    # Import organized Pinecone helpers
-    print("Attempting to import src.pinecone modules...", file=sys.stderr)
     from src.pinecone.search import search_docs
-    print("Successfully imported search functions from src.pinecone", file=sys.stderr)
 except ImportError as e:
-    print(f"Error importing Pinecone or helpers: {e}", file=sys.stderr)
-    
     # Define fallback search functions
     def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        print(f"FALLBACK search_docs called with query: {query}", file=sys.stderr)
         return [{
             "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
             "source": "error", 
             "title": "Pinecone Not Available", 
             "score": 1.0
         }]
-    
-    print("Using fallback search functions", file=sys.stderr)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -227,11 +181,9 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         import os
         from collections import defaultdict
         
-        print(f"Searching for relevant docs using Pinecone: {query}", file=sys.stderr)
         chunk_results = search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
         
         if not chunk_results:
-            print(f"No relevant documents found for: '{query}'", file=sys.stderr)
             return f"No relevant documents found for: '{query}'"
         
         # Group chunks by source document
@@ -251,10 +203,8 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:n_results]
         
         if not sorted_docs:
-            print(f"No valid documents found for: '{query}'", file=sys.stderr)
             return f"No valid documents found for: '{query}'"
         
-        print(f"Found {len(sorted_docs)} relevant documents", file=sys.stderr)
         response = f"Found {len(sorted_docs)} relevant documents for: '{query}'\\n\\n"
         
         # Read and format each full document
@@ -275,7 +225,6 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
                 response += f"{document_content}\\n\\n\\n"
                 response += "----------------------------------------\\n\\n"
             except Exception as e:
-                print(f"Error reading document file {source}: {e}", file=sys.stderr)
                 # Use the chunk text as fallback if we can't read the file
                 chunks_text = "\\n\\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
                 title = os.path.basename(source).replace(".md", "").replace("_", " ").title()
@@ -289,9 +238,6 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         
         return response
     except Exception as e:
-        print(f"ERROR in get_relevant_docs: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
         return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_docs_index.py."
 
 # recommend_runbook tool removed - keeping only core functionality
@@ -343,18 +289,13 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
                             decoded = base64.urlsafe_b64decode(padded)
                             jwt_payload = json.loads(decoded)
                     except Exception as e:
-                        print(f"Error decoding token in get_system_prompt: {e}", file=sys.stderr)
+                        pass
                 
-                # Print minimal debug info
-                print("\\n=== AUTH TOKEN INFO IN get_system_prompt ===\\n", file=sys.stderr)
-                print(f"Client ID: {access_token.client_id}", file=sys.stderr)
-                print(f"Scopes from AccessToken: {access_token.scopes}", file=sys.stderr)
-                if jwt_payload and 'scopes' in jwt_payload:
-                    print(f"Scopes from JWT: {jwt_payload['scopes']}", file=sys.stderr)
-                print("\\n=== END AUTH TOKEN INFO ===\\n", file=sys.stderr)
+                # Log session context for correlation
+                effective_scopes = jwt_payload.get('scopes', []) if jwt_payload else access_token.scopes or []
+                print(f"[SESSION] {access_token.client_id} | session:{ctx.session_id} | scopes:{effective_scopes}", file=sys.stderr)
         except Exception as e:
-            print(f"Note: Could not access token in get_system_prompt: {e}", file=sys.stderr)
-            print("This is normal if no valid token was provided or if token validation failed", file=sys.stderr)
+            print(f"[SESSION] auth_failed | session:{ctx.session_id} | error:{str(e)[:50]}", file=sys.stderr)
         # Get the directory where the script is located
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # Construct the path to the prompt file
@@ -433,8 +374,8 @@ async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_sc
             except json.JSONDecodeError as e:
                 return f"Error parsing categories JSON: {e}"
         
-        print(f"[DATASET_REC_TOOL] Processing query: {query[:100]}...", file=sys.stderr)
-        print(f"[DATASET_REC_TOOL] Parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
+        print(f"[SEMANTIC_GRAPH] Processing query: {query[:100]}...", file=sys.stderr)
+        print(f"[SEMANTIC_GRAPH] Parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
         
         # Get LLM-based recommendations
         recommendations = await query_datasets_llm(
@@ -490,13 +431,13 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
         result += f"1. Use `get_dataset_info()` to see full schema\n"
         result += f"2. Use `execute_opal_query()` to sample data"
         
-        print(f"[DATASET_REC_TOOL] Returning {len(recommendations)} recommendations", file=sys.stderr)
+        print(f"[SEMANTIC_GRAPH] Returning {len(recommendations)} recommendations", file=sys.stderr)
         return result
         
     except ImportError as e:
         return f"Semantic graph system not available. Missing dependencies: {str(e)}"
     except Exception as e:
-        print(f"[DATASET_REC_TOOL] Error: {e}", file=sys.stderr)
+        print(f"[SEMANTIC_GRAPH] Error: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc(file=sys.stderr)
         return f"Error in semantic graph: {str(e)}"
@@ -812,5 +753,4 @@ Use `execute_opal_query()` with this OPAL code and your target dataset(s) to run
         return f"Error generating OPAL query: {str(e)}"
 
 
-print("Python MCP server starting...", file=sys.stderr)
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
