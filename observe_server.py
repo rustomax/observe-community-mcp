@@ -628,10 +628,17 @@ OPAL SYNTAX GUIDE:
 
 YOUR TASK:
 1. Analyze the user's natural language request to understand their intent
-2. Examine the dataset schemas to identify the most relevant fields
-3. Apply the OPAL syntax rules and best practices from the guide above
-4. Use safe attribute access patterns with proper null handling
-5. Generate a clean, executable OPAL query that fulfills their request
+2. MANDATORY: Examine the dataset schemas to identify the EXACT field names that exist
+3. VALIDATE: Only use field names that are explicitly present in the provided schemas
+4. Apply the OPAL syntax rules and best practices from the guide above
+5. Use safe attribute access patterns with proper null handling
+6. Generate a clean, executable OPAL query that fulfills their request
+
+CRITICAL SCHEMA VALIDATION:
+- NEVER use field names not present in the schema (e.g., "response_time" when schema has "duration")
+- NEVER mix SQL window syntax (over(partition_by...)) - use OPAL window() function only
+- NEVER use duration_sec() function - use duration value directly for filtering
+- VERIFY field types: duration fields need special handling vs numeric fields
 
 CRITICAL CONSTRAINTS (HIGH FAILURE RATES):
 - If multiple dataset IDs provided: AVOID multi-dataset joins/correlations (15% success rate)
@@ -667,22 +674,23 @@ Return ONLY the OPAL query as clean code, no explanations or markdown formatting
 
 Generate the OPAL query now:"""
 
-        # Call GPT-5 using the new Responses API
+        # Call GPT-5 for OPAL generation
         opal_logger.debug("calling LLM for OPAL generation")
         
         client = openai.OpenAI(api_key=api_key)
         
         try:
-            response = client.responses.create(
-                model="gpt-5-mini",
-                input=generation_prompt,
-                reasoning={"effort": "low"},   # Use low reasoning for faster response
-                text={"verbosity": "low"}     # Keep output concise
+            response = client.chat.completions.create(
+                model="gpt-5",
+                messages=[
+                    {"role": "system", "content": "You are an expert OPAL query generator for the Observe platform."},
+                    {"role": "user", "content": generation_prompt}
+                ]
             )
             
             opal_logger.debug(f"LLM call successful | model:{getattr(response, 'model', 'unknown')} | tokens:{getattr(getattr(response, 'usage', None), 'total_tokens', 0) if hasattr(response, 'usage') else 0}")
             
-            generated_query = response.output_text.strip()
+            generated_query = response.choices[0].message.content.strip()
             opal_logger.debug(f"LLM response | length:{len(generated_query)} | preview:{generated_query[:100].replace(chr(10), ' ')}...")
             
         except Exception as llm_error:
@@ -721,6 +729,23 @@ Generate the OPAL query now:"""
         else:
             matching_keywords = [kw for kw in opal_keywords if kw in generated_query.lower()]
             opal_logger.debug(f"query validation passed | keywords_found:{matching_keywords}")
+        
+        # Basic field validation against schema
+        validation_warnings = []
+        for dataset_id, schema_info in dataset_schemas.items():
+            if isinstance(schema_info, dict) and 'fields' in schema_info:
+                schema_fields = [field.get('name', '').lower() for field in schema_info.get('fields', [])]
+                # Check for common field mismatches
+                if 'response_time' in generated_query.lower() and 'response_time' not in schema_fields and 'duration' in schema_fields:
+                    validation_warnings.append("⚠️  Using 'response_time' but schema has 'duration' field")
+                if 'over(' in generated_query.lower():
+                    validation_warnings.append("⚠️  SQL window syntax detected - use OPAL window() function")
+                if 'duration_sec(' in generated_query.lower():
+                    validation_warnings.append("⚠️  duration_sec() function - use duration value directly")
+        
+        if validation_warnings:
+            for warning in validation_warnings:
+                opal_logger.warning(f"validation warning: {warning}")
         
         opal_logger.info(f"successful completion | dataset_calls:{len(dataset_list[:3])} | search_calls:0 | llm_calls:1")
         opal_logger.debug("returning formatted response to user")

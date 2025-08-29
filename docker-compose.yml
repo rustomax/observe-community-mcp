@@ -42,7 +42,8 @@ services:
       
       # === Runtime ===
       - PYTHONUNBUFFERED=1
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LOG_COLORS=${LOG_COLORS:-true}
 
     volumes:
       # Documentation (always read-only)

@@ -441,7 +441,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
                 model="gpt-4o-mini",  # Use faster model for ranking
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,  # Low temperature for consistent ranking
-                max_tokens=2000
+                max_completion_tokens=2000
             )
             
             response_text = response.choices[0].message.content.strip()

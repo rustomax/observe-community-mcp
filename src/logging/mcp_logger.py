@@ -8,21 +8,105 @@ import sys
 import os
 from typing import Optional, Dict, Any
 
+
+class ColoredFormatter(logging.Formatter):
+    """Colored logging formatter with timestamps."""
+    
+    # ANSI color codes
+    COLORS = {
+        'DEBUG': '\033[36m',    # Cyan
+        'INFO': '\033[32m',     # Green
+        'WARNING': '\033[33m',  # Yellow
+        'ERROR': '\033[31m',    # Red
+        'CRITICAL': '\033[35m', # Magenta
+        'RESET': '\033[0m'      # Reset
+    }
+    
+    def __init__(self, use_colors=True):
+        # Format similar to dataset intelligence tool: timestamp - component - level - message
+        super().__init__(
+            fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        self.use_colors = use_colors and sys.stderr.isatty()  # Only use colors if terminal supports it
+    
+    def format(self, record):
+        if self.use_colors:
+            # Apply color to level name
+            level_color = self.COLORS.get(record.levelname, '')
+            reset_color = self.COLORS['RESET']
+            
+            # Temporarily modify the record to add colors
+            original_levelname = record.levelname
+            record.levelname = f"{level_color}{record.levelname}{reset_color}"
+            
+            # Format the message
+            formatted = super().format(record)
+            
+            # Restore original levelname
+            record.levelname = original_levelname
+            
+            return formatted
+        else:
+            return super().format(record)
+
+
+class SessionColoredFormatter(ColoredFormatter):
+    """Colored formatter with session context for our custom loggers."""
+    
+    def __init__(self, use_colors=True):
+        # Enhanced format with session context
+        super().__init__(use_colors)
+        # Override format to include session context after component name
+        self.fmt = '%(asctime)s - %(name)s%(session_part)s%(user_part)s - %(levelname)s - %(message)s'
+        self._fmt = logging.Formatter(self.fmt, datefmt='%Y-%m-%d %H:%M:%S')
+    
+    def format(self, record):
+        # Add session and user parts to record
+        session_part = f" {record.session}" if hasattr(record, 'session') and record.session else ""
+        user_part = f" {record.user}" if hasattr(record, 'user') and record.user else ""
+        
+        record.session_part = session_part
+        record.user_part = user_part
+        
+        if self.use_colors:
+            # Apply color to level name
+            level_color = self.COLORS.get(record.levelname, '')
+            reset_color = self.COLORS['RESET']
+            
+            # Temporarily modify the record to add colors
+            original_levelname = record.levelname
+            record.levelname = f"{level_color}{record.levelname}{reset_color}"
+            
+            # Format the message
+            formatted = self._fmt.format(record)
+            
+            # Restore original levelname
+            record.levelname = original_levelname
+            
+            return formatted
+        else:
+            return self._fmt.format(record)
+
+
 # Get log level from environment variable, default to INFO
 log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
 log_level_value = getattr(logging, log_level, logging.INFO)
 
-# Configure root logger with basic format
-logging.basicConfig(
-    level=log_level_value,
-    format='%(levelname)s %(name)s %(message)s',
-    stream=sys.stderr
-)
+# Check if colors should be disabled
+use_colors = os.getenv('LOG_COLORS', 'true').lower() in ('true', '1', 'yes', 'on')
 
-# Silence noisy third-party loggers
-logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('httpcore').setLevel(logging.WARNING)
-logging.getLogger('urllib3').setLevel(logging.WARNING)
+# Don't modify the root logger - this affects third-party libraries
+# Instead, we'll configure individual loggers as needed
+
+# Set up a basic root logger that doesn't interfere with third-party loggers
+# but ensures our application logs have proper formatting
+if not logging.getLogger().handlers:
+    # Only add a handler if none exists (don't override existing setup)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(logging.Formatter('%(levelname)s:%(name)s:%(message)s'))
+    logging.getLogger().addHandler(handler)
+    logging.getLogger().setLevel(logging.WARNING)  # Only show warnings and errors from third-party
 
 
 class SessionContextFilter(logging.Filter):
@@ -53,10 +137,11 @@ class SessionContextFilter(logging.Filter):
 
 
 class SessionHandler(logging.StreamHandler):
-    """Custom handler that only applies session formatting to our loggers."""
+    """Custom handler that applies session formatting and colors to our loggers."""
     
-    def __init__(self):
+    def __init__(self, use_colors=True):
         super().__init__(sys.stderr)
+        self.setFormatter(SessionColoredFormatter(use_colors=use_colors))
 
 
 # Global session context filter
@@ -64,18 +149,16 @@ session_filter = SessionContextFilter()
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger with session context."""
+    """Get a logger with session context and colored formatting."""
     logger = logging.getLogger(name)
     if session_filter not in logger.filters:
         logger.addFilter(session_filter)
-        # Create a custom handler with session-aware formatting
+        # Create a custom handler with session-aware colored formatting
         if not any(isinstance(h, SessionHandler) for h in logger.handlers):
-            handler = SessionHandler()
-            handler.setFormatter(logging.Formatter(
-                '%(levelname)s %(name)s %(session)s %(user)s %(message)s'
-            ))
+            handler = SessionHandler(use_colors=use_colors)
             logger.addHandler(handler)
             logger.propagate = False  # Don't send to root logger
+            logger.setLevel(log_level_value)  # Set the level for our application loggers
     return logger
 
 
