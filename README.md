@@ -10,12 +10,13 @@ A Model Context Protocol (MCP) server that provides LLMs with access to [Observe
 
 ## Purpose
 
-This MCP server enables LLMs to interact with Observe platform data through a set of 6 tools. It includes dataset discovery capabilities powered by LLM reasoning, OPAL query execution, and semantic search for documentation.
+This MCP server enables LLMs to interact with Observe platform data through a set of 7 tools. It includes dataset discovery capabilities powered by LLM reasoning, OPAL query execution, semantic search for documentation, and AI-powered observability investigations.
 
 **Key capabilities:**
 - Dataset discovery using LLM-powered semantic analysis
 - OPAL query execution against Observe datasets
-- Vector-based search for OPAL documentation and runbooks
+- Vector-based search for OPAL documentation and runbooks  
+- AI-powered observability investigations with GPT-5 reasoning
 - JWT-based authentication with role-based access control
 
 > **⚠️ DISCLAIMER**: This is an experimental MCP server for testing and collaboration. Use at your own risk. A production-ready version, based on a completely different code base, is available to Observe customers.
@@ -41,7 +42,7 @@ This MCP server enables LLMs to interact with Observe platform data through a se
 
 ## Available MCP Tools
 
-This MCP server provides 6 core tools for Observe platform access:
+This MCP server provides 7 core tools for Observe platform access:
 
 ### Dataset Intelligence
 - **`query_semantic_graph`**: Find relevant datasets using LLM-powered analysis of query intent and dataset metadata. This uses a chached and semantically enriched dataset metadata.
@@ -54,6 +55,9 @@ This MCP server provides 6 core tools for Observe platform access:
 ### Knowledge & Documentation
 - **`get_relevant_docs`**: Search Observe documentation, include OPAL language reference (semantic vector search)
 - **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as an Observe expert
+
+### AI-Powered Investigations
+- **`o11y_scout`**: Autonomous observability investigation agent powered by GPT-5 with reasoning capabilities. Takes a natural language query and executes multi-step investigations using real data from Observe platform tools to provide data-driven analysis and recommendations.
 
 Each tool includes error handling, authentication validation, and structured result formatting.
 
@@ -231,7 +235,7 @@ Add the following to your `claude_desktop_config.json`:
 
 > **Network Configuration Note**: MCP clients typically restrict HTTP access to localhost only. For internet-accessible deployments, implement an HTTPS reverse proxy with proper DNS configuration and SSL certificates.
 
-The server will be available with 6 MCP tools for dataset discovery, query execution, and documentation search.
+The server will be available with 7 MCP tools for dataset discovery, query execution, documentation search, and AI-powered investigations.
 
 ![Claude Desktop using Observe MCP Server](./images/claude_tools.png)
 

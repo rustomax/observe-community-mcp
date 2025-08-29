@@ -20,6 +20,9 @@ langgraph>=0.2.0
 langchain-anthropic>=0.2.0
 langchain-openai>=0.2.0
 
+# OpenAI Agents SDK for investigator agent
+openai-agents>=0.1.0
+
 # Visualization dependencies
 matplotlib>=3.7.0
 pandas>=2.0.0

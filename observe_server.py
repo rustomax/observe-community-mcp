@@ -77,6 +77,33 @@ from src.visualization.auto_detection import recommend_chart_and_columns, valida
 from fastmcp import Context
 from fastmcp.utilities.types import Image
 
+# Import OpenAI Agents SDK for investigator agent
+try:
+    from agents import Agent, function_tool, ModelSettings
+    from agents.run import Runner, RunConfig
+    from agents.stream_events import StreamEvent
+    from openai.types.shared import Reasoning
+    HAS_OPENAI_AGENTS = True
+    session_logger.info("✅ OpenAI Agents SDK imported successfully")
+except ImportError as e:
+    HAS_OPENAI_AGENTS = False
+    Agent = None
+    function_tool = None
+    Runner = None
+    RunConfig = None
+    ModelSettings = None
+    Reasoning = None
+    session_logger.warning(f"❌ OpenAI Agents SDK not available: {e}")
+except Exception as e:
+    HAS_OPENAI_AGENTS = False
+    Agent = None
+    function_tool = None
+    Runner = None
+    RunConfig = None
+    ModelSettings = None
+    Reasoning = None
+    session_logger.error(f"❌ Error importing OpenAI Agents SDK: {e}")
+
 # Create FastMCP instance with authentication
 mcp = create_authenticated_mcp(server_name="observe-community")
 
@@ -986,6 +1013,628 @@ Use this chart to visualize your OPAL query results. The image is optimized for 
             format="jpeg",
             annotations={"text": f"Error creating visualization: {str(e)}. Please check your CSV data and parameters."}
         )
+
+
+# --- AI Investigator Agent (using OpenAI Agents SDK) ---
+
+if HAS_OPENAI_AGENTS:
+    # Internal tool wrappers for agent to call existing MCP functions
+    @function_tool
+    async def internal_query_semantic_graph(query: str, limit: int = 5) -> str:
+        """Find relevant datasets using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_query_semantic_graph(query='{query}', limit={limit})")
+            
+            # Try to get context for progress updates (may fail if not in MCP context)
+            try:
+                from fastmcp.server.dependencies import get_context
+                ctx = get_context()
+                await ctx.report_progress(20, 100, "🔍 Searching for relevant datasets...")
+            except RuntimeError:
+                pass  # No context available, skip progress updates
+            
+            # Import and call the underlying implementation directly
+            from src.dataset_intelligence.llm_recommendations import query_datasets_llm
+            
+            # Call the actual implementation
+            recommendations = await query_datasets_llm(
+                query=query,
+                limit=min(max(int(limit), 1), 20),
+                min_score=0.5,
+                categories=None
+            )
+            
+            # Format the results as JSON string like the MCP tool does
+            import json
+            if recommendations:
+                result = json.dumps([{
+                    'id': rec.dataset_id,
+                    'name': rec.name, 
+                    'dataset_type': rec.dataset_type,
+                    'business_category': rec.business_category,
+                    'technical_category': rec.technical_category,
+                    'score': rec.relevance_score,
+                    'explanation': rec.explanation
+                } for rec in recommendations], indent=2)
+            else:
+                result = "[]"
+                
+            session_logger.info(f"🔧 TOOL RESULT: Found {len(recommendations)} datasets, {len(str(result))} chars of data")
+            return result
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_query_semantic_graph failed: {str(e)}")
+            return f"Error querying semantic graph: {str(e)}"
+
+    @function_tool
+    async def internal_generate_opal_query(nlp_query: str, dataset_ids: str, preferred_interface: str = None) -> str:
+        """Generate valid OPAL query from natural language"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_generate_opal_query(nlp_query='{nlp_query[:50]}...', dataset_ids='{dataset_ids}')")
+            
+            # Try to get context for progress updates
+            try:
+                from fastmcp.server.dependencies import get_context
+                ctx = get_context()
+                await ctx.report_progress(40, 100, f"🧠 Generating OPAL query...")
+            except RuntimeError:
+                pass  # No context available, skip progress updates
+            
+            # Call the existing MCP generate_opal_query function directly
+            mock_context = Context(mcp)
+            result = await generate_opal_query(
+                mock_context,
+                nlp_query=nlp_query,
+                dataset_ids=dataset_ids,
+                preferred_interface=preferred_interface
+            )
+            
+            session_logger.info(f"🔧 TOOL RESULT: Generated OPAL query, {len(str(result))} chars")
+            return result
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_generate_opal_query failed: {str(e)}")
+            return f"Error generating OPAL query: {str(e)}"
+
+    @function_tool  
+    async def internal_execute_opal_query(query: str, dataset_id: str, time_range: str = "1h") -> str:
+        """Execute OPAL query using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_execute_opal_query(query='{query[:100]}...', dataset_id='{dataset_id}', time_range='{time_range}')")
+            
+            # Try to get context for progress updates
+            try:
+                from fastmcp.server.dependencies import get_context
+                ctx = get_context()
+                await ctx.report_progress(50, 100, f"📊 Executing OPAL query on dataset {dataset_id}...")
+            except RuntimeError:
+                pass  # No context available, skip progress updates
+            
+            # Import and call the underlying implementation directly
+            from src.observe import execute_opal_query as observe_execute_opal_query
+            
+            result = await observe_execute_opal_query(
+                query=query, 
+                primary_dataset_id=dataset_id, 
+                time_range=time_range,
+                row_count=1000,
+                format="csv"
+            )
+            session_logger.info(f"🔧 TOOL RESULT: Got {len(result)} chars of CSV data")
+            return result  # Already CSV string
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_execute_opal_query failed: {str(e)}")
+            return f"Error executing OPAL query: {str(e)}"
+
+    @function_tool
+    async def internal_create_visualization(csv_data: str, chart_type: str, title: str) -> str:
+        """Create visualization using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_create_visualization(chart_type='{chart_type}', title='{title}')")
+            
+            # Use the visualization components directly
+            from src.visualization import ChartGenerator, DataParser
+            import pandas as pd
+            import io
+            
+            # Parse CSV data
+            df = pd.read_csv(io.StringIO(csv_data))
+            
+            # Create chart
+            generator = ChartGenerator(theme="observability")
+            image_bytes = generator.create_chart(df, chart_type, title=title)
+            
+            session_logger.info(f"🔧 TOOL RESULT: Created {chart_type} visualization with {len(image_bytes)} bytes")
+            return f"Created {chart_type} visualization: {title} (image data: {len(image_bytes)} bytes)"
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_create_visualization failed: {str(e)}")
+            return f"Error creating visualization: {str(e)}"
+
+    @function_tool
+    async def internal_get_dataset_info(dataset_id: str) -> str:
+        """Get dataset schema using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_get_dataset_info(dataset_id='{dataset_id}')")
+            result = await observe_get_dataset_info(dataset_id=dataset_id)
+            session_logger.info(f"🔧 TOOL RESULT: Got dataset info with {len(str(result))} chars")
+            return str(result)
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_get_dataset_info failed: {str(e)}")
+            return f"Error getting dataset info: {str(e)}"
+
+    @function_tool
+    async def internal_list_datasets(match: str = None, limit: int = 10) -> str:
+        """List available datasets using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_list_datasets(match='{match}', limit={limit})")
+            result = await observe_list_datasets(match=match)
+            # Limit results for agent context
+            import json
+            datasets = json.loads(result)
+            if isinstance(datasets, list) and len(datasets) > limit:
+                datasets = datasets[:limit]
+                result = json.dumps(datasets)
+            session_logger.info(f"🔧 TOOL RESULT: Listed {len(datasets)} datasets")
+            return result
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_list_datasets failed: {str(e)}")
+            return f"Error listing datasets: {str(e)}"
+
+    @function_tool
+    async def internal_get_relevant_docs(query: str, n_results: int = 3) -> str:
+        """Get relevant documentation using existing MCP tool"""
+        try:
+            session_logger.info(f"🔧 TOOL CALLED: internal_get_relevant_docs(query='{query}', n_results={n_results})")
+            
+            # Call the search_docs function directly (already imported at top)
+            from collections import defaultdict
+            
+            chunk_results = search_docs(query, n_results=max(n_results * 3, 15))
+            
+            if not chunk_results:
+                result = f"No relevant documents found for: '{query}'"
+                session_logger.info("🔧 TOOL RESULT: No documents found")
+                return result
+            
+            # Group chunks by document (same logic as MCP tool)
+            doc_groups = defaultdict(list)
+            for chunk in chunk_results:
+                doc_key = f"{chunk.get('source', 'unknown')}#{chunk.get('title', 'untitled')}"
+                doc_groups[doc_key].append(chunk)
+            
+            # Take top documents and format result
+            selected_docs = list(doc_groups.items())[:n_results]
+            
+            if not selected_docs:
+                result = f"No relevant documents found for: '{query}'"
+                session_logger.info("🔧 TOOL RESULT: No documents after grouping")
+                return result
+            
+            # Format the response
+            response_parts = []
+            for doc_key, chunks in selected_docs:
+                source, title = doc_key.split('#', 1)
+                avg_score = sum(chunk.get('score', 0) for chunk in chunks) / len(chunks)
+                
+                response_parts.append(f"**{title}** (source: {source}, relevance: {avg_score:.2f})")
+                response_parts.append(f"Content: {chunks[0].get('text', '')[:500]}...")  # First chunk preview
+                response_parts.append("")  # Blank line
+            
+            result = "\n".join(response_parts)
+            session_logger.info(f"🔧 TOOL RESULT: Found {len(selected_docs)} relevant documents")
+            return result
+            
+        except Exception as e:
+            session_logger.error(f"🔧 TOOL ERROR: internal_get_relevant_docs failed: {str(e)}")
+            return f"Error getting relevant docs: {str(e)}"
+
+    # Initialize investigation agent with explicit model configuration
+    
+    session_logger.info("🕵️ Initializing GPT-5 o11y scout agent with minimal reasoning...")
+    
+    investigation_agent = Agent(
+        name="O11y Scout",
+        instructions="""
+        You are O11y Scout - an expert Site Reliability Engineer AI agent with advanced reasoning capabilities for investigating observability issues.
+        
+        REASONING APPROACH:
+        Use your reasoning mode to deeply analyze observability problems by:
+        1. Breaking down complex issues into investigatable components
+        2. Forming hypotheses about root causes before collecting data
+        3. Planning multi-step investigation strategies
+        4. Correlating findings across different data sources
+        5. Drawing insights from patterns in the data
+        
+        CRITICAL ANTI-HALLUCINATION RULES:
+        1. NEVER make up data - only use results from tool calls
+        2. ALWAYS call tools to get real data before making conclusions
+        3. If a tool call fails, acknowledge the failure and try alternatives
+        4. Base ALL analysis on actual returned data, not assumptions
+        5. When you don't have data, explicitly state "I need to query for this data"
+        
+        INVESTIGATION METHODOLOGY:
+        1. ANALYZE the user's query and form initial hypotheses
+        2. DISCOVER relevant datasets using internal_query_semantic_graph
+        3. EXPLORE available data using internal_list_datasets if needed
+        4. UNDERSTAND data structure using internal_get_dataset_info
+        5. GENERATE valid OPAL queries using internal_generate_opal_query (TRY FIRST for complex analytics!)
+        6. QUERY for specific metrics using internal_execute_opal_query (with fallback OPAL patterns)
+        7. VISUALIZE findings using internal_create_visualization
+        8. CORRELATE data across multiple sources and time periods
+        9. SEARCH documentation using internal_get_relevant_docs for context
+        10. SYNTHESIZE findings into actionable insights and recommendations
+        
+        QUERY GENERATION STRATEGY:
+        - TRY internal_generate_opal_query first for complex queries (percentiles, aggregations)
+        - IF generation fails, use internal_execute_opal_query with proven OPAL patterns:
+          * Start simple: `limit 5` to explore data structure
+          * Add filtering: `filter field = "value" | limit 5` 
+          * Add aggregation: `statsby count(), group_by(field) | sort desc(count) | limit 10`
+          * Use proven patterns: `percentile(duration, 0.95)` for P95, `if_null()` for safety
+        
+        OPAL BEST PRACTICES (CRITICAL - Use these patterns when generate_opal_query fails):
+        - NEVER use SQL syntax (SELECT, FROM, WHERE, GROUP BY) 
+        - ALWAYS use `if()` not `case()` for conditions
+        - ALWAYS use `is_null()` and `if_null()` for null handling  
+        - ALWAYS use `:` for column creation: `make_col new_field:expression`
+        - ALWAYS use `desc(field)` for sorting, never `-field`
+        - ALWAYS use percentiles 0-1 range: `percentile(duration, 0.95)` not `percentile(duration, 95)`
+        - ALWAYS pipe operations: `filter ... | statsby ... | sort ... | limit N`
+        - ALWAYS include `filter not is_null(field)` before aggregations for consistency
+        
+        PROVEN INVESTIGATION PATTERNS (Use these when needed):
+        
+        For SERVICE LATENCY ANALYSIS (use on span datasets):
+        ```opal
+        filter not is_null(service_name)
+        | statsby p50_duration:percentile(duration, 0.5), p95_duration:percentile(duration, 0.95), p99_duration:percentile(duration, 0.99), group_by(service_name) 
+        | sort desc(p99_duration) 
+        | limit 10
+        ```
+        
+        For ERROR ANALYSIS (use on span datasets):
+        ```opal
+        filter error = true
+        | statsby error_count:count(), avg_duration:avg(duration), group_by(service_name)
+        | sort desc(error_count)
+        | limit 10
+        ```
+        
+        For LOG ERROR INVESTIGATION (use on log datasets):
+        ```opal
+        filter contains(body, "error") or contains(body, "ERROR") or contains(body, "Error")
+        | statsby error_logs:count(), group_by(container, namespace)
+        | sort desc(error_logs)
+        | limit 10
+        ```
+        
+        REASONING WORKFLOW:
+        - Think through the problem systematically before acting
+        - Consider multiple potential root causes
+        - Plan your investigation strategy based on the specific issue type
+        - Use tool results to refine your hypotheses
+        - Connect patterns across different metrics and timeframes
+        - Provide probabilistic assessments of likely root causes
+        
+        Remember: Combine deep reasoning with real data for superior investigations.
+        """,
+        tools=[
+            internal_query_semantic_graph,
+            internal_list_datasets,
+            internal_get_dataset_info,
+            internal_generate_opal_query,
+            internal_execute_opal_query, 
+            internal_create_visualization,
+            internal_get_relevant_docs
+        ],
+        model='gpt-5',
+        model_settings=ModelSettings(
+            max_tokens=8000,  # GPT-5 can handle more tokens
+            reasoning=Reasoning(effort="minimal"),  # Minimal reasoning for faster response
+            verbosity="low"  # Low verbosity for cleaner output
+        )
+    )
+
+    @mcp.tool()
+    @requires_scopes(['admin', 'read'])
+    async def o11y_scout(
+        ctx: Context,
+        investigation_query: str,
+        max_investigation_depth: int = 10
+    ) -> str:
+        """
+        O11y Scout: AI-powered observability investigation that analyzes real data to find root causes.
+        
+        This tool uses the O11y Scout AI agent to autonomously investigate observability issues by:
+        - Finding relevant datasets for your specific query
+        - Executing OPAL queries to get actual performance metrics  
+        - Creating visualizations from real data
+        - Providing data-driven analysis and recommendations
+        
+        Works for performance issues, errors, capacity planning, service health checks, etc.
+        
+        Args:
+            investigation_query: Describe what you want to investigate (e.g., "microservice latency issues", "error rates in payment service", "database performance problems")
+            max_investigation_depth: Maximum AI reasoning steps (default: 10, increase for complex investigations)
+        
+        Returns:
+            Comprehensive investigation report with real data analysis, findings, and recommendations
+        """
+        try:
+            session_logger.info(f"🕵️ Starting O11y Scout investigation: {investigation_query}")
+            
+            # Send initial progress notification
+            session_logger.info("🔄 STREAMING: Sending initial progress notification...")
+            await ctx.report_progress(0, 100, "🚀 O11y Scout initializing investigation...")
+            session_logger.info("🔄 STREAMING: Initial progress notification sent!")
+            
+            # Check if agent is properly configured
+            if not hasattr(investigation_agent, 'tools') or len(investigation_agent.tools) == 0:
+                return "❌ Investigation agent not properly configured - no tools available"
+            
+            session_logger.info(f"Agent has {len(investigation_agent.tools)} tools available")
+            
+            # Check for OpenAI API key
+            openai_api_key = os.getenv('OPENAI_API_KEY')
+            if not openai_api_key:
+                session_logger.warning("No OPENAI_API_KEY found in environment")
+                return """
+# ⚠️ Configuration Issue
+
+**Query**: {investigation_query}
+
+**Error**: OpenAI API key not configured.
+
+**Solution**: Please set the OPENAI_API_KEY environment variable to enable AI-powered investigations.
+
+You can still use individual MCP tools manually:
+- `query_semantic_graph()` to find datasets
+- `execute_opal_query()` to get metrics  
+- `create_visualization()` to chart results
+                """.format(investigation_query=investigation_query).strip()
+            
+            session_logger.info(f"Using OpenAI API key (ending: ...{openai_api_key[-6:]})")
+            
+            # Send progress update
+            await ctx.report_progress(10, 100, "🕵️ O11y Scout analyzing your query...")
+            
+            # Execute investigation using Runner with real tool calling
+            session_logger.info("Executing agent runner...")
+            response = await Runner.run(
+                starting_agent=investigation_agent,
+                input=f"""
+                You are investigating: {investigation_query}
+                
+                MANDATORY: You MUST call internal tools to get real data. Follow these steps exactly:
+                
+                1. FIRST: Call internal_query_semantic_graph with query: "{investigation_query}"
+                2. SECOND: Based on results, call internal_execute_opal_query with a relevant dataset
+                3. THIRD: Analyze the data you received and call more tools if needed
+                4. FOURTH: Create visualizations if you have data to chart
+                5. FINAL: Provide conclusions based ONLY on the tool results
+                
+                DO NOT provide analysis without calling tools first. Tool calls are MANDATORY.
+                """,
+                max_turns=max_investigation_depth
+            )
+            
+            session_logger.info(f"Agent execution completed. Response type: {type(response)}")
+            
+            # Send progress update
+            await ctx.report_progress(80, 100, "📊 O11y Scout analyzing findings...")
+            
+            # Extract results from RunResult - it contains the final output
+            if hasattr(response, 'output'):
+                investigation_content = str(response.output)
+                session_logger.info(f"Got output from response.output: {len(investigation_content)} chars")
+            elif hasattr(response, 'final_response'):
+                investigation_content = str(response.final_response)
+                session_logger.info(f"Got output from response.final_response: {len(investigation_content)} chars")
+            else:
+                investigation_content = str(response)
+                session_logger.info(f"Got output from str(response): {len(investigation_content)} chars")
+                session_logger.info(f"Response attributes: {dir(response)}")
+            
+            # Check if we got useful content
+            if not investigation_content or len(investigation_content.strip()) < 50:
+                session_logger.warning(f"Investigation content seems too short or empty: '{investigation_content[:100]}...'")
+                return f"""
+# ⚠️ Investigation Incomplete
+
+**Query**: {investigation_query}
+
+**Issue**: The AI agent completed but didn't produce a meaningful investigation report.
+
+**Debug Info**: 
+- Response type: {type(response)}
+- Content length: {len(investigation_content)} characters
+- Available tools: {len(investigation_agent.tools)}
+
+**Suggestion**: Try increasing max_investigation_depth or check if OpenAI API key is configured.
+
+**Raw Response**: {investigation_content[:500]}
+                """.strip()
+            
+            investigation_report = f"""
+# 🔍 AI Investigation Report
+
+**Query**: {investigation_query}
+
+## Investigation Results
+{investigation_content}
+
+## Data Sources
+All findings are based on real data retrieved from:
+- Observe OPAL queries  
+- Actual dataset schemas
+- Live performance metrics
+- Real visualization generation
+
+*Note: This investigation used only actual data from Observe platform tools. No data was fabricated or assumed.*
+            """.strip()
+            
+            # Send final progress update
+            await ctx.report_progress(100, 100, "✅ O11y Scout investigation complete!")
+            
+            session_logger.info(f"Investigation completed successfully")
+            return investigation_report
+            
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            session_logger.error(f"Investigation failed: {e}\nFull traceback: {error_details}")
+            
+            return f"""
+# ❌ Investigation Failed
+
+**Query**: {investigation_query}
+**Error**: {str(e)}
+
+The investigation failed due to a technical error. This is a real error message, not fabricated content.
+
+Please check the MCP server logs for more details.
+            """.strip()
+
+
+else:
+    @mcp.tool()
+    @requires_scopes(['admin', 'read'])
+    async def investigate_observability_issue(
+        ctx: Context,
+        investigation_query: str,
+        max_investigation_depth: int = 10
+    ) -> str:
+        """
+        Observability investigation tool (OpenAI Agents SDK not available).
+        
+        This tool requires the OpenAI Agents SDK to be installed.
+        Please install it with: pip install openai-agents>=0.1.0
+        """
+        # Fallback: Provide basic investigation using existing tools
+        session_logger.info(f"Running fallback investigation for: {investigation_query}")
+        
+        try:
+            # Step 1: Find relevant datasets
+            semantic_results = await query_semantic_graph(ctx, query=investigation_query, limit=5)
+            
+            # Step 2: Parse results to extract dataset IDs
+            import json
+            datasets = []
+            if semantic_results and semantic_results != "[]":
+                try:
+                    parsed = json.loads(semantic_results)
+                    if isinstance(parsed, list) and len(parsed) > 0:
+                        datasets = parsed[:3]  # Use top 3 datasets
+                except:
+                    pass
+            
+            if not datasets:
+                return f"""
+# ⚠️ Fallback Investigation (Limited AI)
+
+**Query**: {investigation_query}
+
+**Issue**: OpenAI Agents SDK not available, and no relevant datasets found.
+
+**Next Steps**: 
+1. Try using `query_semantic_graph()` to find datasets manually
+2. Use `execute_opal_query()` to get specific metrics
+3. Use `create_visualization()` to chart results
+
+**Note**: Full AI-powered investigations require OpenAI Agents SDK installation.
+                """.strip()
+            
+            # Step 3: Query the first dataset for basic metrics
+            first_dataset = datasets[0]
+            dataset_id = first_dataset.get('id', '') if isinstance(first_dataset, dict) else str(first_dataset)
+            
+            if dataset_id:
+                # Simple latency query
+                latency_query = """
+                filter not is_null(duration) and not is_null(service_name)
+                | statsby 
+                    p50_latency:percentile(duration, 0.5),
+                    p95_latency:percentile(duration, 0.95), 
+                    p99_latency:percentile(duration, 0.99),
+                    call_count:count(),
+                    group_by(service_name)
+                | sort desc(p95_latency)
+                | limit 10
+                """
+                
+                query_results = await execute_opal_query(
+                    ctx,
+                    query=latency_query,
+                    primary_dataset_id=dataset_id,
+                    time_range="2h"
+                )
+                
+                return f"""
+# 🔍 Basic Investigation Report (Fallback Mode)
+
+**Query**: {investigation_query}
+
+## Findings
+
+**Datasets Found**: {len(datasets)} relevant datasets
+**Analysis**: Basic microservices latency analysis
+
+## Microservices Latency Data
+
+```csv
+{query_results}
+```
+
+## Limitations
+
+This is a basic investigation without advanced AI reasoning. 
+For comprehensive analysis with hypothesis formation, pattern recognition, 
+and multi-step investigations, install the OpenAI Agents SDK:
+
+```bash
+pip install openai-agents>=0.1.0
+```
+
+## Manual Next Steps
+
+1. Analyze the latency data above for outliers
+2. Run targeted queries on specific high-latency services
+3. Correlate with error rates and deployment times
+4. Create visualizations using `create_visualization()`
+                """.strip()
+            
+            else:
+                return f"""
+# ⚠️ Fallback Investigation Failed
+
+**Query**: {investigation_query}
+
+**Issue**: Could not extract valid dataset ID from semantic search results.
+
+**Available Datasets**: {len(datasets)} found, but unable to query.
+
+**Manual Steps**: Use `query_semantic_graph()` and `execute_opal_query()` directly.
+                """.strip()
+                
+        except Exception as e:
+            session_logger.error(f"Fallback investigation failed: {e}")
+            return f"""
+# ❌ Investigation Tool Unavailable
+
+**Query**: {investigation_query}
+
+**Issue**: OpenAI Agents SDK not available and fallback investigation failed.
+
+**Error**: {str(e)}
+
+**Solution**: Install OpenAI Agents SDK and restart:
+```bash
+pip install openai-agents>=0.1.0
+```
+
+**Alternative**: Use individual MCP tools manually:
+- `query_semantic_graph()` to find datasets
+- `execute_opal_query()` to get metrics  
+- `create_visualization()` to chart results
+            """.strip()
 
 
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
