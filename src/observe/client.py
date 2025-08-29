@@ -8,6 +8,9 @@ with proper error handling, logging, and response processing.
 import sys
 import json
 from typing import Dict, Any, Optional
+from src.logging import get_logger
+
+logger = get_logger('HTTP')
 import httpx
 
 from .config import OBSERVE_BASE_URL, get_observe_headers
@@ -45,12 +48,7 @@ async def make_observe_request(
     request_headers = get_observe_headers(headers)
     
     # Log request details
-    print(f"DEBUG: Making {method} request to URL: {url}", file=sys.stderr)
-    print(f"DEBUG: Headers: {_sanitize_headers_for_logging(request_headers)}", file=sys.stderr)
-    if params:
-        print(f"DEBUG: Params: {params}", file=sys.stderr)
-    if json_data:
-        print(f"DEBUG: JSON data: {json.dumps(json_data, indent=2)}", file=sys.stderr)
+    logger.debug(f"{method} {url} | params:{params} | data_size:{len(json.dumps(json_data)) if json_data else 0}")
         
     async with httpx.AsyncClient() as client:
         try:
@@ -63,19 +61,21 @@ async def make_observe_request(
                 timeout=timeout
             )
             
-            print(f"DEBUG: Response status code: {response.status_code}", file=sys.stderr)
-            print(f"DEBUG: Response headers: {dict(response.headers)}", file=sys.stderr)
+            if response.status_code >= 400:
+                logger.warning(f"response {response.status_code} | size:{len(response.text)}")
+            else:
+                logger.debug(f"response {response.status_code} | size:{len(response.text)}")
             
             return _process_response(response)
             
         except httpx.HTTPError as e:
-            print(f"DEBUG: HTTP error: {str(e)}", file=sys.stderr)
+            logger.error(f"HTTP error: {str(e)}")
             return {
                 "error": True,
                 "message": f"HTTP error: {str(e)}"
             }
         except Exception as e:
-            print(f"DEBUG: Unexpected error: {str(e)}", file=sys.stderr)
+            logger.error(f"Unexpected error: {str(e)}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             return {
@@ -95,7 +95,7 @@ def _process_response(response: httpx.Response) -> Dict[str, Any]:
         Processed response data
     """
     if response.status_code >= 400:
-        print(f"DEBUG: Error response body: {response.text}", file=sys.stderr)
+        logger.warning(f"API error {response.status_code}: {response.text[:200]}")
         return {
             "error": True,
             "status_code": response.status_code,
@@ -108,7 +108,7 @@ def _process_response(response: httpx.Response) -> Dict[str, Any]:
         try:
             return response.json()
         except json.JSONDecodeError as e:
-            print(f"DEBUG: Failed to decode JSON response: {e}", file=sys.stderr)
+            logger.error(f"JSON decode failed: {e}")
             return {
                 "error": True,
                 "message": f"Invalid JSON response: {str(e)}",

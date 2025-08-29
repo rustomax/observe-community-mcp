@@ -9,6 +9,9 @@ from typing import List, Optional, Dict, Any
 from openai import AsyncOpenAI
 import json
 from .intent_classification import IntentClassifier, DatasetScorer
+from src.logging import get_logger
+
+logger = get_logger('DATASET_SEARCH')
 
 
 async def get_db_connection():
@@ -34,7 +37,7 @@ async def generate_query_embedding(query: str) -> Optional[List[float]]:
         )
         return response.data[0].embedding
     except Exception as e:
-        print(f"Error generating embedding: {e}")
+        logger.error(f"error generating embedding | error:{e}")
         return None
 
 
@@ -64,20 +67,20 @@ async def find_relevant_datasets(
         - key_fields: Important fields for investigations
     """
     try:
-        print(f"[DATASET_DISCOVERY] Enhanced search for: '{user_query[:50]}...'")
+        logger.debug(f"enhanced search for: '{user_query[:50]}...'")
         
         # Step 1: Classify query intent
         classifier = IntentClassifier()
         scorer = DatasetScorer()
         
         intent = classifier.classify_intent(user_query)
-        print(f"[DATASET_DISCOVERY] Intent: {intent.primary} (confidence: {intent.confidence:.2f})")
-        print(f"[DATASET_DISCOVERY] Required fields: {intent.required_fields}")
+        logger.debug(f"intent: {intent.primary} (confidence: {intent.confidence:.2f})")
+        logger.debug(f"required fields: {intent.required_fields}")
         
         # Step 2: Get broader set of candidates via semantic search
         query_embedding = await generate_query_embedding(user_query)
         if not query_embedding:
-            print(f"[DATASET_DISCOVERY] Failed to generate embedding")
+            logger.warning("failed to generate embedding")
             return []
         
         # Convert embedding to PostgreSQL vector format
@@ -111,7 +114,7 @@ async def find_relevant_datasets(
             results = await conn.fetch(query, embedding_str, similarity_threshold, limit * 3)
             
             if not results:
-                print(f"[DATASET_DISCOVERY] No semantic matches found")
+                logger.debug("no semantic matches found")
                 return []
             
             # Step 3: Apply intent-based scoring to refine selection
@@ -143,11 +146,11 @@ async def find_relevant_datasets(
             final_datasets = scored_datasets[:limit]
             
             if final_datasets:
-                print(f"[DATASET_DISCOVERY] Selected {len(final_datasets)} intent-scored matches:")
+                logger.info(f"selected intent-scored matches | count:{len(final_datasets)}")
                 for i, ds in enumerate(final_datasets, 1):
-                    print(f"  {i}. {ds['name']} (intent: {ds['intent_score']:.1f}, semantic: {ds['similarity_score']:.3f})")
+                    logger.info(f"dataset match {i} | name:{ds['name']} | intent:{ds['intent_score']:.1f} | semantic:{ds['similarity_score']:.3f}")
             else:
-                print(f"[DATASET_DISCOVERY] No suitable datasets found after intent scoring")
+                logger.warning("no suitable datasets found after intent scoring")
             
             return final_datasets
             
@@ -155,7 +158,7 @@ async def find_relevant_datasets(
             await conn.close()
             
     except Exception as e:
-        print(f"[DATASET_DISCOVERY] Enhanced search error: {e}")
+        logger.error(f"enhanced search error | error:{e}")
         return []
 
 
@@ -169,7 +172,7 @@ async def find_datasets_by_keywords(
     This is used when the semantic search doesn't return enough results or embeddings fail.
     """
     try:
-        print(f"[DATASET_DISCOVERY] Keyword search fallback for: '{user_query[:50]}...'")
+        logger.debug(f"keyword search fallback | query:{user_query[:50]}...")
         
         conn = await get_db_connection()
         
@@ -225,11 +228,11 @@ async def find_datasets_by_keywords(
                 })
             
             if datasets:
-                print(f"[DATASET_DISCOVERY] Found {len(datasets)} keyword matches:")
+                logger.info(f"found keyword matches | count:{len(datasets)}")
                 for i, ds in enumerate(datasets[:3], 1):  # Show top 3
-                    print(f"  {i}. {ds['name']} ({ds['business_category']}/{ds['technical_category']})")
+                    logger.info(f"dataset match {i} | name:{ds['name']} | categories:{ds['business_category']}/{ds['technical_category']}")
             else:
-                print(f"[DATASET_DISCOVERY] No keyword matches found")
+                logger.warning("no keyword matches found")
             
             return datasets
             
@@ -237,5 +240,5 @@ async def find_datasets_by_keywords(
             await conn.close()
             
     except Exception as e:
-        print(f"[DATASET_DISCOVERY] Keyword search error: {e}")
+        logger.error(f"keyword search error | error:{e}")
         return []

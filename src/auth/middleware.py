@@ -10,6 +10,9 @@ import sys
 from typing import Optional
 from fastmcp import FastMCP
 from fastmcp.server.auth.providers.jwt import JWTVerifier
+from src.logging import get_logger
+
+logger = get_logger('AUTH_MIDDLEWARE')
 
 
 def setup_auth_provider(public_key_pem: Optional[str] = None) -> JWTVerifier:
@@ -28,8 +31,8 @@ def setup_auth_provider(public_key_pem: Optional[str] = None) -> JWTVerifier:
     
     # Log warning if public key is not set
     if not public_key_pem:
-        print("WARNING: PUBLIC_KEY_PEM not found in environment variables. Authentication may fail.", file=sys.stderr)
-        print("Please set PUBLIC_KEY_PEM in your .env file with the correct public key.", file=sys.stderr)
+        logger.warning("PUBLIC_KEY_PEM not found in environment variables - authentication may fail")
+        logger.info("please set PUBLIC_KEY_PEM in your .env file with the correct public key")
     
     # Configure JWTVerifier with the public key
     return JWTVerifier(public_key=public_key_pem)
@@ -123,7 +126,7 @@ class AuthMiddleware:
             client_id: Client identifier
         """
         self._stats["successful_authentications"] += 1
-        print(f"Successful authentication for client: {client_id}", file=sys.stderr)
+        logger.info(f"successful authentication | client:{client_id}")
     
     def log_failed_auth(self, reason: str) -> None:
         """
@@ -133,7 +136,7 @@ class AuthMiddleware:
             reason: Reason for authentication failure
         """
         self._stats["failed_authentications"] += 1
-        print(f"Authentication failed: {reason}", file=sys.stderr)
+        logger.warning(f"authentication failed | reason:{reason}")
     
     def log_unauthorized_attempt(self, required_scopes: list, user_scopes: list) -> None:
         """
@@ -144,7 +147,7 @@ class AuthMiddleware:
             user_scopes: User's actual scopes
         """
         self._stats["unauthorized_attempts"] += 1
-        print(f"Unauthorized attempt: required {required_scopes}, user has {user_scopes}", file=sys.stderr)
+        logger.warning(f"unauthorized attempt | required_scopes:{required_scopes} | user_scopes:{user_scopes}")
 
 
 # Global auth middleware instance

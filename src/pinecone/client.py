@@ -11,6 +11,9 @@ import time
 from typing import Tuple, Optional
 from pinecone import Pinecone
 from dotenv import load_dotenv
+from src.logging import get_logger
+
+logger = get_logger('PINECONE')
 
 # Load environment variables
 load_dotenv()
@@ -59,22 +62,22 @@ def initialize_pinecone(index_type: str = "docs", index_name: Optional[str] = No
             field_map = config["field_map"]
         
         if not PINECONE_API_KEY:
-            print("ERROR: PINECONE_API_KEY environment variable is not set", file=sys.stderr)
+            logger.error("PINECONE_API_KEY environment variable is not set")
             raise ValueError("PINECONE_API_KEY environment variable is not set")
         
-        print(f"Initializing Pinecone client for {index_type} index: {target_index}", file=sys.stderr)
+        logger.debug(f"initializing Pinecone client | index_type:{index_type} | target_index:{target_index}")
         pc = Pinecone(api_key=PINECONE_API_KEY)
         
         # Check if index exists, create if it doesn't
         try:
             has_index = pc.has_index(target_index)
-            print(f"Checking for index {target_index}: {'exists' if has_index else 'does not exist'}", file=sys.stderr)
+            logger.debug(f"checking for index | index:{target_index} | exists:{has_index}")
         except Exception as e:
-            print(f"Error checking if index exists: {e}", file=sys.stderr)
+            logger.error(f"error checking if index exists | error:{e}")
             raise
             
         if not has_index:
-            print(f"Creating new Pinecone index with integrated embedding model: {target_index}", file=sys.stderr)
+            logger.info(f"creating new Pinecone index | index:{target_index} | model:integrated_embedding")
             try:
                 pc.create_index_for_model(
                     name=target_index,
@@ -86,24 +89,24 @@ def initialize_pinecone(index_type: str = "docs", index_name: Optional[str] = No
                     }
                 )
                 # Wait for index to be ready
-                print("Waiting for index to be ready...", file=sys.stderr)
+                logger.debug("waiting for index to be ready")
                 time.sleep(10)
             except Exception as e:
-                print(f"Error creating index: {e}", file=sys.stderr)
+                logger.error(f"error creating index | error:{e}")
                 raise
         
         # Get the index
         try:
-            print(f"Getting index {target_index}...", file=sys.stderr)
+            logger.debug(f"getting index | index:{target_index}")
             index = pc.Index(target_index)
-            print(f"Connected to Pinecone index: {target_index}", file=sys.stderr)
+            logger.info(f"connected to Pinecone index | index:{target_index}")
             return pc, index
         except Exception as e:
-            print(f"Error getting index: {e}", file=sys.stderr)
+            logger.error(f"error getting index | error:{e}")
             raise
             
     except Exception as e:
-        print(f"ERROR in initialize_pinecone: {e}", file=sys.stderr)
+        logger.error(f"error in initialize_pinecone | error:{e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         raise

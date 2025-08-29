@@ -13,6 +13,9 @@ import asyncpg
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
+from src.logging import get_logger
+
+logger = get_logger('SEMANTIC')
 
 try:
     import openai
@@ -67,9 +70,9 @@ class LLMDatasetRecommendationEngine:
                 max_size=5,
                 command_timeout=30
             )
-            print("[SEMANTIC_GRAPH] Database connection pool initialized", file=sys.stderr)
+            logger.debug("database connection pool initialized")
         except Exception as e:
-            print(f"[SEMANTIC_GRAPH] Failed to initialize database connection: {e}", file=sys.stderr)
+            logger.warning(f"database connection failed: {e}")
             raise
     
     async def close(self):
@@ -127,7 +130,7 @@ class LLMDatasetRecommendationEngine:
                 for dataset_name, patterns in explicit_patterns.items():
                     if any(pattern in query_lower for pattern in patterns):
                         explicit_datasets.append(dataset_name)
-                        print(f"[SEMANTIC_GRAPH] Detected explicit dataset request: {dataset_name}", file=sys.stderr)
+                        logger.debug(f"detected explicit dataset request: {dataset_name}")
                 
                 # Step 1a: Get explicitly requested datasets FIRST (highest priority)
                 if explicit_datasets:
@@ -144,7 +147,7 @@ class LLMDatasetRecommendationEngine:
                         exact_rows = await conn.fetch(exact_sql, dataset_name)
                         if exact_rows:
                             candidates.extend(exact_rows)
-                            print(f"[SEMANTIC_GRAPH] Found explicit dataset: {dataset_name}", file=sys.stderr)
+                            logger.debug(f"found explicit dataset: {dataset_name}")
                 
                 # Step 1b: For span/trace queries, ensure OpenTelemetry/Span is included
                 if any(term in query_lower for term in ['span', 'trace', 'latency', 'performance', 'distributed']):
@@ -164,7 +167,7 @@ class LLMDatasetRecommendationEngine:
                         for row in span_rows:
                             if row['dataset_id'] not in existing_ids:
                                 candidates.append(row)
-                                print("[SEMANTIC_GRAPH] Ensured OpenTelemetry/Span is included for trace query", file=sys.stderr)
+                                logger.debug("ensured OpenTelemetry/Span included for trace query")
                 
                 # Step 1c: Domain-specific prioritization
                 prioritized_domains = []
@@ -209,7 +212,8 @@ class LLMDatasetRecommendationEngine:
                             candidates.append(row)
                             existing_ids.add(row['dataset_id'])
                     
-                    print(f"[SEMANTIC_GRAPH] Found {len([r for r in domain_rows if r['dataset_id'] not in existing_ids])} additional domain-specific candidates for: {prioritized_domains}", file=sys.stderr)
+                    new_candidates = len([r for r in domain_rows if r['dataset_id'] not in existing_ids])
+                    logger.debug(f"found {new_candidates} domain candidates for: {prioritized_domains}")
                 
                 # Step 2: Get diverse sampling across different categories
                 remaining_slots = max_candidates - len(candidates)
@@ -263,11 +267,11 @@ class LLMDatasetRecommendationEngine:
                     }
                     formatted_candidates.append(candidate)
                 
-                print(f"[SEMANTIC_GRAPH] Retrieved {len(formatted_candidates)} dataset candidates with smart sampling", file=sys.stderr)
+                logger.debug(f"retrieved {len(formatted_candidates)} candidates with smart sampling")
                 return formatted_candidates
                 
         except Exception as e:
-            print(f"[SEMANTIC_GRAPH] Error retrieving candidates: {e}", file=sys.stderr)
+            logger.error(f"error retrieving candidates: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             return []
@@ -332,14 +336,14 @@ class LLMDatasetRecommendationEngine:
             LLM response with rankings and explanations
         """
         if not OPENAI_AVAILABLE:
-            print("[SEMANTIC_GRAPH] OpenAI not available for LLM ranking", file=sys.stderr)
+            logger.info("OpenAI not available for LLM ranking")
             return None
         
         try:
             import os
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("SMART_TOOLS_API_KEY")
             if not api_key:
-                print("[SEMANTIC_GRAPH] No OpenAI API key available", file=sys.stderr)
+                logger.warning("no OpenAI API key available")
                 return None
             
             client = openai.OpenAI(api_key=api_key)
@@ -461,16 +465,15 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
                         raise ValueError("No JSON found in LLM response")
                 
                 llm_rankings = json.loads(json_text)
-                print(f"[SEMANTIC_GRAPH] LLM ranked {len(llm_rankings)} datasets", file=sys.stderr)
+                logger.debug(f"LLM ranked {len(llm_rankings)} datasets")
                 return llm_rankings
                 
             except (json.JSONDecodeError, ValueError) as e:
-                print(f"[SEMANTIC_GRAPH] Error parsing LLM JSON response: {e}", file=sys.stderr)
-                print(f"[SEMANTIC_GRAPH] Raw response: {response_text[:500]}...", file=sys.stderr)
+                logger.error(f"LLM JSON parse error: {e} | response:{response_text[:200]}...")
                 return None
             
         except Exception as e:
-            print(f"[SEMANTIC_GRAPH] Error calling LLM: {e}", file=sys.stderr)
+            logger.error(f"LLM call error: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             return None
@@ -501,7 +504,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
                 original_data = candidate_lookup.get(dataset_id)
                 
                 if not original_data:
-                    print(f"[SEMANTIC_GRAPH] Warning: LLM referenced unknown dataset {dataset_id}", file=sys.stderr)
+                    logger.warning(f"LLM referenced unknown dataset: {dataset_id}")
                     continue
                 
                 # Convert 1-10 scale to 0.0-1.0
@@ -537,7 +540,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
                 recommendations.append(recommendation)
                 
             except (KeyError, ValueError, TypeError) as e:
-                print(f"[SEMANTIC_GRAPH] Error processing LLM ranking: {e}, ranking: {ranking}", file=sys.stderr)
+                logger.error(f"LLM ranking processing error: {e} | ranking:{ranking}")
                 continue
         
         # Post-processing: Ensure quality and diversity
@@ -591,7 +594,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
                 elif rec.relevance_score > 0.85:
                     rec.explanation = f"⭐ HIGH-VALUE: {rec.explanation}"
         
-        print(f"[SEMANTIC_GRAPH] Enhanced recommendations: {len(enhanced_recs)} total, families: {list(dataset_families.keys())}", file=sys.stderr)
+        logger.debug(f"enhanced recommendations: {len(enhanced_recs)} total | families:{list(dataset_families.keys())}")
         return enhanced_recs
     
     async def recommend_datasets(
@@ -613,14 +616,14 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
         Returns:
             List of dataset recommendations ordered by relevance
         """
-        print(f"[SEMANTIC_GRAPH] Processing query: {query[:100]}...", file=sys.stderr)
+        logger.debug(f"processing query: {query[:100]}...")
         
         # Step 1: Get dataset candidates from database
         max_candidates = min(10, limit * 2)  # Get 2x limit for good selection
         candidates = await self.get_dataset_candidates(query, max_candidates)
         
         if not candidates:
-            print("[SEMANTIC_GRAPH] No dataset candidates found", file=sys.stderr)
+            logger.warning("no dataset candidates found")
             return []
         
         # Step 2: Prepare data for LLM
@@ -630,7 +633,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
         llm_rankings = await self.call_llm_for_ranking(query, llm_candidates)
         
         if not llm_rankings:
-            print("[SEMANTIC_GRAPH] No LLM rankings received", file=sys.stderr)
+            logger.warning("no LLM rankings received")
             return []
         
         # Step 4: Convert to recommendation objects
@@ -645,7 +648,7 @@ Be specific about WHY each dataset is relevant. Mention exact field names, data 
         # Already sorted by LLM, just apply limit
         final_recommendations = filtered_recommendations[:limit]
         
-        print(f"[SEMANTIC_GRAPH] Returning {len(final_recommendations)} recommendations", file=sys.stderr)
+        logger.debug(f"returning {len(final_recommendations)} recommendations")
         return final_recommendations
 
 

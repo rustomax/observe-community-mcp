@@ -9,6 +9,9 @@ import sys
 from typing import List
 from pinecone import Pinecone
 from .client import get_embedding_model
+from src.logging import get_logger
+
+logger = get_logger('PINECONE_EMBED')
 
 
 def get_embedding(pc: Pinecone, text: str, is_query: bool = False) -> List[float]:
@@ -40,11 +43,11 @@ def get_embedding(pc: Pinecone, text: str, is_query: bool = False) -> List[float
         if embeddings and len(embeddings) > 0:
             return embeddings[0]["values"]
         else:
-            print("Warning: No embeddings returned from Pinecone", file=sys.stderr)
+            logger.warning("no embeddings returned from Pinecone")
             return [0.0]
             
     except Exception as e:
-        print(f"Error getting embedding: {e}", file=sys.stderr)
+        logger.error(f"error getting embedding | error:{e}")
         # Return empty embedding as a fallback
         return [0.0]
 
@@ -70,7 +73,7 @@ def get_embeddings_batch(pc: Pinecone, texts: List[str], batch_size: int = 10, i
     # Process in smaller batches to avoid API limits
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i+batch_size]
-        print(f"Generating embeddings for batch {i//batch_size + 1}/{(len(texts)-1)//batch_size + 1} ({len(batch)} texts)", file=sys.stderr)
+        logger.debug(f"generating embeddings | batch:{i//batch_size + 1}/{(len(texts)-1)//batch_size + 1} | texts:{len(batch)}")
         
         try:
             # Generate embeddings for the batch
@@ -87,14 +90,14 @@ def get_embeddings_batch(pc: Pinecone, texts: List[str], batch_size: int = 10, i
                 all_embeddings.append(embedding["values"])
                 
         except Exception as e:
-            print(f"Error in batch embedding: {e}", file=sys.stderr)
+            logger.error(f"error in batch embedding | error:{e}")
             # Fall back to individual embeddings on batch failure
             for text in batch:
                 try:
                     embedding = get_embedding(pc, text, is_query=is_query)
                     all_embeddings.append(embedding)
                 except Exception as e2:
-                    print(f"Error in individual embedding: {e2}", file=sys.stderr)
+                    logger.error(f"error in individual embedding | error:{e2}")
                     all_embeddings.append([0.0])  # Add dummy embedding on failure
     
     return all_embeddings

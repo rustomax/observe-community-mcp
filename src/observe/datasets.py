@@ -7,9 +7,12 @@ from the Observe platform.
 
 import sys
 from typing import List, Dict, Any, Optional
+from src.logging import get_logger
 
 from .client import make_observe_request
 from .config import validate_observe_config
+
+logger = get_logger('DATASETS')
 
 
 async def list_datasets(
@@ -49,7 +52,7 @@ async def list_datasets(
     
     try:
         # Log the request we're about to make
-        print(f"DEBUG: Requesting datasets with params: {params}", file=sys.stderr)
+        logger.debug(f"requesting datasets | params:{params}")
         
         # Make the API call to fetch datasets
         response = await make_observe_request(
@@ -102,7 +105,7 @@ async def get_dataset_info(dataset_id: str) -> str:
     
     try:
         # Log the request we're about to make
-        print(f"DEBUG: Requesting dataset info for ID: {dataset_id}", file=sys.stderr)
+        logger.debug(f"requesting dataset info | id:{dataset_id}")
         
         # Make the API call to fetch dataset information
         response = await make_observe_request(
@@ -126,8 +129,8 @@ async def get_dataset_info(dataset_id: str) -> str:
         if not dataset:
             return f"Dataset with ID {dataset_id} not found."
         
-        # Print the raw dataset for debugging
-        print(f"DEBUG: Processing dataset: {dataset}", file=sys.stderr)
+        # Log the raw dataset for debugging
+        logger.debug(f"processing dataset | data:{dataset}")
         
         return _format_dataset_info(dataset, dataset_id)
         
@@ -151,8 +154,8 @@ def _format_datasets_response(datasets: List[Dict[str, Any]]) -> str:
     
     for i, dataset in enumerate(datasets):
         try:
-            # Print the raw dataset for debugging
-            print(f"DEBUG: Processing dataset: {dataset}", file=sys.stderr)
+            # Log the raw dataset for debugging
+            logger.debug(f"processing dataset {i+1} | data:{dataset}")
             
             # Extract dataset information with robust error handling
             dataset_id = _extract_dataset_field(dataset, "id", ["id", "meta.id"])
@@ -178,7 +181,7 @@ def _format_datasets_response(datasets: List[Dict[str, Any]]) -> str:
                 break
                 
         except Exception as e:
-            print(f"DEBUG: Error processing dataset {i}: {e}", file=sys.stderr)
+            logger.error(f"error processing dataset {i+1} | error:{e}")
             result += f"Error processing dataset {i+1}: {str(e)}\\n"
             result += "-" * 40 + "\\n"
     

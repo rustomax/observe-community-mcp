@@ -8,6 +8,9 @@ with flexible time parameter support.
 import sys
 import json
 from typing import Dict, Any, Optional, List
+from src.logging import get_logger
+
+logger = get_logger('QUERY')
 
 from .client import make_observe_request
 from .config import validate_observe_config
@@ -105,14 +108,14 @@ async def execute_opal_query(
         payload, params, headers = validated_params
         
         # Log the request details
-        print(f"DEBUG: Executing OPAL query on primary dataset {primary_dataset_id}", file=sys.stderr)
+        logger.info(f"executing OPAL query | dataset:{primary_dataset_id}")
         if secondary_dataset_ids:
-            print(f"DEBUG: Secondary datasets: {secondary_dataset_ids}", file=sys.stderr)
+            logger.debug(f"secondary datasets | ids:{secondary_dataset_ids}")
         if dataset_aliases:
-            print(f"DEBUG: Dataset aliases: {dataset_aliases}", file=sys.stderr)
-        print(f"DEBUG: Time parameters: {params}", file=sys.stderr)
-        print(f"DEBUG: Format: {format}", file=sys.stderr)
-        print(f"DEBUG: Query: {query}", file=sys.stderr)
+            logger.debug(f"dataset aliases | mapping:{dataset_aliases}")
+        logger.debug(f"time parameters | params:{params}")
+        logger.debug(f"output format | format:{format}")
+        logger.debug(f"executing query | query:{query}")
         
         # Execute the query
         response = await make_observe_request(
@@ -152,7 +155,7 @@ def _validate_query_parameters(
     # Validate row count
     if row_count and row_count > 100000:
         row_count = 100000
-        print(f"WARNING: Row count limited to maximum of 100000", file=sys.stderr)
+        logger.warning(f"row count limited to maximum | requested:{row_count} | limited_to:100000")
     
     # Prepare input datasets for the query
     input_datasets = [
@@ -229,7 +232,7 @@ def _build_time_parameters(
     
     # Handle time parameters according to API rules:
     # Either two of startTime, endTime, and interval or interval alone can be specified
-    print(f"DEBUG: Time parameters received - start_time: {start_time}, end_time: {end_time}, time_range: {time_range}", file=sys.stderr)
+    logger.debug(f"time params | start:{start_time} | end:{end_time} | range:{time_range}")
     
     # Check if start_time or end_time are None or empty strings
     if start_time in [None, "", "null"]:
@@ -241,21 +244,21 @@ def _build_time_parameters(
         # Use explicit start and end times
         params["startTime"] = start_time
         params["endTime"] = end_time
-        print(f"DEBUG: Using explicit start ({start_time}) and end ({end_time}) times", file=sys.stderr)
+        logger.debug(f"using explicit time range | start:{start_time} | end:{end_time}")
     elif start_time and time_range:
         # Use start time and interval
         params["startTime"] = start_time
         params["interval"] = time_range
-        print(f"DEBUG: Using start time ({start_time}) and interval ({time_range})", file=sys.stderr)
+        logger.debug(f"using start time + interval | start:{start_time} | interval:{time_range}")
     elif end_time and time_range:
         # Use end time and interval
         params["endTime"] = end_time
         params["interval"] = time_range
-        print(f"DEBUG: Using end time ({end_time}) and interval ({time_range})", file=sys.stderr)
+        logger.debug(f"using end time + interval | end:{end_time} | interval:{time_range}")
     elif time_range:
         # Use just interval (relative to now)
         params["interval"] = time_range
-        print(f"DEBUG: Using just interval ({time_range}) relative to now", file=sys.stderr)
+        logger.debug(f"using relative interval | interval:{time_range}")
     
     return params
 
@@ -272,11 +275,11 @@ def _process_query_response(response: Dict[str, Any]) -> str:
     """
     # Log response metadata
     if isinstance(response, dict):
-        print(f"DEBUG: Response status: {response.get('status_code')}", file=sys.stderr)
-        print(f"DEBUG: Response headers: {response.get('headers', {})}", file=sys.stderr)
+        logger.debug(f"response status | code:{response.get('status_code')}")
+        logger.debug(f"response headers | headers:{response.get('headers', {})}")
         if 'data' in response and isinstance(response['data'], str) and len(response['data']) > 0:
             data_preview = response['data'].split('\\n')[0:2]
-            print(f"DEBUG: First rows of data: {data_preview}", file=sys.stderr)
+            logger.debug(f"response data preview | first_rows:{data_preview}")
     
     # Handle error responses
     if isinstance(response, dict) and response.get("error"):

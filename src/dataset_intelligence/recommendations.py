@@ -13,6 +13,9 @@ import asyncio
 import asyncpg
 import json
 from datetime import datetime
+from src.logging import get_logger
+
+logger = get_logger('DATASET_INTEL')
 
 try:
     import openai
@@ -324,9 +327,9 @@ class DatasetRecommendationEngine:
                 max_size=5,
                 command_timeout=30
             )
-            print("[DATASET_REC] Database connection pool initialized", file=sys.stderr)
+            logger.debug("database connection pool initialized")
         except Exception as e:
-            print(f"[DATASET_REC] Failed to initialize database connection: {e}", file=sys.stderr)
+            logger.warning(f"database connection failed: {e}")
             raise
     
     async def close(self):
@@ -345,14 +348,14 @@ class DatasetRecommendationEngine:
             List of floats representing the embedding, or None if unavailable
         """
         if not OPENAI_AVAILABLE:
-            print("[DATASET_REC] OpenAI not available for embeddings", file=sys.stderr)
+            logger.info("OpenAI not available for embeddings")
             return None
         
         try:
             import os
             api_key = os.getenv("OPENAI_API_KEY") or os.getenv("SMART_TOOLS_API_KEY")
             if not api_key:
-                print("[DATASET_REC] No OpenAI API key available", file=sys.stderr)
+                logger.warning("no OpenAI API key available")
                 return None
             
             client = openai.OpenAI(api_key=api_key)
@@ -363,7 +366,7 @@ class DatasetRecommendationEngine:
             return response.data[0].embedding
             
         except Exception as e:
-            print(f"[DATASET_REC] Error generating embedding: {e}", file=sys.stderr)
+            logger.error(f"error generating embedding: {e}")
             return None
     
     def calculate_field_relevance_score(self, key_fields: List[str], relevant_fields: List[str]) -> float:
@@ -622,7 +625,7 @@ class DatasetRecommendationEngine:
             return matches / len(query_terms) if query_terms else 0.0
             
         except Exception as e:
-            print(f"[DATASET_REC] Error calculating schema score: {e}", file=sys.stderr)
+            logger.error(f"error calculating schema score: {e}")
             return 0.0
     
     def generate_match_reasons(self, dataset: Dict, intent: QueryIntent, scores: Dict[str, float]) -> List[str]:
@@ -707,11 +710,11 @@ class DatasetRecommendationEngine:
         if not self.connection_pool:
             await self.initialize()
         
-        print(f"[DATASET_REC] Processing query: {query[:100]}...", file=sys.stderr)
+        logger.debug(f"processing query: {query[:100]}...")
         
         # Parse query intent
         intent = self.parser.parse_query(query)
-        print(f"[DATASET_REC] Parsed intent: {intent.intent_type}, categories: {intent.business_categories + intent.technical_categories}", file=sys.stderr)
+        logger.debug(f"parsed intent: {intent.intent_type} | categories:{intent.business_categories + intent.technical_categories}")
         
         # Get query embedding
         intent.embedding = await self.get_query_embedding(query)
@@ -780,7 +783,7 @@ class DatasetRecommendationEngine:
                         seen_ids[dataset_id] = row
                 
                 rows = list(seen_ids.values())
-                print(f"[DATASET_REC] Found {len(rows)} candidate datasets (semantic + name matching)", file=sys.stderr)
+                logger.debug(f"found {len(rows)} candidates (semantic + name matching)")
                 
                 recommendations = []
                 
@@ -886,11 +889,11 @@ class DatasetRecommendationEngine:
                 recommendations.sort(key=lambda x: x.relevance_score, reverse=True)
                 final_recommendations = recommendations[:limit]
                 
-                print(f"[DATASET_REC] Returning {len(final_recommendations)} recommendations", file=sys.stderr)
+                logger.debug(f"returning {len(final_recommendations)} recommendations")
                 return final_recommendations
                 
         except Exception as e:
-            print(f"[DATASET_REC] Error in recommendation query: {e}", file=sys.stderr)
+            logger.error(f"error in recommendation query: {e}")
             import traceback
             traceback.print_exc(file=sys.stderr)
             return []

@@ -60,6 +60,16 @@ from src.auth import (
     setup_auth_provider
 )
 
+# Import standardized logging
+from src.logging import (
+    get_logger,
+    set_session_context,
+    log_session_context,
+    session_logger,
+    semantic_logger,
+    opal_logger
+)
+
 # Smart tools removed - keeping only core functionality
 
 from fastmcp import Context
@@ -271,7 +281,7 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
             access_token: Optional[AccessToken] = get_access_token()
             
             if access_token is None:
-                print("No access token available in get_system_prompt", file=sys.stderr)
+                session_logger.warning("no access token available in get_system_prompt")
             else:
                 # Extract JWT payload if available
                 jwt_payload = None
@@ -293,9 +303,15 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
                 
                 # Log session context for correlation
                 effective_scopes = jwt_payload.get('scopes', []) if jwt_payload else access_token.scopes or []
-                print(f"[SESSION] {access_token.client_id} | session:{ctx.session_id} | scopes:{effective_scopes}", file=sys.stderr)
+                log_session_context(
+                    user_id=access_token.client_id,
+                    session_id=ctx.session_id,
+                    scopes=effective_scopes,
+                    action="system_prompt"
+                )
         except Exception as e:
-            print(f"[SESSION] auth_failed | session:{ctx.session_id} | error:{str(e)[:50]}", file=sys.stderr)
+            set_session_context(ctx.session_id)
+            session_logger.error(f"authentication failed | error:{str(e)[:50]}")
         # Get the directory where the script is located
         script_dir = os.path.dirname(os.path.abspath(__file__))
         # Construct the path to the prompt file
@@ -314,7 +330,7 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         }
             
     except Exception as e:
-        print(f"ERROR: Exception getting system prompt: {e}", file=sys.stderr)
+        session_logger.error(f"exception getting system prompt | error:{e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
@@ -374,8 +390,8 @@ async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_sc
             except json.JSONDecodeError as e:
                 return f"Error parsing categories JSON: {e}"
         
-        print(f"[SEMANTIC_GRAPH] Processing query: {query[:100]}...", file=sys.stderr)
-        print(f"[SEMANTIC_GRAPH] Parameters: limit={limit}, min_score={min_score}, categories={parsed_categories}", file=sys.stderr)
+        set_session_context(ctx.session_id)
+        semantic_logger.info(f"processing query | query:{query[:100]} | limit:{limit} | min_score:{min_score} | categories:{parsed_categories}")
         
         # Get LLM-based recommendations
         recommendations = await query_datasets_llm(
@@ -431,15 +447,13 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
         result += f"1. Use `get_dataset_info()` to see full schema\n"
         result += f"2. Use `execute_opal_query()` to sample data"
         
-        print(f"[SEMANTIC_GRAPH] Returning {len(recommendations)} recommendations", file=sys.stderr)
+        semantic_logger.info(f"query completed | results:{len(recommendations)}")
         return result
         
     except ImportError as e:
         return f"Semantic graph system not available. Missing dependencies: {str(e)}"
     except Exception as e:
-        print(f"[SEMANTIC_GRAPH] Error: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        semantic_logger.error(f"semantic query failed | error:{str(e)}")
         return f"Error in semantic graph: {str(e)}"
 
 
@@ -493,9 +507,8 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
         if not api_key:
             return "Error: OPENAI_API_KEY not configured"
         
-        print(f"[GENERATE_OPAL] Processing NLP query: {nlp_query[:100]}...", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Target datasets: {dataset_ids}", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Preferred interface: {preferred_interface or 'auto-detect'}", file=sys.stderr)
+        set_session_context(ctx.session_id)
+        opal_logger.info(f"generating OPAL query | query:{nlp_query[:100]} | datasets:{dataset_ids} | interface:{preferred_interface or 'auto-detect'}")
         
         # Parse dataset IDs
         dataset_list = [ds.strip() for ds in dataset_ids.split(',') if ds.strip()]
@@ -505,29 +518,27 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
         # Check for multi-dataset scenarios and warn about limitations
         is_multi_dataset = len(dataset_list) > 1
         if is_multi_dataset:
-            print(f"[GENERATE_OPAL] ⚠️ MULTI-DATASET REQUEST: {len(dataset_list)} datasets - enforcing single-dataset constraint", file=sys.stderr)
+            opal_logger.warning(f"multi-dataset request - enforcing single dataset | dataset_count:{len(dataset_list)}")
         
         # Get dataset information for schema context
-        print(f"[GENERATE_OPAL] ===== DATASET SCHEMA RETRIEVAL PHASE =====", file=sys.stderr)
+        opal_logger.debug("retrieving dataset schemas")
         dataset_schemas = {}
         for dataset_id in dataset_list[:3]:  # Limit to 3 datasets for context management
-            print(f"[GENERATE_OPAL] CALLING REAL get_dataset_info() for dataset: {dataset_id}", file=sys.stderr)
+            opal_logger.debug(f"fetching schema for dataset {dataset_id}")
             try:
                 schema_info = await observe_get_dataset_info(dataset_id=dataset_id)
-                print(f"[GENERATE_OPAL] ✅ REAL TOOL CALL SUCCESS: get_dataset_info({dataset_id}) returned {len(str(schema_info))} characters", file=sys.stderr)
+                opal_logger.debug(f"schema retrieved | dataset:{dataset_id} | size:{len(str(schema_info))}")
                 # Log first 200 chars to verify it's real data
                 schema_preview = str(schema_info)[:200].replace('\n', ' ')
-                print(f"[GENERATE_OPAL] Schema preview: {schema_preview}...", file=sys.stderr)
                 dataset_schemas[dataset_id] = schema_info
             except Exception as e:
-                print(f"[GENERATE_OPAL] ❌ REAL TOOL CALL FAILED: get_dataset_info({dataset_id}) error: {e}", file=sys.stderr)
+                opal_logger.error(f"schema fetch failed | dataset:{dataset_id} | error:{e}")
                 dataset_schemas[dataset_id] = "Schema unavailable"
         
-        print(f"[GENERATE_OPAL] Dataset schemas collection complete. Total schemas: {len(dataset_schemas)}", file=sys.stderr)
+        opal_logger.debug(f"schemas collected | count:{len(dataset_schemas)}")
         
         # Get relevant OPAL documentation - COMMENTED OUT FOR TESTING
-        print(f"[GENERATE_OPAL] ===== DOCUMENTATION RETRIEVAL PHASE (SKIPPED) =====", file=sys.stderr)
-        print(f"[GENERATE_OPAL] EXPERIMENT: Skipping search_docs() call to test LLM performance with system prompt only", file=sys.stderr)
+        opal_logger.debug("skipping documentation retrieval (experimental)")
         opal_docs = "Using system prompt OPAL guide only (search_docs() skipped for testing)"
         
         # # ORIGINAL CODE - COMMENTED OUT FOR EXPERIMENT
@@ -567,19 +578,19 @@ async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, pr
                 # Get everything from OPAL Best Practices to the end of the file
                 # since the file ends with the syntax checklist
                 opal_guide = system_prompt_content[opal_section_start:]
-                print(f"[GENERATE_OPAL] Extracted OPAL guide: {len(opal_guide)} characters from system prompt", file=sys.stderr)
+                opal_logger.debug(f"extracted OPAL guide | size:{len(opal_guide)}")
             else:
-                print(f"[GENERATE_OPAL] Warning: Could not find '## OPAL Best Practices' section", file=sys.stderr)
+                opal_logger.warning("OPAL Best Practices section not found")
                 # Try alternative extraction
                 practices_start = system_prompt_content.find("OPAL Best Practices")
                 if practices_start != -1:
                     opal_guide = system_prompt_content[practices_start:]
-                    print(f"[GENERATE_OPAL] Found alternative OPAL section: {len(opal_guide)} characters", file=sys.stderr)
+                    opal_logger.debug(f"found alternative OPAL section | size:{len(opal_guide)}")
                 else:
                     opal_guide = "OPAL guide extraction failed - using fallback content"
                 
         except Exception as e:
-            print(f"[GENERATE_OPAL] Warning: Could not read OPAL guide: {e}", file=sys.stderr)
+            opal_logger.warning(f"could not read OPAL guide: {e}")
             opal_guide = "OPAL guide unavailable"
         
         # Create the prompt for GPT-5 with multi-dataset awareness
@@ -657,10 +668,7 @@ Return ONLY the OPAL query as clean code, no explanations or markdown formatting
 Generate the OPAL query now:"""
 
         # Call GPT-5 using the new Responses API
-        print(f"[GENERATE_OPAL] ===== GPT-5 LLM CALL PHASE =====", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Using OpenAI API key ending in: ...{api_key[-8:]}", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Prompt length: {len(generation_prompt)} characters", file=sys.stderr)
-        print(f"[GENERATE_OPAL] CALLING REAL OpenAI GPT-5-mini API...", file=sys.stderr)
+        opal_logger.debug("calling LLM for OPAL generation")
         
         client = openai.OpenAI(api_key=api_key)
         
@@ -672,36 +680,26 @@ Generate the OPAL query now:"""
                 text={"verbosity": "low"}     # Keep output concise
             )
             
-            print(f"[GENERATE_OPAL] ✅ REAL LLM CALL SUCCESS: GPT-5-mini responded", file=sys.stderr)
-            print(f"[GENERATE_OPAL] Response object type: {type(response)}", file=sys.stderr)
-            
-            # Log response metadata if available
-            if hasattr(response, 'id'):
-                print(f"[GENERATE_OPAL] Response ID: {response.id}", file=sys.stderr)
-            if hasattr(response, 'model'):
-                print(f"[GENERATE_OPAL] Model used: {response.model}", file=sys.stderr)
-            if hasattr(response, 'usage'):
-                print(f"[GENERATE_OPAL] Token usage: {response.usage}", file=sys.stderr)
+            opal_logger.debug(f"LLM call successful | model:{getattr(response, 'model', 'unknown')} | tokens:{getattr(getattr(response, 'usage', None), 'total_tokens', 0) if hasattr(response, 'usage') else 0}")
             
             generated_query = response.output_text.strip()
-            print(f"[GENERATE_OPAL] Raw response length: {len(generated_query)} characters", file=sys.stderr)
-            print(f"[GENERATE_OPAL] Raw response preview: {generated_query[:200].replace(chr(10), ' ')}", file=sys.stderr)
+            opal_logger.debug(f"LLM response | length:{len(generated_query)} | preview:{generated_query[:100].replace(chr(10), ' ')}...")
             
         except Exception as llm_error:
-            print(f"[GENERATE_OPAL] ❌ REAL LLM CALL FAILED: {llm_error}", file=sys.stderr)
+            opal_logger.error(f"LLM call failed | error:{llm_error}")
             return f"Error calling GPT-5: {str(llm_error)}"
         
         # Basic validation - ensure it looks like OPAL
         if not generated_query:
-            print(f"[GENERATE_OPAL] ❌ VALIDATION FAILED: GPT-5 returned empty response", file=sys.stderr)
+            opal_logger.error("validation failed: GPT-5 returned empty response")
             return "Error: GPT-5 returned empty response"
         
-        print(f"[GENERATE_OPAL] ===== RESPONSE PROCESSING PHASE =====", file=sys.stderr)
+        opal_logger.debug("starting response processing phase")
         
         # Remove any markdown formatting if present
         original_query = generated_query
         if generated_query.startswith("```"):
-            print(f"[GENERATE_OPAL] Detected markdown formatting, removing...", file=sys.stderr)
+            opal_logger.debug("detected markdown formatting, removing")
             lines = generated_query.split('\n')
             generated_query = '\n'.join(lines[1:-1]) if len(lines) > 2 else generated_query
         
@@ -710,26 +708,22 @@ Generate the OPAL query now:"""
         
         # Log the transformation
         if original_query != generated_query:
-            print(f"[GENERATE_OPAL] Query transformed during cleanup", file=sys.stderr)
-            print(f"[GENERATE_OPAL] Before: {original_query[:100].replace(chr(10), ' ')}...", file=sys.stderr)
-            print(f"[GENERATE_OPAL] After: {generated_query[:100].replace(chr(10), ' ')}...", file=sys.stderr)
+            opal_logger.debug(f"query transformed during cleanup | before:{original_query[:100].replace(chr(10), ' ')}... | after:{generated_query[:100].replace(chr(10), ' ')}...")
         
-        print(f"[GENERATE_OPAL] ✅ FINAL OPAL QUERY: {generated_query}", file=sys.stderr)
+        opal_logger.info(f"final OPAL query generated | query:{generated_query}")
         
         # Validate that it's not obviously hallucinated by checking for common OPAL keywords
         opal_keywords = ['filter', 'statsby', 'limit', 'sort', 'make_col', 'timechart', 'group_by']
         has_opal_keywords = any(keyword in generated_query.lower() for keyword in opal_keywords)
         
         if not has_opal_keywords:
-            print(f"[GENERATE_OPAL] ⚠️  WARNING: Generated query doesn't contain common OPAL keywords", file=sys.stderr)
-            print(f"[GENERATE_OPAL] This might indicate hallucination or invalid query generation", file=sys.stderr)
+            opal_logger.warning("generated query doesn't contain common OPAL keywords - possible hallucination")
         else:
             matching_keywords = [kw for kw in opal_keywords if kw in generated_query.lower()]
-            print(f"[GENERATE_OPAL] ✅ Query contains OPAL keywords: {matching_keywords}", file=sys.stderr)
+            opal_logger.debug(f"query validation passed | keywords_found:{matching_keywords}")
         
-        print(f"[GENERATE_OPAL] ===== SUCCESSFUL COMPLETION =====", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Total tool calls made: get_dataset_info() x{len(dataset_list[:3])}, search_docs() x0 (skipped), GPT-5-mini x1", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Returning formatted response to user", file=sys.stderr)
+        opal_logger.info(f"successful completion | dataset_calls:{len(dataset_list[:3])} | search_calls:0 | llm_calls:1")
+        opal_logger.debug("returning formatted response to user")
         
         return f"""**Generated OPAL Query:**
 
@@ -745,11 +739,10 @@ Use `execute_opal_query()` with this OPAL code and your target dataset(s) to run
 """
 
     except Exception as e:
-        print(f"[GENERATE_OPAL] ❌ CRITICAL ERROR IN generate_opal_query: {e}", file=sys.stderr)
-        print(f"[GENERATE_OPAL] Exception type: {type(e).__name__}", file=sys.stderr)
+        opal_logger.error(f"critical error in generate_opal_query | error:{e} | type:{type(e).__name__}")
         import traceback
         traceback.print_exc(file=sys.stderr)
-        print(f"[GENERATE_OPAL] ===== FAILED COMPLETION =====", file=sys.stderr)
+        opal_logger.error("failed completion")
         return f"Error generating OPAL query: {str(e)}"
 
 

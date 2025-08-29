@@ -9,6 +9,9 @@ import json
 import base64
 import sys
 from typing import Dict, Any, List, Optional, Tuple
+from src.logging import get_logger
+
+logger = get_logger('AUTH')
 
 
 def decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
@@ -32,7 +35,7 @@ def decode_jwt_payload(token: str) -> Optional[Dict[str, Any]]:
         decoded = base64.urlsafe_b64decode(padded)
         return json.loads(decoded)
     except Exception as e:
-        print(f"Error decoding JWT payload: {e}", file=sys.stderr)
+        logger.error(f"JWT payload decode error: {e}")
         return None
 
 
@@ -57,7 +60,7 @@ def decode_jwt_header(token: str) -> Optional[Dict[str, Any]]:
         decoded = base64.urlsafe_b64decode(padded)
         return json.loads(decoded)
     except Exception as e:
-        print(f"Error decoding JWT header: {e}", file=sys.stderr)
+        logger.error(f"JWT header decode error: {e}")
         return None
 
 
@@ -89,9 +92,9 @@ def decode_jwt_full(token: str, debug: bool = False) -> Dict[str, Any]:
         
         # Print debug info if requested
         if debug:
-            print(f"Header: {json.dumps(header, indent=2)}", file=sys.stderr)
-            print(f"Payload: {json.dumps(payload, indent=2)}", file=sys.stderr)
-            print("\\n=== END JWT TOKEN DEBUG INFO ===\\n", file=sys.stderr)
+            logger.debug(f"JWT header | data:{json.dumps(header, indent=2)}")
+            logger.debug(f"JWT payload | data:{json.dumps(payload, indent=2)}")
+            logger.debug("jwt token analysis complete")
         
         return {
             "header": header,
@@ -99,9 +102,7 @@ def decode_jwt_full(token: str, debug: bool = False) -> Dict[str, Any]:
             "signature_present": len(parts[2]) > 0
         }
     except Exception as e:
-        print(f"Error decoding JWT token: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        logger.error(f"JWT decode error: {e}")
         return {"error": f"Exception decoding JWT token: {str(e)}"}
 
 

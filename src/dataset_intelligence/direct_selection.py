@@ -11,6 +11,9 @@ import os
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+from src.logging import get_logger
+
+logger = get_logger('DATASET_INTEL')
 
 class DirectDatasetSelector:
     """
@@ -64,18 +67,18 @@ class DirectDatasetSelector:
             Ranked list of suitable datasets
         """
         query_lower = user_query.lower()
-        print(f"[DIRECT_SELECTOR] Analyzing query: '{user_query[:60]}...'")
+        logger.debug(f"analyzing query: '{user_query[:60]}...'")
         
         # Step 1: Classify query type
         query_type = self._classify_query_type(query_lower)
         if not query_type:
-            print(f"[DIRECT_SELECTOR] Could not classify query type, using general approach")
+            logger.debug("could not classify query type, using general approach")
             return self._general_dataset_ranking(available_datasets)
         
-        print(f"[DIRECT_SELECTOR] Classified as: {query_type}")
+        logger.debug(f"classified as: {query_type}")
         pattern = self.query_patterns[query_type]
-        print(f"[DIRECT_SELECTOR] Looking for fields: {pattern['required_fields']}")
-        print(f"[DIRECT_SELECTOR] Preferred interfaces: {pattern['preferred_interfaces']}")
+        logger.debug(f"looking for fields: {pattern['required_fields']}")
+        logger.debug(f"preferred interfaces: {pattern['preferred_interfaces']}")
         
         # Step 2: Score datasets based on field availability and interface type
         scored_datasets = []
@@ -91,11 +94,11 @@ class DirectDatasetSelector:
         scored_datasets.sort(key=lambda x: x["selection_score"], reverse=True)
         
         if scored_datasets:
-            print(f"[DIRECT_SELECTOR] Found {len(scored_datasets)} suitable datasets:")
+            logger.debug(f"found {len(scored_datasets)} suitable datasets")
             for i, ds in enumerate(scored_datasets[:5], 1):
-                print(f"  {i}. {ds.get('name', ds.get('dataset_id'))} (score: {ds['selection_score']:.1f})")
+                logger.info(f"dataset match {i} | name:{ds.get('name', ds.get('dataset_id'))} | score:{ds['selection_score']:.1f}")
         else:
-            print(f"[DIRECT_SELECTOR] No suitable datasets found, falling back to general selection")
+            logger.debug("no suitable datasets found, using fallback selection")
             return self._general_dataset_ranking(available_datasets)
         
         return scored_datasets
@@ -143,7 +146,7 @@ class DirectDatasetSelector:
         else:
             available_fields = []
         
-        print(f"[DIRECT_SELECTOR]   Checking {name}: {len(available_fields)} fields available")
+        logger.debug(f"checking {name}: {len(available_fields)} fields available")
         
         # Score 1: Field availability (most important - 60 points max)
         required_fields = [f.lower() for f in pattern["required_fields"]]
@@ -155,7 +158,7 @@ class DirectDatasetSelector:
                 score += 15  # High weight for field matches
         
         if field_matches > 0:
-            print(f"[DIRECT_SELECTOR]     ✅ {field_matches} required fields found")
+            logger.debug(f"found {field_matches} required fields in {name}")
         
         # Score 2: Interface/Type matching (30 points max)
         dataset_type = dataset.get('dataset_type', '').lower()
@@ -174,7 +177,7 @@ class DirectDatasetSelector:
                 preferred_interface in business_category or
                 preferred_interface in interface_str):
                 score += 20
-                print(f"[DIRECT_SELECTOR]     ✅ Interface match: {preferred_interface}")
+                logger.debug(f"interface match: {preferred_interface} in {name}")
                 break
         
         # Score 3: Name/description keywords (10 points max)
@@ -189,7 +192,7 @@ class DirectDatasetSelector:
         explicit_dataset_mentions = self._check_explicit_dataset_mentions(query_lower, name)
         if explicit_dataset_mentions > 0:
             score += explicit_dataset_mentions * 50  # Very high weight for explicit mentions
-            print(f"[DIRECT_SELECTOR]     🎯 Explicit dataset mention bonus: +{explicit_dataset_mentions * 50}")
+            logger.debug(f"explicit dataset mention bonus | mentions:{explicit_dataset_mentions} | bonus:{explicit_dataset_mentions * 50}")
         
         # Score 5: General query keywords in dataset name (smaller bonus)
         query_words = query_lower.split()
@@ -283,7 +286,7 @@ async def get_cached_datasets() -> List[Dict[str, Any]]:
         # Import database connection from our existing search module
         from .search import get_db_connection
         
-        print(f"[DIRECT_SELECTOR] Loading datasets from cache...")
+        logger.debug("loading datasets from cache")
         
         conn = await get_db_connection()
         
@@ -327,14 +330,14 @@ async def get_cached_datasets() -> List[Dict[str, Any]]:
                 }
                 datasets.append(dataset)
             
-            print(f"[DIRECT_SELECTOR] Loaded {len(datasets)} datasets from cache")
+            logger.debug(f"loaded datasets from cache | count:{len(datasets)}")
             return datasets
             
         finally:
             await conn.close()
             
     except Exception as e:
-        print(f"[DIRECT_SELECTOR] Error getting cached datasets: {e}")
+        logger.error(f"error getting cached datasets | error:{e}")
         import traceback
         traceback.print_exc()
         return []
@@ -347,15 +350,15 @@ async def find_datasets_direct(user_query: str, limit: int = 3) -> List[Dict[str
     This is a simpler, more reliable alternative to semantic search.
     """
     try:
-        print(f"[DIRECT_SELECTOR] Starting direct dataset selection")
+        logger.debug("starting direct dataset selection")
         
         # Get all available datasets from cache (much faster!)
         all_datasets = await get_cached_datasets()
         if not all_datasets:
-            print(f"[DIRECT_SELECTOR] No datasets available")
+            logger.warning("no datasets available")
             return []
         
-        print(f"[DIRECT_SELECTOR] Found {len(all_datasets)} total datasets")
+        logger.debug(f"found total datasets | count:{len(all_datasets)}")
         
         # Use direct selector
         selector = DirectDatasetSelector()
@@ -365,7 +368,7 @@ async def find_datasets_direct(user_query: str, limit: int = 3) -> List[Dict[str
         return suitable_datasets[:limit]
         
     except Exception as e:
-        print(f"[DIRECT_SELECTOR] Error in direct selection: {e}")
+        logger.error(f"error in direct selection | error:{e}")
         import traceback
         traceback.print_exc()
         return []

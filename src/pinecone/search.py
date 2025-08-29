@@ -7,6 +7,9 @@ with consistent error handling and result formatting.
 
 import sys
 from typing import List, Dict, Any, Optional
+from src.logging import get_logger
+
+logger = get_logger('PINECONE')
 from .client import initialize_pinecone, PINECONE_API_KEY
 from .embeddings import get_embedding
 
@@ -25,11 +28,11 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         List of search results with metadata
     """
     try:
-        print(f"Searching {index_type} for: '{query}' with n_results={n_results}", file=sys.stderr)
+        logger.debug(f"searching {index_type} | query:{query[:100]} | results:{n_results}")
         
         # Check if PINECONE_API_KEY is set
         if not PINECONE_API_KEY:
-            print("WARNING: PINECONE_API_KEY is not set. Using fallback empty results.", file=sys.stderr)
+            logger.warning("PINECONE_API_KEY not set - using fallback")
             return [{
                 "id": "error",
                 "score": 1.0,
@@ -40,11 +43,11 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         
         # Initialize Pinecone
         try:
-            print(f"Initializing Pinecone for {index_type}...", file=sys.stderr)
+            logger.debug(f"initializing Pinecone for {index_type}")
             pc, index = initialize_pinecone(index_type=index_type)
-            print("Pinecone initialized successfully", file=sys.stderr)
+            logger.debug("Pinecone initialized successfully")
         except Exception as e:
-            print(f"ERROR initializing Pinecone: {e}", file=sys.stderr)
+            logger.error(f"Pinecone initialization error: {e}")
             return [{
                 "id": "error",
                 "score": 1.0,
@@ -55,11 +58,11 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         
         # Generate embedding for the query
         try:
-            print("Generating embedding for query...", file=sys.stderr)
+            logger.debug("generating embedding")
             query_embedding = get_embedding(pc, query, is_query=True)
-            print("Embedding generated successfully", file=sys.stderr)
+            logger.debug("embedding generated successfully")
         except Exception as e:
-            print(f"ERROR generating embedding: {e}", file=sys.stderr)
+            logger.error(f"embedding generation error: {e}")
             return [{
                 "id": "error",
                 "score": 1.0,
@@ -70,7 +73,7 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         
         # Query Pinecone with the embedding
         try:
-            print("Querying Pinecone...", file=sys.stderr)
+            logger.debug("querying Pinecone")
             query_params = {
                 "vector": query_embedding,
                 "top_k": n_results,
@@ -80,9 +83,9 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
                 query_params["namespace"] = namespace
                 
             results = index.query(**query_params)
-            print(f"Query successful. Found {len(results.get('matches', []))} results", file=sys.stderr)
+            logger.debug(f"query successful | found:{len(results.get('matches', []))} results")
         except Exception as e:
-            print(f"ERROR querying Pinecone: {e}", file=sys.stderr)
+            logger.error(f"Pinecone query error: {e}")
             return [{
                 "id": "error",
                 "score": 1.0,
@@ -110,9 +113,7 @@ def semantic_search(query: str, n_results: int = 5, index_type: str = "docs", na
         return formatted_results
         
     except Exception as e:
-        print(f"ERROR in semantic search: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        logger.error(f"semantic search error: {e}")
         return [{
             "id": "error",
             "score": 1.0,

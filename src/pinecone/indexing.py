@@ -14,12 +14,15 @@ from typing import List, Dict, Any, Optional
 from tqdm import tqdm
 from .client import initialize_pinecone, get_index_config
 from .embeddings import get_embeddings_batch
+from src.logging import get_logger
+
+logger = get_logger('PINECONE_INDEX')
 
 
 def find_markdown_files(directory: str) -> List[str]:
     """Find all markdown files in the given directory recursively"""
     if not os.path.exists(directory):
-        print(f"Error: Directory {directory} does not exist", file=sys.stderr)
+        logger.error(f"directory does not exist | directory:{directory}")
         return []
     
     md_files = []
@@ -102,7 +105,7 @@ def chunk_markdown(file_path: str, chunk_size: int = 1000, chunk_type: str = "do
         return chunks
         
     except Exception as e:
-        print(f"Error processing file {file_path}: {e}", file=sys.stderr)
+        logger.error(f"error processing file | file:{file_path} | error:{e}")
         return []
 
 
@@ -131,14 +134,14 @@ def index_documents(docs_dir: str, batch_size: int = 50, force_recreate: bool = 
         Number of chunks successfully indexed
     """
     try:
-        print(f"Indexing documents from: {docs_dir}", file=sys.stderr)
+        logger.info(f"indexing documents | source:{docs_dir}")
         
         # Initialize Pinecone for docs
         pc, index = initialize_pinecone(index_type="docs")
         
         # Handle force recreation
         if force_recreate:
-            print("Force recreation requested - deleting existing index", file=sys.stderr)
+            logger.info("force recreation requested - deleting existing index")
             try:
                 config = get_index_config(index_type="docs")
                 index_name = config["index_name"]
@@ -149,12 +152,12 @@ def index_documents(docs_dir: str, batch_size: int = 50, force_recreate: bool = 
                 # Reinitialize after deletion
                 pc, index = initialize_pinecone(index_type="docs")
             except Exception as e:
-                print(f"Error during force recreation: {e}", file=sys.stderr)
+                logger.error(f"error during force recreation | error:{e}")
         
         # Find and process markdown files
         docs_dir = os.path.abspath(docs_dir)
         md_files = find_markdown_files(docs_dir)
-        print(f"Found {len(md_files)} markdown files", file=sys.stderr)
+        logger.info(f"found markdown files | count:{len(md_files)}")
         
         # Process files into chunks
         all_chunks = []
@@ -163,14 +166,14 @@ def index_documents(docs_dir: str, batch_size: int = 50, force_recreate: bool = 
                 chunks = chunk_markdown(file_path, chunk_type="docs")
                 all_chunks.extend(chunks)
             except Exception as e:
-                print(f"Error processing file {file_path}: {e}", file=sys.stderr)
+                logger.error(f"error processing file | file:{file_path} | error:{e}")
         
-        print(f"Collected {len(all_chunks)} chunks from {len(md_files)} files", file=sys.stderr)
+        logger.info(f"collected chunks | chunks:{len(all_chunks)} | files:{len(md_files)}")
         
         return _upsert_chunks_to_index(pc, index, all_chunks, batch_size, chunk_type="docs")
         
     except Exception as e:
-        print(f"Error during document indexing: {e}", file=sys.stderr)
+        logger.error(f"error during document indexing | error:{e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         return 0
@@ -209,26 +212,26 @@ def _upsert_chunks_to_index(pc, index, chunks: List[Dict[str, Any]], batch_size:
                         }
                     })
                 except Exception as e:
-                    print(f"Error preparing chunk {j}: {e}", file=sys.stderr)
+                    logger.error(f"error preparing chunk | chunk:{j} | error:{e}")
             
             # Upsert vectors to Pinecone
             if vectors_to_upsert:
                 try:
                     index.upsert(vectors=vectors_to_upsert)
-                    print(f"Upserted batch {i//batch_size + 1}/{(len(chunks)-1)//batch_size + 1} with {len(vectors_to_upsert)} vectors", file=sys.stderr)
+                    logger.debug(f"upserted batch | batch:{i//batch_size + 1}/{(len(chunks)-1)//batch_size + 1} | vectors:{len(vectors_to_upsert)}")
                     total_chunks_added += len(vectors_to_upsert)
                 except Exception as e:
-                    print(f"Error upserting batch: {e}", file=sys.stderr)
+                    logger.error(f"error upserting batch | error:{e}")
                     # Try one by one
                     for k, vector in enumerate(vectors_to_upsert):
                         try:
                             index.upsert(vectors=[vector])
                             total_chunks_added += 1
                         except Exception as e2:
-                            print(f"Error upserting single vector: {e2}", file=sys.stderr)
+                            logger.error(f"error upserting single vector | error:{e2}")
                             
         except Exception as e:
-            print(f"Error processing batch starting at index {i}: {e}", file=sys.stderr)
+            logger.error(f"error processing batch | start_index:{i} | error:{e}")
     
     return total_chunks_added
 

@@ -13,6 +13,9 @@ from fastmcp.server.dependencies import get_access_token, AccessToken
 
 from .jwt_utils import decode_jwt_payload, extract_claims_from_token
 from .scopes import get_user_scopes, get_effective_scopes
+from src.logging import get_logger
+
+logger = get_logger('AUTH_PERMS')
 
 
 def get_user_permissions(scopes: Optional[List[str]] = None) -> Dict[str, bool]:
@@ -90,11 +93,11 @@ def get_auth_token_info() -> Dict[str, Any]:
         result["effective_scopes"] = get_effective_scopes(scopes)
         
         # Minimal logging for server-side debugging
-        print(f"Auth info requested by {access_token.client_id}, scopes: {scopes}", file=sys.stderr)
+        logger.info(f"auth info requested | client:{access_token.client_id} | scopes:{scopes}")
         
         return result
     except Exception as e:
-        print(f"Error getting auth token info: {e}", file=sys.stderr)
+        logger.error(f"error getting auth token info | error:{e}")
         import traceback
         traceback.print_exc(file=sys.stderr)
         

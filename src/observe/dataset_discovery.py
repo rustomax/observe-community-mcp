@@ -9,6 +9,9 @@ import sys
 import re
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
+from src.logging import get_logger
+
+logger = get_logger('DISCOVERY')
 
 
 @dataclass
@@ -107,10 +110,10 @@ def analyze_dataset_schema(schema_info: str) -> Dict[str, Any]:
                            schema_analysis["metric_fields"]):
                 schema_analysis["dimension_fields"].append(field)
         
-        print(f"[SCHEMA_ANALYSIS] Analyzed schema - Fields: {len(schema_analysis['fields'])}, Keys: {len(schema_analysis['key_fields'])}, FK candidates: {len(schema_analysis['foreign_key_candidates'])}", file=sys.stderr)
+        logger.debug(f"analyzed schema | fields:{len(schema_analysis['fields'])} | keys:{len(schema_analysis['key_fields'])} | fk_candidates:{len(schema_analysis['foreign_key_candidates'])}")
         
     except Exception as e:
-        print(f"[SCHEMA_ANALYSIS] Error analyzing schema: {e}", file=sys.stderr)
+        logger.error(f"schema analysis error: {e}")
     
     return schema_analysis
 
@@ -136,7 +139,7 @@ async def discover_related_datasets(
     if not available_datasets:
         return []
     
-    print(f"[DATASET_DISCOVERY] Discovering related datasets for {primary_dataset_id}", file=sys.stderr)
+    logger.debug(f"discovering related datasets for {primary_dataset_id}")
     
     # Analyze primary dataset schema
     primary_analysis = analyze_dataset_schema(primary_schema)
@@ -164,9 +167,9 @@ async def discover_related_datasets(
     # Limit to max_suggestions
     suggestions = suggestions[:max_suggestions]
     
-    print(f"[DATASET_DISCOVERY] Found {len(suggestions)} related datasets", file=sys.stderr)
+    logger.debug(f"found {len(suggestions)} related datasets")
     for suggestion in suggestions:
-        print(f"[DATASET_DISCOVERY]   {suggestion.suggested_alias}: {suggestion.dataset_name} (score: {suggestion.relevance_score:.2f})", file=sys.stderr)
+        logger.debug(f"suggestion: {suggestion.suggested_alias}: {suggestion.dataset_name} (score: {suggestion.relevance_score:.2f})")
     
     return suggestions
 
@@ -474,6 +477,6 @@ async def suggest_dataset_for_query_intent(
     # Sort by relevance
     suggestions.sort(key=lambda x: x.relevance_score, reverse=True)
     
-    print(f"[INTENT_DISCOVERY] Found {len(suggestions)} datasets for intent: '{query_intent}'", file=sys.stderr)
+    logger.debug(f"found {len(suggestions)} datasets for intent: '{query_intent}'")
     
     return suggestions[:max_suggestions]

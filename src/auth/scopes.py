@@ -11,6 +11,9 @@ from fastmcp import Context
 from fastmcp.server.dependencies import get_access_token, AccessToken
 
 from .jwt_utils import extract_scopes_from_token
+from src.logging import get_logger
+
+logger = get_logger('AUTH_SCOPES')
 
 
 def requires_scopes(required_scopes: List[str]):
@@ -47,7 +50,7 @@ def requires_scopes(required_scopes: List[str]):
                 # Check if user has required scopes
                 has_required_scopes = any(scope in jwt_scopes for scope in required_scopes)
                 if not has_required_scopes:
-                    print(f"Access denied: Required scopes {required_scopes}, but user has {jwt_scopes}", file=sys.stderr)
+                    logger.warning(f"access denied | required_scopes:{required_scopes} | user_scopes:{jwt_scopes}")
                     return {
                         "error": True,
                         "message": f"Access denied: You don't have the required permissions. Required: {required_scopes}"
@@ -56,7 +59,7 @@ def requires_scopes(required_scopes: List[str]):
                 # User has required scopes, proceed with the function
                 return await func(ctx, *args, **kwargs)
             except Exception as e:
-                print(f"Error in requires_scopes middleware: {e}", file=sys.stderr)
+                logger.error(f"error in requires_scopes middleware | error:{e}")
                 return {
                     "error": True,
                     "message": f"Authentication error: {str(e)}"
@@ -85,7 +88,7 @@ def get_user_scopes() -> List[str]:
         
         return []
     except Exception as e:
-        print(f"Error getting user scopes: {e}", file=sys.stderr)
+        logger.error(f"error getting user scopes | error:{e}")
         return []
 
 

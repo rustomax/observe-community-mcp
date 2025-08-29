@@ -8,6 +8,9 @@ dataset references in OPAL queries before execution.
 import re
 import sys
 from typing import Dict, List, Optional, Set, Tuple
+from src.logging import get_logger
+
+logger = get_logger('ALIAS')
 
 def extract_dataset_references(query: str) -> List[str]:
     """
@@ -80,7 +83,7 @@ def resolve_dataset_aliases(
     if not references:
         return resolved_query, resolved_aliases, warnings
     
-    print(f"[ALIAS_RESOLUTION] Found dataset references: {references}", file=sys.stderr)
+    logger.debug(f"found dataset references: {references}")
     
     for ref in references:
         # Clean the reference (remove @ symbol)
@@ -100,7 +103,7 @@ def resolve_dataset_aliases(
             if matching_dataset:
                 alias = dataset_name.replace(' ', '_').lower()
                 resolved_aliases[alias] = matching_dataset['id']
-                print(f"[ALIAS_RESOLUTION] Resolved quoted name '{dataset_name}' -> {matching_dataset['id']} (alias: {alias})", file=sys.stderr)
+                logger.debug(f"resolved quoted name '{dataset_name}' -> {matching_dataset['id']} (alias: {alias})")
             else:
                 warnings.append(f"Dataset name '{dataset_name}' not found in available datasets")
                 
@@ -114,7 +117,7 @@ def resolve_dataset_aliases(
             if id_exists:
                 # Use the numeric ID as both alias and ID
                 resolved_aliases[f"dataset_{dataset_id}"] = dataset_id
-                print(f"[ALIAS_RESOLUTION] Validated numeric ID {dataset_id}", file=sys.stderr)
+                logger.debug(f"validated numeric ID: {dataset_id}")
             else:
                 warnings.append(f"Dataset ID '{dataset_id}' not found in available datasets")
                 
@@ -131,13 +134,13 @@ def resolve_dataset_aliases(
                 if len(matching_datasets) == 1:
                     # Single match found
                     resolved_aliases[clean_ref] = matching_datasets[0]['id']
-                    print(f"[ALIAS_RESOLUTION] Auto-resolved alias '{clean_ref}' -> {matching_datasets[0]['id']} ({matching_datasets[0]['name']})", file=sys.stderr)
+                    logger.debug(f"auto-resolved alias '{clean_ref}' -> {matching_datasets[0]['id']} ({matching_datasets[0]['name']})")
                 elif len(matching_datasets) > 1:
                     # Multiple matches - use the first one but warn
                     resolved_aliases[clean_ref] = matching_datasets[0]['id']
                     dataset_names = [d['name'] for d in matching_datasets]
                     warnings.append(f"Multiple datasets match alias '{clean_ref}': {dataset_names}. Using {matching_datasets[0]['name']}")
-                    print(f"[ALIAS_RESOLUTION] Multiple matches for '{clean_ref}', using {matching_datasets[0]['name']}", file=sys.stderr)
+                    logger.warning(f"multiple matches for '{clean_ref}', using {matching_datasets[0]['name']}")
                 else:
                     warnings.append(f"Alias '{clean_ref}' could not be resolved to any available dataset")
     
@@ -177,9 +180,9 @@ def validate_multi_dataset_query(
         # No dataset references found - this is a single dataset query
         return True, []
     
-    print(f"[QUERY_VALIDATION] Validating multi-dataset query with references: {references}", file=sys.stderr)
-    print(f"[QUERY_VALIDATION] Available aliases: {list(dataset_aliases.keys())}", file=sys.stderr)
-    print(f"[QUERY_VALIDATION] Secondary datasets: {secondary_dataset_ids}", file=sys.stderr)
+    logger.debug(f"validating multi-dataset query with references: {references}")
+    logger.debug(f"query validation | available_aliases:{list(dataset_aliases.keys())}")
+    logger.debug(f"query validation | secondary_datasets:{secondary_dataset_ids}")
     
     # Check that all references can be resolved
     all_dataset_ids = set([primary_dataset_id] + secondary_dataset_ids)
@@ -216,9 +219,9 @@ def validate_multi_dataset_query(
     is_valid = len(errors) == 0
     
     if is_valid:
-        print(f"[QUERY_VALIDATION] Multi-dataset query validation passed", file=sys.stderr)
+        logger.debug("multi-dataset query validation passed")
     else:
-        print(f"[QUERY_VALIDATION] Multi-dataset query validation failed: {errors}", file=sys.stderr)
+        logger.warning(f"multi-dataset query validation failed | errors:{errors}")
     
     return is_valid, errors
 
@@ -279,7 +282,7 @@ def suggest_dataset_for_alias(
             best_match = dataset
     
     if best_match:
-        print(f"[ALIAS_SUGGESTION] Suggested dataset for alias '{alias}': {best_match['name']} (score: {best_score:.2f})", file=sys.stderr)
+        logger.debug(f"alias suggestion | alias:{alias} | dataset:{best_match['name']} | score:{best_score:.2f}")
     
     return best_match
 
@@ -342,6 +345,6 @@ def build_dataset_context(
             "name": name_lookup.get(dataset_id, f"Dataset {dataset_id}")
         })
     
-    print(f"[DATASET_CONTEXT] Built context with {len(context['secondary'])} secondary datasets", file=sys.stderr)
+    logger.debug(f"dataset context built | secondary_count:{len(context['secondary'])}")
     
     return context
