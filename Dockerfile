@@ -4,9 +4,11 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for potential C extensions
+# Install system dependencies for potential C extensions and matplotlib
 RUN apt-get update && apt-get install -y \
     gcc \
+    libfreetype6-dev \
+    libpng-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker layer caching

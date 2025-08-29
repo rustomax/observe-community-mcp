@@ -70,9 +70,12 @@ from src.logging import (
     opal_logger
 )
 
-# Smart tools removed - keeping only core functionality
+# Import visualization module
+from src.visualization import ChartGenerator, DataParser, detect_chart_type, detect_columns
+from src.visualization.auto_detection import recommend_chart_and_columns, validate_column_mapping
 
 from fastmcp import Context
+from fastmcp.utilities.types import Image
 
 # Create FastMCP instance with authentication
 mcp = create_authenticated_mcp(server_name="observe-community")
@@ -769,6 +772,220 @@ Use `execute_opal_query()` with this OPAL code and your target dataset(s) to run
         traceback.print_exc(file=sys.stderr)
         opal_logger.error("failed completion")
         return f"Error generating OPAL query: {str(e)}"
+
+
+@mcp.tool()
+@requires_scopes(['admin', 'write', 'read'])
+async def create_visualization(
+    ctx: Context,
+    csv_data: str,
+    chart_type: str = "",
+    title: str = "",
+    x_column: str = None,
+    y_column: str = None,
+    group_by_column: str = None,
+    theme: str = "observability"
+) -> Image:
+    """
+    Create a visualization from CSV data returned by execute_opal_query.
+    
+    This tool converts CSV data into base64-encoded PNG charts optimized for
+    observability dashboards. It supports automatic column detection and 
+    multiple chart types.
+    
+    Args:
+        csv_data: Raw CSV data (typically from execute_opal_query output)
+        chart_type: Type of chart ("line", "bar", "scatter", "heatmap", "pie", "histogram", "box")
+                   Auto-detected if empty
+        title: Chart title (optional)
+        x_column: X-axis column name (auto-detected if None)
+        y_column: Y-axis column name (auto-detected if None)
+        group_by_column: Column for multi-series grouping (optional)
+        theme: Visual theme ("observability" or "clean")
+        
+    Returns:
+        Image object containing base64-encoded PNG chart
+        
+    Example:
+        # First get data from OPAL
+        csv_data = await execute_opal_query(ctx, "filter service_name = 'web'", dataset_id="123")
+        
+        # Then create visualization
+        chart = await create_visualization(ctx, csv_data, chart_type="line", title="Service Performance")
+    """
+    try:
+        # Create a simple error image using matplotlib instead of hardcoded bytes
+        def create_error_image(error_message: str) -> bytes:
+            import matplotlib.pyplot as plt
+            import io
+            
+            fig, ax = plt.subplots(figsize=(8, 4), dpi=100)
+            ax.text(0.5, 0.5, error_message, ha='center', va='center', 
+                   fontsize=12, wrap=True, transform=ax.transAxes)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis('off')
+            
+            buffer = io.BytesIO()
+            fig.savefig(buffer, format='jpeg', bbox_inches='tight', dpi=100)
+            buffer.seek(0)
+            image_bytes = buffer.getvalue()
+            plt.close(fig)
+            return image_bytes
+        
+        # Validate inputs
+        if not csv_data or not csv_data.strip():
+            return Image(
+                data=create_error_image("Error: CSV data is empty.\nPlease provide CSV data from execute_opal_query."),
+                format="jpeg",
+                annotations={"text": "Error: CSV data is empty. Please provide CSV data from execute_opal_query."}
+            )
+        
+        # Parse CSV data
+        parser = DataParser()
+        try:
+            df = parser.parse(csv_data)
+        except ValueError as e:
+            return Image(
+                data=create_error_image(f"Error parsing CSV data:\n{str(e)}\nPlease ensure the CSV data is valid."),
+                format="jpeg",
+                annotations={"text": f"Error parsing CSV data: {str(e)}. Please ensure the CSV data is valid."}
+            )
+        
+        # Auto-detect chart type if not specified
+        if not chart_type:
+            chart_type, auto_columns = recommend_chart_and_columns(df)
+            if not x_column:
+                x_column = auto_columns.get('x_column')
+            if not y_column:
+                y_column = auto_columns.get('y_column')
+            if not group_by_column:
+                group_by_column = auto_columns.get('group_by_column')
+        else:
+            # Validate chart type
+            supported_types = ['line', 'bar', 'scatter', 'heatmap', 'pie', 'histogram', 'box']
+            if chart_type not in supported_types:
+                return Image(
+                    data=create_error_image(f"Error: Unsupported chart type '{chart_type}'.\nSupported types: {', '.join(supported_types)}"),
+                    format="jpeg", 
+                    annotations={"text": f"Error: Unsupported chart type '{chart_type}'. Supported types: {', '.join(supported_types)}"}
+                )
+        
+        # Auto-detect columns if not specified
+        if not x_column or not y_column:
+            auto_columns = detect_columns(df, chart_type, parser)
+            x_column = x_column or auto_columns.get('x_column')
+            y_column = y_column or auto_columns.get('y_column')
+            
+            # Handle special cases for pie and histogram
+            if chart_type == 'pie':
+                x_column = x_column or auto_columns.get('label_column')
+                y_column = y_column or auto_columns.get('value_column')
+            elif chart_type == 'heatmap':
+                if not auto_columns.get('value_column'):
+                    return Image(
+                        data=create_error_image("Error: Heatmap requires a value column\nbut none could be auto-detected."),
+                        format="jpeg",
+                        annotations={"text": "Error: Heatmap requires a value column but none could be auto-detected."}
+                    )
+        
+        # Validate column mapping
+        column_mapping = {
+            'x_column': x_column,
+            'y_column': y_column,
+            'group_by_column': group_by_column
+        }
+        
+        if chart_type == 'pie':
+            column_mapping = {
+                'label_column': x_column,
+                'value_column': y_column
+            }
+        elif chart_type == 'heatmap':
+            column_mapping = {
+                'x_column': x_column,
+                'y_column': y_column,
+                'value_column': parser.get_numeric_columns()[0] if parser.get_numeric_columns() else None
+            }
+        
+        validation_issues = validate_column_mapping(df, chart_type, column_mapping)
+        if validation_issues:
+            return Image(
+                data=create_error_image(f"Column mapping validation failed:\n" + "\n".join(validation_issues)),
+                format="jpeg",
+                annotations={"text": f"Column mapping validation failed:\n" + "\n".join(validation_issues)}
+            )
+        
+        # Create chart
+        generator = ChartGenerator(theme=theme)
+        
+        # Prepare arguments for chart creation
+        chart_args = {
+            'title': title,
+            'x_column': x_column,
+            'y_column': y_column,
+            'group_by_column': group_by_column
+        }
+        
+        # Special handling for pie charts
+        if chart_type == 'pie':
+            chart_args = {
+                'title': title,
+                'label_column': x_column,
+                'value_column': y_column
+            }
+        
+        # Special handling for heatmaps
+        elif chart_type == 'heatmap':
+            chart_args = {
+                'title': title,
+                'x_column': x_column,
+                'y_column': y_column,
+                'value_column': column_mapping['value_column']
+            }
+        
+        # Generate chart
+        image_bytes = generator.create_chart(df, chart_type, **chart_args)
+        
+        # Create description
+        data_summary = parser.get_data_summary()
+        description = f"""
+📊 **{chart_type.title()} Chart Generated**
+
+**Data Summary:**
+- {data_summary['total_rows']} rows, {data_summary['total_columns']} columns
+- Chart type: {chart_type}
+- X-axis: {x_column or 'auto-detected'}
+- Y-axis: {y_column or 'auto-detected'}
+- Grouping: {group_by_column or 'none'}
+- Theme: {theme}
+
+**Column Types Detected:**
+- Numeric: {', '.join(data_summary.get('numeric_columns', [])) or 'none'}
+- Categorical: {', '.join(data_summary.get('categorical_columns', [])) or 'none'}
+- DateTime: {', '.join(data_summary.get('datetime_columns', [])) or 'none'}
+
+Use this chart to visualize your OPAL query results. The image is optimized for observability dashboards with proper scaling and theming.
+        """.strip()
+        
+        # FastMCP Image class handles base64 encoding automatically
+        return Image(
+            data=image_bytes,
+            format="jpeg", 
+            annotations={"text": description}
+        )
+        
+    except Exception as e:
+        # Log error for debugging
+        import traceback
+        error_details = traceback.format_exc()
+        session_logger.error(f"Error in create_visualization: {e}\nFull traceback: {error_details}")
+        
+        return Image(
+            data=create_error_image(f"Error creating visualization:\n{str(e)}\nPlease check your CSV data and parameters."),
+            format="jpeg",
+            annotations={"text": f"Error creating visualization: {str(e)}. Please check your CSV data and parameters."}
+        )
 
 
 mcp.run(transport="sse", host="0.0.0.0", port=8000)
