@@ -487,7 +487,7 @@ No datasets met the minimum relevance threshold of {min_score:.1f}.
         return f"Error in semantic graph: {str(e)}"
 
 
-@mcp.tool()
+# @mcp.tool() # COMMENTED OUT - Tool disabled as per user request
 @requires_scopes(['admin', 'write', 'read'])
 async def generate_opal_query(ctx: Context, nlp_query: str, dataset_ids: str, preferred_interface: Optional[str] = None) -> str:
     """
@@ -801,7 +801,7 @@ Use `execute_opal_query()` with this OPAL code and your target dataset(s) to run
         return f"Error generating OPAL query: {str(e)}"
 
 
-@mcp.tool()
+# @mcp.tool() # COMMENTED OUT - Tool disabled as per user request
 @requires_scopes(['admin', 'write', 'read'])
 async def create_visualization(
     ctx: Context,
@@ -1333,7 +1333,7 @@ if HAS_OPENAI_AGENTS:
         )
     )
 
-    @mcp.tool()
+    # @mcp.tool() # COMMENTED OUT - Tool disabled as per user request
     @requires_scopes(['admin', 'read'])
     async def o11y_scout(
         ctx: Context,
@@ -1635,6 +1635,201 @@ pip install openai-agents>=0.1.0
 - `execute_opal_query()` to get metrics  
 - `create_visualization()` to chart results
             """.strip()
+
+
+@mcp.tool()
+@requires_scopes(['admin', 'read'])
+async def discover_metrics(ctx: Context, query: str, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
+    """
+    Discover observability metrics using fast full-text search on our metrics intelligence database.
+    
+    This tool searches through 491+ analyzed metrics with intelligent categorization and usage guidance.
+    Perfect for finding metrics by name, purpose, dimensions, or use case.
+    
+    IMPORTANT: This tool provides error FREQUENCIES and performance metrics. For complete error analysis 
+    (actual error messages, stack traces), follow up with log dataset queries using query_semantic_graph().
+    
+    Args:
+        query: Search query (e.g., "error rate", "cpu usage", "database latency", "service performance")
+        max_results: Maximum number of metrics to return (default: 20, max: 50)
+        category_filter: Filter by business category (Infrastructure, Application, Database, Storage, Network, Monitoring)
+        technical_filter: Filter by technical category (Error, Latency, Count, Performance, Resource, Throughput, Availability)
+    
+    Returns:
+        Formatted list of matching metrics with their datasets, purposes, and usage guidance
+        
+    Examples:
+        discover_metrics("error rate service")  # Gets error counts - follow with logs for error details
+        discover_metrics("cpu memory usage", category_filter="Infrastructure")
+        discover_metrics("latency duration", technical_filter="Latency", max_results=10)
+    """
+    try:
+        import asyncpg
+        import json
+        from typing import List, Dict, Any
+        
+        # Database connection using environment variables
+        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+        
+        # Validate parameters
+        max_results = min(max(1, max_results), 50)  # Clamp between 1 and 50
+        
+        # Connect to database and search
+        conn = await asyncpg.connect(DATABASE_URL)
+        
+        try:
+            # Build the search query
+            search_query = f"""
+            SELECT 
+                metric_name,
+                dataset_name,
+                inferred_purpose,
+                typical_usage,
+                business_category,
+                technical_category,
+                metric_type,
+                query_pattern,
+                common_fields,
+                common_dimensions,
+                value_range,
+                data_frequency,
+                last_seen,
+                ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank
+            FROM metrics_intelligence 
+            WHERE 
+                excluded = FALSE
+                AND search_vector @@ plainto_tsquery('english', $1)
+                {f"AND business_category = '{category_filter}'" if category_filter else ""}
+                {f"AND technical_category = '{technical_filter}'" if technical_filter else ""}
+            ORDER BY rank DESC, metric_name
+            LIMIT $2
+            """
+            
+            # Execute search
+            results = await conn.fetch(search_query, query, max_results)
+            
+            if not results:
+                return f"""# 🔍 Metrics Discovery Results
+                
+**Query**: "{query}"
+**Results**: No metrics found
+
+**Suggestions**:
+- Try broader terms (e.g., "error" instead of "error_rate")
+- Check available categories: Infrastructure, Application, Database, Storage, Network, Monitoring
+- Use technical categories: Error, Latency, Count, Performance, Resource, Throughput, Availability
+
+**Available metrics**: {await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")} total metrics in the database.
+"""
+            
+            # Format results
+            formatted_results = []
+            for i, row in enumerate(results, 1):
+                # Parse JSON fields safely
+                try:
+                    dimensions = json.loads(row['common_dimensions']) if row['common_dimensions'] else {}
+                    value_range = json.loads(row['value_range']) if row['value_range'] else {}
+                except (json.JSONDecodeError, TypeError):
+                    dimensions = {}
+                    value_range = {}
+                
+                # Format dimension keys
+                dim_keys = list(dimensions.keys()) if dimensions else []
+                dim_text = f"**Dimensions**: {', '.join(dim_keys[:5])}" if dim_keys else "**Dimensions**: None"
+                if len(dim_keys) > 5:
+                    dim_text += f" (+{len(dim_keys)-5} more)"
+                
+                # Format value range
+                range_text = ""
+                if value_range and isinstance(value_range, dict):
+                    if 'min' in value_range and 'max' in value_range:
+                        range_text = f"**Range**: {value_range.get('min', 'N/A')} - {value_range.get('max', 'N/A')}"
+                
+                # Format last seen
+                last_seen = row['last_seen'].strftime('%Y-%m-%d %H:%M') if row['last_seen'] else 'Unknown'
+                
+                # Format metric type and query pattern
+                metric_type = row.get('metric_type', 'unknown')
+                query_pattern = row.get('query_pattern', '')
+                common_fields = row.get('common_fields', [])
+                
+                # Create query guidance section
+                query_guidance = ""
+                if query_pattern:
+                    query_guidance = f"**Query Pattern**: `{query_pattern}`\n"
+                if common_fields:
+                    field_list = ', '.join(common_fields[:3])
+                    if len(common_fields) > 3:
+                        field_list += f" (+{len(common_fields)-3} more)"
+                    query_guidance += f"**Common Fields**: {field_list}\n"
+                
+                result_text = f"""## {i}. {row['metric_name']}
+**Dataset**: {row['dataset_name']}
+**Category**: {row['business_category']} / {row['technical_category']}
+**Type**: {metric_type}
+**Purpose**: {row['inferred_purpose']}
+**Usage**: {row['typical_usage']}
+{dim_text}
+{query_guidance}{range_text}
+**Frequency**: {row['data_frequency']} | **Last Seen**: {last_seen}
+**Relevance Score**: {row['rank']:.3f}
+"""
+                formatted_results.append(result_text)
+            
+            # Get summary stats
+            total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")
+            category_counts = await conn.fetch("""
+                SELECT business_category, COUNT(*) as count 
+                FROM metrics_intelligence 
+                WHERE excluded = FALSE 
+                GROUP BY business_category 
+                ORDER BY count DESC
+            """)
+            
+            category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
+            
+            return f"""# 🎯 Metrics Discovery Results
+
+**Query**: "{query}"
+**Found**: {len(results)} metrics (showing top {max_results})
+**Search Scope**: {total_metrics} total metrics | Top categories: {category_summary}
+
+{chr(10).join(formatted_results)}
+
+---
+💡 **Next Steps**: 
+- Use `execute_opal_query()` with the dataset ID to query specific metrics
+- Use `query_semantic_graph()` to find related datasets  
+- Use `create_visualization()` to chart the metric data
+"""
+            
+        finally:
+            await conn.close()
+            
+    except ImportError as e:
+        return f"""# ❌ Metrics Discovery Error
+
+**Issue**: Required database library not available
+**Error**: {str(e)}
+**Solution**: The metrics intelligence system requires asyncpg. Please install it:
+```bash
+pip install asyncpg
+```
+"""
+    
+    except Exception as e:
+        return f"""# ❌ Metrics Discovery Error
+
+**Query**: "{query}"
+**Error**: {str(e)}
+
+**Possible Causes**:
+- Database connection failed
+- Metrics intelligence table not initialized
+- Invalid search parameters
+
+**Solution**: Ensure the metrics intelligence system is running and database is accessible.
+"""
 
 
 mcp.run(transport="sse", host="0.0.0.0", port=8000)

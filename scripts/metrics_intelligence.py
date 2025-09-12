@@ -1,0 +1,1149 @@
+#!/usr/bin/env python3
+"""
+Metrics Intelligence Script
+
+This script analyzes metrics datasets in Observe to create rich metadata for semantic search.
+It focuses specifically on datasets with 'metric' interface and extracts detailed information
+about individual metrics including their dimensions, value patterns, and usage contexts.
+
+Usage:
+    python metrics_intelligence.py --help
+"""
+
+import asyncio
+import json
+import logging
+import os
+import sys
+import argparse
+import time
+import statistics
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Tuple, Set
+import asyncpg
+import httpx
+from dotenv import load_dotenv
+
+# ANSI color codes for terminal output
+class Colors:
+    RED = '\033[91m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
+    CYAN = '\033[96m'
+    WHITE = '\033[97m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = '\033[0m'
+    
+    # Background colors
+    BG_RED = '\033[101m'
+    BG_GREEN = '\033[102m'
+    BG_YELLOW = '\033[103m'
+    BG_BLUE = '\033[104m'
+
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter that adds colors to log messages based on level and content."""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Color mapping for log levels
+        self.level_colors = {
+            logging.DEBUG: Colors.CYAN,
+            logging.INFO: Colors.WHITE,
+            logging.WARNING: Colors.YELLOW,
+            logging.ERROR: Colors.RED,
+            logging.CRITICAL: Colors.RED + Colors.BOLD
+        }
+        
+        # Special patterns for highlighting key events
+        self.event_patterns = {
+            'unchanged - skipping': Colors.GREEN + Colors.BOLD,
+            'has changed - performing': Colors.BLUE + Colors.BOLD,
+            'not found in database': Colors.MAGENTA + Colors.BOLD,
+            'Excluding metric': Colors.YELLOW,
+            'Successfully analyzed': Colors.GREEN,
+            'Progress:': Colors.CYAN + Colors.BOLD,
+            'Analysis Statistics': Colors.YELLOW + Colors.BOLD + Colors.UNDERLINE,
+            'Database connection established': Colors.GREEN + Colors.BOLD,
+            'Metrics analysis completed': Colors.GREEN + Colors.BOLD + Colors.UNDERLINE,
+            'Discovered': Colors.CYAN,
+            'Failed': Colors.RED + Colors.BOLD,
+            'Error': Colors.RED + Colors.BOLD,
+            'has no metrics data': Colors.RED,
+            'checking for metrics': Colors.CYAN,
+            'has metrics - analyzing': Colors.GREEN + Colors.BOLD,
+            'High cardinality': Colors.YELLOW + Colors.BOLD,
+        }
+    
+    def format(self, record):
+        # Format the message first
+        message = super().format(record)
+        
+        # Apply level-based coloring
+        level_color = self.level_colors.get(record.levelno, Colors.WHITE)
+        
+        # Check for special event patterns and apply specific colors
+        colored_message = message
+        for pattern, color in self.event_patterns.items():
+            if pattern in message:
+                colored_message = colored_message.replace(
+                    pattern, 
+                    f"{color}{pattern}{Colors.RESET}"
+                )
+        
+        # Apply level color to the entire message if no special pattern matched
+        if colored_message == message:
+            colored_message = f"{level_color}{message}{Colors.RESET}"
+        
+        return colored_message
+
+# Add src directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+class MetricsIntelligenceAnalyzer:
+    """Analyzes metrics datasets and generates intelligence for semantic search."""
+    
+    def __init__(self):
+        # Database connection
+        self.db_pool = None
+        
+        # Observe API configuration
+        self.observe_customer_id = os.getenv('OBSERVE_CUSTOMER_ID')
+        self.observe_token = os.getenv('OBSERVE_TOKEN')
+        self.observe_domain = os.getenv('OBSERVE_DOMAIN', 'observe-staging.com')
+        
+        
+        # HTTP client for Observe API
+        self.http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0, read=60.0),
+            headers={
+                'Authorization': f'Bearer {self.observe_customer_id} {self.observe_token}',
+                'Content-Type': 'application/json'
+            }
+        )
+        
+        # Statistics
+        self.stats = {
+            'datasets_processed': 0,
+            'datasets_skipped': 0,
+            'datasets_failed': 0,
+            'metrics_discovered': 0,
+            'metrics_processed': 0,
+            'metrics_skipped': 0,
+            'metrics_excluded': 0,
+            'high_cardinality_metrics': 0
+        }
+        
+        # Rate limiting configuration
+        self.last_observe_call = 0
+        self.observe_delay = 0.2  # 200ms between Observe API calls
+        self.max_retries = 3
+        self.base_retry_delay = 1.0
+        
+        # Cardinality thresholds
+        self.HIGH_CARDINALITY_THRESHOLD = 1000  # Warn about dimensions with >1000 unique values
+    
+    
+    async def rate_limit_observe(self) -> None:
+        """Apply rate limiting for Observe API calls."""
+        elapsed = time.time() - self.last_observe_call
+        if elapsed < self.observe_delay:
+            await asyncio.sleep(self.observe_delay - elapsed)
+        self.last_observe_call = time.time()
+    
+    async def retry_with_backoff(self, func, *args, **kwargs):
+        """Retry a function with exponential backoff."""
+        for attempt in range(self.max_retries):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if attempt == self.max_retries - 1:
+                    raise e
+                
+                wait_time = self.base_retry_delay * (2 ** attempt)
+                
+                if "timeout" in str(e).lower() or "429" in str(e):
+                    wait_time *= 2
+                elif "502" in str(e) or "503" in str(e) or "504" in str(e):
+                    wait_time *= 1.5
+                
+                logger.warning(f"Attempt {attempt + 1}/{self.max_retries} failed: {e}. Retrying in {wait_time:.1f}s...")
+                await asyncio.sleep(wait_time)
+    
+    async def initialize_database(self) -> None:
+        """Initialize database connection and ensure schema exists."""
+        db_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', 'semantic_graph_secure_2024!')
+        }
+        
+        try:
+            self.db_pool = await asyncpg.create_pool(**db_config, min_size=1, max_size=5)
+            logger.info("Database connection established")
+            
+            # Create schema if it doesn't exist
+            await self.ensure_schema_exists()
+            
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            raise
+    
+    async def ensure_schema_exists(self) -> None:
+        """Ensure the metrics intelligence schema exists."""
+        # Get the absolute path to the schema file
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        schema_path = os.path.join(script_dir, '..', 'sql', 'metrics_intelligence_schema.sql')
+        
+        with open(schema_path, 'r') as f:
+            schema_sql = f.read()
+        
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(schema_sql)
+            logger.info("Metrics intelligence schema created/verified")
+    
+    def should_exclude_metric(self, metric_name: str, labels_or_attributes: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """
+        Determine if a metric should be excluded from analysis.
+        
+        Returns:
+            (exclude: bool, reason: str)
+        """
+        # No exclusions - analyze all metrics comprehensively
+        # Let users decide what's valuable to them
+        return False, None
+    
+    async def check_metric_needs_update(self, dataset_id: str, metric_name: str, sample_data_count: int) -> bool:
+        """
+        Check if a metric needs to be updated based on existing database record.
+        Returns True if metric needs analysis, False if it can be skipped.
+        
+        Criteria for skipping:
+        - Metric exists in database with same dataset_id and metric_name
+        - Last analyzed within the last 24 hours
+        - Sample data count is similar (within 20% difference)
+        """
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Check if metric exists and when it was last analyzed
+                result = await conn.fetchrow("""
+                    SELECT last_analyzed, confidence_score
+                    FROM metrics_intelligence 
+                    WHERE dataset_id = $1 AND metric_name = $2
+                """, dataset_id, metric_name)
+                
+                if not result:
+                    # Metric doesn't exist, needs full analysis
+                    logger.debug(f"Metric {metric_name} not found in database, needs analysis")
+                    return True
+                
+                last_analyzed = result['last_analyzed']
+                
+                # Check if analyzed within last 24 hours
+                if last_analyzed:
+                    hours_since_analysis = (datetime.utcnow() - last_analyzed).total_seconds() / 3600
+                    if hours_since_analysis < 24:
+                        logger.info(f"Skipping {metric_name} - analyzed {hours_since_analysis:.1f} hours ago")
+                        self.stats['metrics_skipped'] += 1
+                        return False
+                
+                # If we get here, metric exists but needs refresh
+                logger.debug(f"Metric {metric_name} needs refresh - last analyzed {hours_since_analysis:.1f} hours ago")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"Error checking metric update status for {metric_name}: {e}")
+            # If we can't check, err on the side of updating
+            return True
+    
+    async def fetch_metrics_datasets(self) -> List[Dict[str, Any]]:
+        """Fetch all datasets with metric interface from Observe API."""
+        url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/dataset"
+        
+        async def _fetch():
+            await self.rate_limit_observe()
+            response = await self.http_client.get(url)
+            response.raise_for_status()
+            
+            data = response.json()
+            all_datasets = data.get('data', [])
+            
+            # Filter for datasets with metric interface
+            metrics_datasets = []
+            for dataset in all_datasets:
+                state = dataset.get('state', {})
+                interfaces = state.get('interfaces', [])
+                
+                # Skip if interfaces is None or not a list
+                if not interfaces or not isinstance(interfaces, list):
+                    continue
+                
+                # Check if metric interface exists
+                has_metric_interface = False
+                for iface in interfaces:
+                    if isinstance(iface, dict) and iface.get('path') == 'metric':
+                        has_metric_interface = True
+                        break
+                
+                if has_metric_interface:
+                    metrics_datasets.append(dataset)
+            
+            logger.info(f"Discovered {len(metrics_datasets)} datasets with metric interface out of {len(all_datasets)} total")
+            return metrics_datasets
+        
+        try:
+            return await self.retry_with_backoff(_fetch)
+        except Exception as e:
+            logger.error(f"Failed to fetch metrics datasets after retries: {e}")
+            raise
+    
+    async def execute_opal_query(self, dataset_id: str, query: str, time_range: str = "1h") -> Optional[List[Dict[str, Any]]]:
+        """Execute an OPAL query and return parsed results."""
+        url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/meta/export/query"
+        
+        payload = {
+            "query": {
+                "stages": [
+                    {
+                        "input": [
+                            {
+                                "inputName": "main",
+                                "datasetId": dataset_id
+                            }
+                        ],
+                        "stageID": "query_stage",
+                        "pipeline": query
+                    }
+                ]
+            },
+            "rowCount": "10000"  # Allow larger result sets for metric discovery
+        }
+        
+        params = {"interval": time_range}
+        
+        async def _execute_and_parse():
+            await self.rate_limit_observe()
+            response = await self.http_client.post(url, json=payload, params=params)
+            
+            if response.status_code != 200:
+                logger.warning(f"Query failed for dataset {dataset_id}: {response.status_code}")
+                return None
+            
+            content_type = response.headers.get('content-type', '')
+            logger.debug(f"Response content-type: {content_type} for dataset {dataset_id}")
+            
+            if 'text/csv' in content_type:
+                csv_data = response.text.strip()
+                if not csv_data:
+                    logger.debug(f"Empty CSV response for dataset {dataset_id}")
+                    return None
+                
+                lines = csv_data.split('\n')
+                logger.debug(f"CSV response has {len(lines)} lines for dataset {dataset_id}")
+                if len(lines) <= 1:
+                    logger.debug(f"Only header line found for dataset {dataset_id}")
+                    return None
+                
+                # Parse CSV into list of dictionaries
+                header = [col.strip('"') for col in lines[0].split(',')]
+                results = []
+                
+                for line in lines[1:]:
+                    if not line.strip():
+                        continue
+                    
+                    # Simple CSV parsing (handles quoted fields)
+                    values = []
+                    current_value = ""
+                    in_quotes = False
+                    
+                    for char in line:
+                        if char == '"' and not in_quotes:
+                            in_quotes = True
+                        elif char == '"' and in_quotes:
+                            in_quotes = False
+                        elif char == ',' and not in_quotes:
+                            values.append(current_value.strip('"'))
+                            current_value = ""
+                        else:
+                            current_value += char
+                    
+                    # Don't forget the last value
+                    values.append(current_value.strip('"'))
+                    
+                    # Create row dict
+                    row = {}
+                    for i, col in enumerate(header):
+                        value = values[i] if i < len(values) else ''
+                        
+                        # Parse JSON fields
+                        if col in ['labels', 'attributes', 'resource_attributes', 'meta'] and value:
+                            try:
+                                row[col] = json.loads(value)
+                            except json.JSONDecodeError:
+                                row[col] = {}
+                        else:
+                            row[col] = value
+                    
+                    results.append(row)
+                
+                return results
+            
+            elif 'application/x-ndjson' in content_type or 'application/json' in content_type:
+                # Handle NDJSON (newline-delimited JSON) format
+                ndjson_data = response.text.strip()
+                if not ndjson_data:
+                    logger.debug(f"Empty NDJSON response for dataset {dataset_id}")
+                    return None
+                
+                results = []
+                for line in ndjson_data.split('\n'):
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                        results.append(row)
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Failed to parse JSON line for dataset {dataset_id}: {e}")
+                        continue
+                
+                logger.debug(f"NDJSON response parsed {len(results)} rows for dataset {dataset_id}")
+                return results if results else None
+            
+            logger.debug(f"Unsupported content type received for dataset {dataset_id}: {content_type}")
+            return None
+        
+        try:
+            return await self.retry_with_backoff(_execute_and_parse)
+        except Exception as e:
+            logger.warning(f"Failed to execute query for dataset {dataset_id} after retries: {e}")
+            return None
+    
+    async def analyze_metric_dimensions(self, metric_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze dimensions/labels/attributes of a metric."""
+        dimension_values = {}
+        dimension_keys = set()
+        
+        for row in metric_data:
+            # Handle different dataset structures
+            dimensions = {}
+            
+            # Prometheus-style labels
+            if 'labels' in row and isinstance(row['labels'], dict):
+                dimensions.update(row['labels'])
+            
+            # OpenTelemetry attributes
+            if 'attributes' in row and isinstance(row['attributes'], dict):
+                dimensions.update(row['attributes'])
+            
+            # Resource attributes
+            if 'resource_attributes' in row and isinstance(row['resource_attributes'], dict):
+                dimensions.update(row['resource_attributes'])
+            
+            # Collect dimension keys and values
+            for key, value in dimensions.items():
+                if key not in dimension_values:
+                    dimension_values[key] = set()
+                dimension_values[key].add(str(value))
+                dimension_keys.add(key)
+        
+        # Calculate cardinalities and create summaries
+        common_dimensions = {}
+        dimension_cardinality = {}
+        sample_dimensions = {}
+        
+        for key in dimension_keys:
+            values = dimension_values.get(key, set())
+            cardinality = len(values)
+            
+            dimension_cardinality[key] = cardinality
+            
+            # Sample up to 10 values
+            sample_values = list(values)[:10]
+            sample_dimensions[key] = sample_values
+            
+            # Consider common if present in >10% of data points and not too high cardinality
+            if len(metric_data) > 0:
+                presence_rate = len([row for row in metric_data 
+                                   if any(key in dims for dims in [
+                                       row.get('labels', {}), 
+                                       row.get('attributes', {}), 
+                                       row.get('resource_attributes', {})
+                                   ] if isinstance(dims, dict))]) / len(metric_data)
+                
+                if presence_rate > 0.1 and cardinality < self.HIGH_CARDINALITY_THRESHOLD:
+                    common_dimensions[key] = {
+                        'presence_rate': presence_rate,
+                        'cardinality': cardinality,
+                        'sample_values': sample_values
+                    }
+        
+        return {
+            'common_dimensions': common_dimensions,
+            'dimension_cardinality': dimension_cardinality,
+            'sample_dimensions': sample_dimensions
+        }
+    
+    async def analyze_metric_values(self, metric_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze value patterns of a metric."""
+        values = []
+        value_type = "unknown"
+        
+        for row in metric_data:
+            if 'value' in row and row['value'] is not None and row['value'] != '':
+                try:
+                    val = float(row['value'])
+                    values.append(val)
+                except (ValueError, TypeError):
+                    continue
+        
+        if not values:
+            return {
+                'value_type': 'unknown',
+                'value_range': {},
+                'sample_values': [],
+                'data_frequency': 'unknown'
+            }
+        
+        # Determine value type
+        if all(val == int(val) for val in values[:100]):  # Check first 100
+            value_type = "integer"
+        else:
+            value_type = "float"
+        
+        # Calculate statistics
+        value_range = {
+            'min': min(values),
+            'max': max(values),
+            'avg': statistics.mean(values),
+            'count': len(values)
+        }
+        
+        if len(values) > 1:
+            value_range['std'] = statistics.stdev(values)
+        
+        # Sample values
+        sample_values = values[:20]  # First 20 values
+        
+        # Estimate data frequency based on number of data points
+        if len(values) > 1000:
+            data_frequency = "high"
+        elif len(values) > 100:
+            data_frequency = "medium"
+        else:
+            data_frequency = "low"
+        
+        return {
+            'value_type': value_type,
+            'value_range': value_range,
+            'sample_values': sample_values,
+            'data_frequency': data_frequency
+        }
+    
+    def detect_metric_type(self, metric_name: str, metric_data: List[Dict[str, Any]], first_row: Dict[str, Any]) -> str:
+        """Detect metric type based on multiple indicators."""
+        # Check explicit type field first
+        explicit_type = first_row.get('metricType') or first_row.get('type', '')
+        if explicit_type and explicit_type != 'unknown':
+            return explicit_type.lower()
+        
+        # Check for tdigest field (indicates histogram/percentile metric)
+        if any('tdigestValue' in row and row['tdigestValue'] for row in metric_data[:5]):
+            return 'tdigest'
+        
+        # Pattern-based detection from metric name
+        metric_lower = metric_name.lower()
+        
+        # Histogram patterns
+        if any(pattern in metric_lower for pattern in ['_bucket', '_histogram', 'duration_', 'latency_', '_lg_']):
+            return 'histogram'
+            
+        # Counter patterns
+        if any(pattern in metric_lower for pattern in ['_total', '_count', '_sum', 'requests_', 'errors_']):
+            return 'counter'
+            
+        # Gauge patterns
+        if any(pattern in metric_lower for pattern in ['_current', '_usage', '_utilization', 'memory_', 'cpu_']):
+            return 'gauge'
+            
+        # Default to gauge for unknown patterns
+        return 'gauge'
+    
+    def generate_query_pattern(self, metric_name: str, metric_type: str) -> str:
+        """Generate suggested OPAL query pattern based on metric type."""
+        if metric_type == 'tdigest':
+            return f'align 5m, combined: tdigest_combine(m_tdigest("{metric_name}")) | make_col p95: tdigest_quantile(combined, 0.95)'
+        elif metric_type == 'histogram':
+            return f'align 5m, combined: tdigest_combine(m_tdigest("{metric_name}")) | make_col p95: tdigest_quantile(combined, 0.95)'
+        elif metric_type in ['counter', 'gauge']:
+            return f'align 5m, total: sum(m("{metric_name}")) | statsby sum(total), group_by(service_name)'
+        else:
+            return f'filter metric = "{metric_name}" | statsby sum(value), group_by(service_name)'
+    
+    def extract_common_fields(self, metric_data: List[Dict[str, Any]]) -> List[str]:
+        """Extract commonly available fields for grouping."""
+        common_fields = []
+        if not metric_data:
+            return common_fields
+            
+        # Check for standard service fields
+        sample_row = metric_data[0]
+        if 'service_name' in sample_row:
+            common_fields.append('service_name')
+        if 'span_name' in sample_row:
+            common_fields.append('span_name')
+        if 'environment' in sample_row:
+            common_fields.append('environment')
+            
+        # Check common label fields
+        labels = sample_row.get('labels', {})
+        if isinstance(labels, dict):
+            for key in ['service', 'instance', 'job', 'method', 'status_code']:
+                if key in labels:
+                    common_fields.append(f'labels.{key}')
+                    
+        return common_fields
+    
+    async def generate_metric_analysis(self, metric_name: str, metric_data: List[Dict[str, Any]], 
+                                     dataset_name: str, dimensions: Dict[str, Any], 
+                                     values: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate rule-based analysis of the metric for fast processing."""
+        
+        # Extract any available metadata
+        first_row = metric_data[0] if metric_data else {}
+        metric_type = self.detect_metric_type(metric_name, metric_data, first_row)
+        unit = first_row.get('unit', '')
+        description = first_row.get('description', '')
+        
+        # Rule-based categorization based on metric name patterns
+        metric_lower = metric_name.lower()
+        
+        # Determine business and technical categories based on name patterns
+        if any(keyword in metric_lower for keyword in ['cpu', 'memory', 'disk', 'network', 'container', 'node', 'host']):
+            business_category = "Infrastructure"
+        elif any(keyword in metric_lower for keyword in ['service', 'application', 'app', 'request', 'response']):
+            business_category = "Application"  
+        elif any(keyword in metric_lower for keyword in ['database', 'db', 'sql', 'query', 'connection']):
+            business_category = "Database"
+        elif any(keyword in metric_lower for keyword in ['storage', 'volume', 'filesystem', 'bytes']):
+            business_category = "Storage"
+        elif any(keyword in metric_lower for keyword in ['network', 'packet', 'bandwidth', 'connection']):
+            business_category = "Network"
+        else:
+            business_category = "Monitoring"
+            
+        # Determine technical category
+        if any(keyword in metric_lower for keyword in ['error', 'fail', 'exception']):
+            technical_category = "Error"
+        elif any(keyword in metric_lower for keyword in ['latency', 'duration', 'time', 'ms', 'seconds']):
+            technical_category = "Latency"
+        elif any(keyword in metric_lower for keyword in ['count', 'total', 'number']):
+            technical_category = "Count"
+        elif any(keyword in metric_lower for keyword in ['usage', 'utilization', 'percent']):
+            technical_category = "Resource"
+        elif any(keyword in metric_lower for keyword in ['throughput', 'rate', 'per_sec']):
+            technical_category = "Throughput"
+        elif any(keyword in metric_lower for keyword in ['available', 'up', 'down', 'status']):
+            technical_category = "Availability"
+        else:
+            technical_category = "Performance"
+            
+        # Generate simple purpose and usage text
+        purpose = f"Tracks {metric_name.replace('_', ' ')} metrics for {dataset_name}"
+        if description:
+            purpose = description
+            
+        usage = f"Monitor {technical_category.lower()} issues, analyze trends, set alerts, troubleshoot {business_category.lower()} problems"
+        
+        return {
+            "inferred_purpose": purpose,
+            "typical_usage": usage,
+            "business_category": business_category,
+            "technical_category": technical_category,
+            "metric_type": metric_type,
+            "query_pattern": self.generate_query_pattern(metric_name, metric_type),
+            "common_fields": self.extract_common_fields(metric_data)
+        }
+    
+    
+    async def store_metric_intelligence(self, metric_data: Dict[str, Any]) -> None:
+        """Store metric intelligence in the database."""
+        async with self.db_pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO metrics_intelligence (
+                    dataset_id, metric_name, dataset_name, dataset_type, workspace_id,
+                    metric_type, unit, description, common_dimensions, dimension_cardinality,
+                    sample_dimensions, value_type, value_range, sample_values, data_frequency,
+                    last_seen, first_seen, inferred_purpose, typical_usage, business_category,
+                    technical_category, query_pattern, common_fields, excluded, exclusion_reason, confidence_score, last_analyzed
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+                ) ON CONFLICT (dataset_id, metric_name) DO UPDATE SET
+                    dataset_name = EXCLUDED.dataset_name,
+                    dataset_type = EXCLUDED.dataset_type,
+                    workspace_id = EXCLUDED.workspace_id,
+                    metric_type = EXCLUDED.metric_type,
+                    unit = EXCLUDED.unit,
+                    description = EXCLUDED.description,
+                    common_dimensions = EXCLUDED.common_dimensions,
+                    dimension_cardinality = EXCLUDED.dimension_cardinality,
+                    sample_dimensions = EXCLUDED.sample_dimensions,
+                    value_type = EXCLUDED.value_type,
+                    value_range = EXCLUDED.value_range,
+                    sample_values = EXCLUDED.sample_values,
+                    data_frequency = EXCLUDED.data_frequency,
+                    last_seen = EXCLUDED.last_seen,
+                    inferred_purpose = EXCLUDED.inferred_purpose,
+                    typical_usage = EXCLUDED.typical_usage,
+                    business_category = EXCLUDED.business_category,
+                    technical_category = EXCLUDED.technical_category,
+                    query_pattern = EXCLUDED.query_pattern,
+                    common_fields = EXCLUDED.common_fields,
+                    excluded = EXCLUDED.excluded,
+                    exclusion_reason = EXCLUDED.exclusion_reason,
+                    confidence_score = EXCLUDED.confidence_score,
+                    last_analyzed = EXCLUDED.last_analyzed
+            """, *[
+                metric_data['dataset_id'],
+                metric_data['metric_name'],
+                metric_data['dataset_name'],
+                metric_data['dataset_type'],
+                metric_data['workspace_id'],
+                metric_data['metric_type'],
+                metric_data['unit'],
+                metric_data['description'],
+                json.dumps(metric_data['common_dimensions']),
+                json.dumps(metric_data['dimension_cardinality']),
+                json.dumps(metric_data['sample_dimensions']),
+                metric_data['value_type'],
+                json.dumps(metric_data['value_range']),
+                list(metric_data['sample_values']) if metric_data['sample_values'] else [],
+                metric_data['data_frequency'],
+                metric_data['last_seen'],
+                metric_data['first_seen'],
+                metric_data['inferred_purpose'],
+                metric_data['typical_usage'],
+                metric_data['business_category'],
+                metric_data['technical_category'],
+                metric_data['query_pattern'],
+                metric_data['common_fields'],
+                metric_data['excluded'],
+                metric_data['exclusion_reason'],
+                metric_data['confidence_score'],
+                datetime.now()
+            ])
+    
+    async def check_dataset_has_data(self, dataset_id: str, dataset_type: str) -> bool:
+        """Check if a dataset has any data over the last 24 hours."""
+        # Simple query to check for any data
+        query = "limit 1"
+        
+        url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/meta/export/query"
+        
+        payload = {
+            "query": {
+                "stages": [
+                    {
+                        "input": [
+                            {
+                                "inputName": "main",
+                                "datasetId": dataset_id
+                            }
+                        ],
+                        "stageID": "query_stage",
+                        "pipeline": query
+                    }
+                ]
+            },
+            "rowCount": "1"
+        }
+        
+        # Check 24-hour window for data
+        params = {"interval": "24h"}
+        
+        async def _check_data():
+            logger.debug(f"checking for data in dataset {dataset_id} (type: {dataset_type}) over 24h")
+            
+            await self.rate_limit_observe()
+            response = await self.http_client.post(url, json=payload, params=params)
+            
+            if response.status_code != 200:
+                logger.debug(f"Data check failed for dataset {dataset_id}: {response.status_code}")
+                return False
+                
+            # Check if response has any data
+            content_type = response.headers.get('content-type', '')
+            response_text = response.text
+            
+            if not response_text or len(response_text.strip()) == 0:
+                logger.debug(f"Dataset {dataset_id} has no data: empty response")
+                return False
+            
+            if 'text/csv' in content_type:
+                csv_data = response_text.strip()
+                lines = csv_data.split('\n')
+                # Has data if more than just header
+                has_data = len(lines) > 1 and len(lines[1].strip()) > 0
+                logger.debug(f"Dataset {dataset_id} has data: {has_data} (CSV lines: {len(lines)})")
+                return has_data
+                
+            elif 'application/x-ndjson' in content_type or 'application/json' in content_type:
+                # Handle NDJSON format
+                ndjson_data = response_text.strip()
+                lines = [line.strip() for line in ndjson_data.split('\n') if line.strip()]
+                
+                if lines:
+                    # Check if we have actual data
+                    try:
+                        first_obj = json.loads(lines[0])
+                        has_data = len(lines) > 0
+                        logger.debug(f"Dataset {dataset_id} has data: {has_data} (NDJSON lines: {len(lines)})")
+                        return has_data
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Failed to parse NDJSON for dataset {dataset_id}: {e}")
+                        return False
+                else:
+                    logger.debug(f"Dataset {dataset_id} has no data: empty NDJSON response")
+                    return False
+            else:
+                logger.debug(f"Dataset {dataset_id} unexpected content type: {content_type}")
+                return False
+        
+        try:
+            return await self.retry_with_backoff(_check_data)
+        except Exception as e:
+            logger.warning(f"Failed to check data for dataset {dataset_id} after retries: {e}")
+            return True  # Default to including dataset if we can't check
+
+    async def analyze_dataset(self, dataset: Dict[str, Any]) -> None:
+        """Analyze a single metrics dataset and discover all metrics within it."""
+        # Extract dataset information
+        meta = dataset.get('meta', {})
+        config = dataset.get('config', {})
+        state = dataset.get('state', {})
+        
+        dataset_id = meta.get('id', '').replace('o::', '').split(':')[-1]
+        dataset_name = config.get('name', '')
+        dataset_type = state.get('kind', '')
+        workspace_id = meta.get('workspaceId', '')
+        
+        if not dataset_id or not dataset_name:
+            logger.warning(f"Skipping dataset with empty ID or name: id='{dataset_id}', name='{dataset_name}'")
+            self.stats['datasets_failed'] += 1
+            return
+        
+        logger.info(f"Analyzing metrics dataset: {dataset_name} ({dataset_id})")
+        
+        try:
+            # Check if dataset has any data before proceeding
+            logger.info(f"Dataset {dataset_name} checking for data availability")
+            has_data = await self.check_dataset_has_data(dataset_id, dataset_type)
+            
+            if not has_data:
+                logger.info(f"Dataset {dataset_name} has no data - skipping")
+                self.stats['datasets_skipped'] += 1
+                return
+            
+            logger.info(f"Dataset {dataset_name} has data - analyzing metrics")
+            
+            # Discover all unique metrics in this dataset
+            # Try multiple query variations to handle different dataset structures
+            metrics_queries = [
+                # Primary: Standard metrics dataset with timestamp field
+                """
+                filter metric != ""
+                | statsby count:count(), latest_timestamp:max(timestamp), group_by(metric)
+                | sort asc(metric)
+                """,
+                # Fallback 1: Dataset with 'time' field instead of 'timestamp'
+                """
+                filter metric != ""
+                | statsby count:count(), latest_time:max(time), group_by(metric)
+                | sort asc(metric)
+                """,
+                # Fallback 2: Try '__metric' field (some datasets use this)
+                """
+                filter __metric != ""
+                | statsby count:count(), group_by(__metric)
+                | sort asc(__metric)
+                """,
+                # Fallback 3: Try 'name' field 
+                """
+                filter name != ""
+                | statsby count:count(), group_by(name)
+                | sort asc(name)
+                """,
+                # Fallback 4: Simple grouping without filtering
+                """
+                statsby count:count(), group_by(metric)
+                | sort asc(metric)
+                | filter metric != ""
+                """,
+                # Fallback 5: Most basic - just group by any metric-like field
+                """
+                limit 1000
+                """
+            ]
+            
+            metrics_list = None
+            for i, metrics_query in enumerate(metrics_queries):
+                logger.debug(f"Trying metrics query variation {i+1} for dataset {dataset_id}")
+                metrics_list = await self.execute_opal_query(dataset_id, metrics_query, "15m")
+                if metrics_list:
+                    logger.debug(f"Query variation {i+1} succeeded for dataset {dataset_id}")
+                    
+                    # If this was the raw data fallback, extract unique metrics manually
+                    if i == len(metrics_queries) - 1:  # Last fallback query
+                        unique_metrics = set()
+                        for row in metrics_list:
+                            for field in ['metric', '__metric', 'name', 'metricName']:
+                                if field in row and row[field]:
+                                    unique_metrics.add(row[field])
+                        # Convert to expected format
+                        if unique_metrics:
+                            metrics_list = [{'metric': m} for m in sorted(unique_metrics)]
+                        else:
+                            metrics_list = None
+                            continue
+                    break
+                else:
+                    logger.debug(f"Query variation {i+1} failed for dataset {dataset_id}")
+                    # Small delay between attempts
+                    await asyncio.sleep(0.5)
+            
+            if not metrics_list:
+                logger.warning(f"No metrics found in dataset {dataset_name}")
+                self.stats['datasets_skipped'] += 1
+                return
+            
+            logger.info(f"Discovered {len(metrics_list)} unique metrics in {dataset_name}")
+            self.stats['metrics_discovered'] += len(metrics_list)
+            
+            # Analyze each metric with detailed progress tracking
+            for i, metric_info in enumerate(metrics_list):
+                metric_name = metric_info.get('metric', '')
+                if not metric_name:
+                    continue
+                
+                logger.info(f"Processing metric {i+1}/{len(metrics_list)}: {metric_name}")
+                
+                # Check if metric needs update (skip if analyzed recently)
+                needs_update = await self.check_metric_needs_update(dataset_id, metric_name, 0)
+                if not needs_update:
+                    continue
+                
+                # Fetch sample data for this specific metric
+                logger.debug(f"Fetching data for metric: {metric_name}")
+                metric_query = f"""
+                filter metric = "{metric_name}"
+                | limit 1000
+                """
+                
+                metric_data = await self.execute_opal_query(dataset_id, metric_query, "15m")
+                
+                if not metric_data:
+                    logger.debug(f"No data found for metric {metric_name}")
+                    continue
+                
+                logger.debug(f"Analyzing {len(metric_data)} data points for {metric_name}")
+                
+                # Analyze dimensions and values
+                dimensions = await self.analyze_metric_dimensions(metric_data)
+                values = await self.analyze_metric_values(metric_data)
+                
+                # Check for high cardinality dimensions
+                high_card_dims = [k for k, v in dimensions['dimension_cardinality'].items() 
+                                 if v > self.HIGH_CARDINALITY_THRESHOLD]
+                if high_card_dims:
+                    logger.warning(f"High cardinality dimensions in {metric_name}: {high_card_dims}")
+                    self.stats['high_cardinality_metrics'] += 1
+                
+                # Generate LLM analysis
+                logger.debug(f"Generating LLM analysis for {metric_name}")
+                analysis = await self.generate_metric_analysis(
+                    metric_name, metric_data, dataset_name, dimensions, values
+                )
+                
+                # Skip embedding generation - using tsvector instead for fast text search
+                
+                # Determine timestamps (handle both ISO format and nanoseconds since epoch)
+                timestamps = []
+                for row in metric_data:
+                    if 'timestamp' not in row:
+                        continue
+                    try:
+                        ts = row['timestamp']
+                        if isinstance(ts, str):
+                            # Try ISO format first
+                            if 'T' in ts or 'Z' in ts:
+                                timestamps.append(datetime.fromisoformat(ts.replace('Z', '+00:00')))
+                            else:
+                                # Try parsing as nanoseconds since epoch
+                                timestamps.append(datetime.fromtimestamp(int(ts) / 1_000_000_000))
+                        else:
+                            # Assume it's nanoseconds since epoch
+                            timestamps.append(datetime.fromtimestamp(int(ts) / 1_000_000_000))
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Failed to parse timestamp {row.get('timestamp')}: {e}")
+                        continue
+                first_seen = min(timestamps) if timestamps else datetime.now()
+                last_seen = max(timestamps) if timestamps else datetime.now()
+                
+                # Store metric intelligence
+                await self.store_metric_intelligence({
+                    'dataset_id': dataset_id,
+                    'metric_name': metric_name,
+                    'dataset_name': dataset_name,
+                    'dataset_type': dataset_type,
+                    'workspace_id': workspace_id,
+                    'metric_type': analysis['metric_type'],
+                    'unit': metric_data[0].get('unit', ''),
+                    'description': metric_data[0].get('description', ''),
+                    'common_dimensions': dimensions['common_dimensions'],
+                    'dimension_cardinality': dimensions['dimension_cardinality'],
+                    'sample_dimensions': dimensions['sample_dimensions'],
+                    'value_type': values['value_type'],
+                    'value_range': values['value_range'],
+                    'sample_values': values['sample_values'],
+                    'data_frequency': values['data_frequency'],
+                    'last_seen': last_seen,
+                    'first_seen': first_seen,
+                    'inferred_purpose': analysis['inferred_purpose'],
+                    'typical_usage': analysis['typical_usage'],
+                    'business_category': analysis['business_category'],
+                    'technical_category': analysis['technical_category'],
+                    'excluded': False,
+                    'exclusion_reason': None,
+                    'confidence_score': 1.0,
+                    'query_pattern': analysis['query_pattern'],
+                    'common_fields': analysis['common_fields']
+                })
+                
+                self.stats['metrics_processed'] += 1
+                logger.info(f"Successfully analyzed metric: {metric_name}")
+                
+                # Small delay to avoid overwhelming APIs
+                await asyncio.sleep(0.1)
+            
+            self.stats['datasets_processed'] += 1
+            logger.info(f"Successfully analyzed dataset: {dataset_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to analyze dataset {dataset_name}: {e}")
+            self.stats['datasets_failed'] += 1
+    
+    async def analyze_all_metrics(self, limit: Optional[int] = None) -> None:
+        """Analyze all metrics datasets from Observe."""
+        # Print startup banner
+        logger.info("")
+        logger.info("╔═══════════════════════════════════════════════════════════════╗")
+        logger.info("║              📊 Metrics Intelligence Analyzer                ║")
+        logger.info("║                                                               ║")
+        logger.info("║  Analyzing Observe metrics for semantic search discovery     ║")
+        logger.info("╚═══════════════════════════════════════════════════════════════╝")
+        logger.info("")
+        logger.info("🚀 Starting metrics analysis...")
+        
+        # Fetch all metrics datasets
+        datasets = await self.fetch_metrics_datasets()
+        
+        if limit:
+            datasets = datasets[:limit]
+            logger.info(f"Limited analysis to {limit} datasets")
+        
+        # Process datasets
+        for i, dataset in enumerate(datasets):
+            logger.info(f"Progress: {i+1}/{len(datasets)}")
+            await self.analyze_dataset(dataset)
+            
+            # Add delay to avoid overwhelming APIs
+            await asyncio.sleep(1.0)
+        
+        logger.info("Metrics analysis completed")
+        self.print_statistics()
+    
+    def print_statistics(self) -> None:
+        """Print analysis statistics."""
+        logger.info("")
+        logger.info("╔═══════════════════════════════════════════════════════════════╗")
+        logger.info("║                    📈 Metrics Analysis Statistics            ║")
+        logger.info("╠═══════════════════════════════════════════════════════════════╣")
+        logger.info(f"║ Datasets processed: {self.stats['datasets_processed']:>35} ║")
+        logger.info(f"║ Datasets skipped: {self.stats['datasets_skipped']:>37} ║")
+        logger.info(f"║ Datasets failed: {self.stats['datasets_failed']:>38} ║")
+        logger.info(f"║ Metrics discovered: {self.stats['metrics_discovered']:>35} ║")
+        logger.info(f"║ Metrics processed: {self.stats['metrics_processed']:>36} ║")
+        logger.info(f"║ Metrics skipped: {self.stats['metrics_skipped']:>38} ║")
+        logger.info(f"║ Metrics excluded: {self.stats['metrics_excluded']:>37} ║")
+        logger.info(f"║ High cardinality metrics: {self.stats['high_cardinality_metrics']:>27} ║")
+        logger.info("╚═══════════════════════════════════════════════════════════════╝")
+        logger.info("")
+    
+    async def cleanup(self) -> None:
+        """Cleanup resources."""
+        if self.http_client:
+            await self.http_client.aclose()
+        if self.db_pool:
+            await self.db_pool.close()
+
+async def main():
+    parser = argparse.ArgumentParser(description="Analyze Observe metrics for semantic search")
+    parser.add_argument('--limit', type=int, help='Limit number of datasets to analyze')
+    parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    
+    args = parser.parse_args()
+    
+    # Configure colored logging
+    handler = logging.StreamHandler()
+    formatter = ColoredFormatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    handler.setFormatter(formatter)
+    
+    # Set up root logger
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+    root_logger.addHandler(handler)
+    root_logger.setLevel(logging.INFO)
+    
+    if args.verbose:
+        root_logger.setLevel(logging.DEBUG)
+    
+    # Reduce noise from HTTP libraries unless in verbose mode
+    if not args.verbose:
+        logging.getLogger('httpx').setLevel(logging.WARNING)
+        logging.getLogger('httpcore').setLevel(logging.WARNING)
+    
+    analyzer = MetricsIntelligenceAnalyzer()
+    
+    try:
+        await analyzer.initialize_database()
+        await analyzer.analyze_all_metrics(limit=args.limit)
+        
+    except KeyboardInterrupt:
+        logger.info("Analysis interrupted by user")
+    except Exception as e:
+        logger.error(f"Analysis failed: {e}")
+        raise
+    finally:
+        await analyzer.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
