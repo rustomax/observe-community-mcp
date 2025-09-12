@@ -373,118 +373,120 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-async def query_semantic_graph(ctx: Context, query: str, limit: int = 10, min_score: float = 0.5, categories: Optional[str] = None) -> str:
+async def discover_datasets(ctx: Context, query: str, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
     """
-    Query the semantic dataset graph to find the most relevant datasets for analysis.
+    Discover datasets using fast full-text search on our dataset intelligence database.
     
-    This tool uses advanced LLM reasoning to intelligently rank dataset relevance,
-    providing superior domain understanding and explicit dataset detection compared
-    to traditional pattern matching approaches.
+    This tool searches through analyzed datasets with intelligent categorization and usage guidance.
+    Perfect for finding datasets by name, purpose, business area, or technical type.
     
     Args:
-        query: Natural language description of what data you're looking for
-        limit: Maximum number of recommendations to return (default: 10, max: 20)
-        min_score: Minimum relevance score threshold 0.0-1.0 (default: 0.5)
-        categories: Optional JSON array of business categories to filter by (e.g., '["Infrastructure", "Application"]')
+        query: Search query (e.g., "kubernetes logs", "service metrics", "error traces", "user sessions")
+        max_results: Maximum number of datasets to return (default: 15, max: 30)
+        business_category_filter: Filter by business category (Infrastructure, Application, Database, User, Security, etc.)
+        technical_category_filter: Filter by technical category (Logs, Metrics, Traces, Events, Resources, etc.)
+        interface_filter: Filter by interface type (log, metric, otel_span, etc.)
     
     Returns:
-        Formatted list of recommended datasets with LLM explanations
+        Formatted list of matching datasets with their purposes and usage guidance
         
     Examples:
-        query_semantic_graph("Show me service error rates and performance issues")
-        query_semantic_graph("Find CPU and memory usage for containers", categories='["Infrastructure"]')
-        query_semantic_graph("Database connection problems", limit=5, min_score=0.6)
-        query_semantic_graph("Give me top 100 lines from k8s logs")
+        discover_datasets("kubernetes logs errors")
+        discover_datasets("service metrics performance", business_category_filter="Application")
+        discover_datasets("database traces", technical_category_filter="Traces", max_results=10)
+        discover_datasets("infrastructure logs", interface_filter="log")
     """
     try:
-        # Import the LLM recommendation engine
-        from src.dataset_intelligence.llm_recommendations import query_datasets_llm
+        import asyncpg
+        from typing import List, Dict, Any
         
-        # Validate and normalize parameters
-        if limit is None:
-            limit = 10
-        if min_score is None:
-            min_score = 0.5
+        # Database connection using environment variables
+        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+        
+        # Validate parameters
+        max_results = min(max(1, max_results), 30)  # Clamp between 1 and 30
+        
+        # Connect to database and search
+        conn = await asyncpg.connect(DATABASE_URL)
+        
+        try:
+            # Use the fast search function
+            results = await conn.fetch("""
+                SELECT * FROM search_datasets($1, $2, $3, $4, $5)
+            """, query, max_results, business_category_filter, technical_category_filter, interface_filter)
             
-        limit = min(max(int(limit), 1), 20)  # Cap at 20 for LLM approach
-        min_score = max(min(float(min_score), 1.0), 0.0)  # Clamp between 0.0 and 1.0
-        
-        # Parse categories JSON if provided
-        parsed_categories = None
-        if categories:
-            try:
-                import json
-                parsed_categories = json.loads(categories)
-                if not isinstance(parsed_categories, list):
-                    return "Error: categories must be a JSON array of strings"
-            except json.JSONDecodeError as e:
-                return f"Error parsing categories JSON: {e}"
-        
-        set_session_context(ctx.session_id)
-        semantic_logger.info(f"processing query | query:{query[:100]} | limit:{limit} | min_score:{min_score} | categories:{parsed_categories}")
-        
-        # Get LLM-based recommendations
-        recommendations = await query_datasets_llm(
-            query=query,
-            limit=limit,
-            min_score=min_score,
-            categories=parsed_categories
-        )
-        
-        if not recommendations:
-            return f"""**Dataset Recommendations - No Results Found**
+            if not results:
+                return f"""# 🔍 Dataset Discovery Results
 
-Your query: "{query}"
+**Query**: "{query}"
+**Found**: 0 datasets
 
-No datasets met the minimum relevance threshold of {min_score:.1f}.
+**No matching datasets found.**
 
-**Suggestions:**
-- Try lowering the min_score parameter (e.g., 0.3)
-- Use more descriptive terms in your query
-- Remove category filters if you used any
-- Check available datasets with: `list_datasets()`
+**Suggestions**:
+- Try broader terms (e.g., "logs" instead of "error logs")
+- Remove filters to see all results
+- Check available categories: Infrastructure, Application, Database, User, Security, Monitoring
 
-**Available business categories:** Infrastructure, Application, Monitoring, Database, Security, Network, Storage"""
-        
-        # Format results
-        result = f"**Dataset Recommendations for:** {query}\n\n"
-        result += f"**Found {len(recommendations)} relevant datasets** (min score: {min_score:.1f}):\n\n"
-        
-        for i, rec in enumerate(recommendations, 1):
-            result += f"**{i}. {rec.name}**\n"
-            result += f"   - **Dataset ID:** `{rec.dataset_id}`\n"
-            result += f"   - **Type:** {rec.dataset_type} | **Category:** {rec.business_category}/{rec.technical_category}\n"
-            result += f"   - **Relevance Score:** {rec.relevance_score:.3f} (confidence: {rec.confidence:.2f})\n"
+**Available datasets**: {await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")} total datasets in the database.
+"""
             
-            # Show LLM explanation
-            result += f"   - **Why recommended:** {rec.explanation}\n"
+            # Format results
+            formatted_results = []
+            for i, row in enumerate(results, 1):
+                # Format interface types
+                interfaces_str = ""
+                if row['interface_types']:
+                    interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
+                
+                result_text = f"""## {i}. {row['dataset_name']}
+**Dataset ID**: `{row['dataset_id']}`
+**Category**: {row['business_category']} / {row['technical_category']}
+{interfaces_str}**Purpose**: {row['inferred_purpose']}
+**Relevance Score**: {row['rank']:.3f}
+"""
+                formatted_results.append(result_text)
             
-            if rec.matching_factors:
-                factors_str = ", ".join(rec.matching_factors[:4])
-                if len(rec.matching_factors) > 4:
-                    factors_str += f" (+{len(rec.matching_factors)-4} more)"
-                result += f"   - **Key Factors:** {factors_str}\n"
+            # Get summary stats
+            total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")
+            category_counts = await conn.fetch("""
+                SELECT business_category, COUNT(*) as count 
+                FROM datasets_intelligence 
+                WHERE excluded = FALSE 
+                GROUP BY business_category 
+                ORDER BY count DESC 
+                LIMIT 5
+            """)
             
-            if rec.key_fields:
-                key_fields_str = ", ".join(rec.key_fields[:5])
-                if len(rec.key_fields) > 5:
-                    key_fields_str += f" (+{len(rec.key_fields)-5} more)"
-                result += f"   - **Key Fields:** {key_fields_str}\n"
+            category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
             
-            result += "\n"
-        
-        result += f"**Next Steps:**\n"
-        result += f"1. Use `get_dataset_info()` to see full schema\n"
-        result += f"2. Use `execute_opal_query()` to sample data"
-        
-        semantic_logger.info(f"query completed | results:{len(recommendations)}")
-        return result
-        
+            return f"""# 🎯 Dataset Discovery Results
+
+**Query**: "{query}"
+**Found**: {len(results)} datasets (showing top {max_results})
+**Search Scope**: {total_datasets} total datasets | Top categories: {category_summary}
+
+{chr(10).join(formatted_results)}
+
+---
+💡 **Next Steps**: 
+- Use `get_dataset_info()` with the dataset ID to see full schema
+- Use `execute_opal_query()` with the dataset ID to query the data
+"""
+            
+        finally:
+            await conn.close()
+            
     except ImportError as e:
-        return f"Semantic graph system not available. Missing dependencies: {str(e)}"
+        return f"""# ❌ Dataset Discovery Error
+**Issue**: Required database library not available
+**Error**: {str(e)}
+**Solution**: The dataset intelligence system requires asyncpg. Please install it with: pip install asyncpg"""
     except Exception as e:
-        semantic_logger.error(f"semantic query failed | error:{str(e)}")
-        return f"Error in semantic graph: {str(e)}"
+        return f"""# ❌ Dataset Discovery Error
+**Issue**: Database query failed
+**Error**: {str(e)}
+**Solution**: Check database connection and ensure dataset intelligence has been populated."""
 
 
 # @mcp.tool() # COMMENTED OUT - Tool disabled as per user request
@@ -1020,10 +1022,10 @@ Use this chart to visualize your OPAL query results. The image is optimized for 
 if HAS_OPENAI_AGENTS:
     # Internal tool wrappers for agent to call existing MCP functions
     @function_tool
-    async def internal_query_semantic_graph(query: str, limit: int = 5) -> str:
-        """Find relevant datasets using existing MCP tool"""
+    async def internal_discover_datasets(query: str, limit: int = 5) -> str:
+        """Find relevant datasets using fast database search"""
         try:
-            session_logger.info(f"🔧 TOOL CALLED: internal_query_semantic_graph(query='{query}', limit={limit})")
+            session_logger.info(f"🔧 TOOL CALLED: internal_discover_datasets(query='{query}', limit={limit})")
             
             # Try to get context for progress updates (may fail if not in MCP context)
             try:
@@ -1033,37 +1035,40 @@ if HAS_OPENAI_AGENTS:
             except RuntimeError:
                 pass  # No context available, skip progress updates
             
-            # Import and call the underlying implementation directly
-            from src.dataset_intelligence.llm_recommendations import query_datasets_llm
+            # Use fast database search directly
+            import asyncpg
+            DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
             
-            # Call the actual implementation
-            recommendations = await query_datasets_llm(
-                query=query,
-                limit=min(max(int(limit), 1), 20),
-                min_score=0.5,
-                categories=None
-            )
-            
-            # Format the results as JSON string like the MCP tool does
-            import json
-            if recommendations:
-                result = json.dumps([{
-                    'id': rec.dataset_id,
-                    'name': rec.name, 
-                    'dataset_type': rec.dataset_type,
-                    'business_category': rec.business_category,
-                    'technical_category': rec.technical_category,
-                    'score': rec.relevance_score,
-                    'explanation': rec.explanation
-                } for rec in recommendations], indent=2)
-            else:
-                result = "[]"
+            conn = await asyncpg.connect(DATABASE_URL)
+            try:
+                # Use the fast search function
+                results = await conn.fetch("""
+                    SELECT * FROM search_datasets($1, $2, $3, $4, $5)
+                """, query, min(max(int(limit), 1), 20), None, None, None)
                 
-            session_logger.info(f"🔧 TOOL RESULT: Found {len(recommendations)} datasets, {len(str(result))} chars of data")
-            return result
+                # Format the results as JSON string like the MCP tool does
+                import json
+                if results:
+                    result = json.dumps([{
+                        'id': row['dataset_id'],
+                        'name': row['dataset_name'], 
+                        'dataset_type': 'Event',  # Default since we don't have this in the search results
+                        'business_category': row['business_category'],
+                        'technical_category': row['technical_category'],
+                        'score': float(row['rank']),
+                        'explanation': row['inferred_purpose']
+                    } for row in results], indent=2)
+                else:
+                    result = "[]"
+                    
+                session_logger.info(f"🔧 TOOL RESULT: Found {len(results)} datasets, {len(str(result))} chars of data")
+                return result
+            finally:
+                await conn.close()
+                
         except Exception as e:
-            session_logger.error(f"🔧 TOOL ERROR: internal_query_semantic_graph failed: {str(e)}")
-            return f"Error querying semantic graph: {str(e)}"
+            session_logger.error(f"🔧 TOOL ERROR: internal_discover_datasets failed: {str(e)}")
+            return f"Error querying datasets: {str(e)}"
 
     @function_tool
     async def internal_generate_opal_query(nlp_query: str, dataset_ids: str, preferred_interface: str = None) -> str:
@@ -1252,7 +1257,7 @@ if HAS_OPENAI_AGENTS:
         
         INVESTIGATION METHODOLOGY:
         1. ANALYZE the user's query and form initial hypotheses
-        2. DISCOVER relevant datasets using internal_query_semantic_graph
+        2. DISCOVER relevant datasets using internal_discover_datasets
         3. EXPLORE available data using internal_list_datasets if needed
         4. UNDERSTAND data structure using internal_get_dataset_info
         5. GENERATE valid OPAL queries using internal_generate_opal_query (TRY FIRST for complex analytics!)
@@ -1317,7 +1322,7 @@ if HAS_OPENAI_AGENTS:
         Remember: Combine deep reasoning with real data for superior investigations.
         """,
         tools=[
-            internal_query_semantic_graph,
+            internal_discover_datasets,
             internal_list_datasets,
             internal_get_dataset_info,
             internal_generate_opal_query,
@@ -1386,7 +1391,7 @@ if HAS_OPENAI_AGENTS:
 **Solution**: Please set the OPENAI_API_KEY environment variable to enable AI-powered investigations.
 
 You can still use individual MCP tools manually:
-- `query_semantic_graph()` to find datasets
+- `discover_datasets()` to find datasets
 - `execute_opal_query()` to get metrics  
 - `create_visualization()` to chart results
                 """.format(investigation_query=investigation_query).strip()
@@ -1405,7 +1410,7 @@ You can still use individual MCP tools manually:
                 
                 MANDATORY: You MUST call internal tools to get real data. Follow these steps exactly:
                 
-                1. FIRST: Call internal_query_semantic_graph with query: "{investigation_query}"
+                1. FIRST: Call internal_discover_datasets with query: "{investigation_query}"
                 2. SECOND: Based on results, call internal_execute_opal_query with a relevant dataset
                 3. THIRD: Analyze the data you received and call more tools if needed
                 4. FOURTH: Create visualizations if you have data to chart
@@ -1513,7 +1518,7 @@ else:
         
         try:
             # Step 1: Find relevant datasets
-            semantic_results = await query_semantic_graph(ctx, query=investigation_query, limit=5)
+            semantic_results = await discover_datasets(ctx, query=investigation_query, max_results=5)
             
             # Step 2: Parse results to extract dataset IDs
             import json
@@ -1535,7 +1540,7 @@ else:
 **Issue**: OpenAI Agents SDK not available, and no relevant datasets found.
 
 **Next Steps**: 
-1. Try using `query_semantic_graph()` to find datasets manually
+1. Try using `discover_datasets()` to find datasets manually
 2. Use `execute_opal_query()` to get specific metrics
 3. Use `create_visualization()` to chart results
 
@@ -1611,7 +1616,7 @@ pip install openai-agents>=0.1.0
 
 **Available Datasets**: {len(datasets)} found, but unable to query.
 
-**Manual Steps**: Use `query_semantic_graph()` and `execute_opal_query()` directly.
+**Manual Steps**: Use `discover_datasets()` and `execute_opal_query()` directly.
                 """.strip()
                 
         except Exception as e:
@@ -1631,7 +1636,7 @@ pip install openai-agents>=0.1.0
 ```
 
 **Alternative**: Use individual MCP tools manually:
-- `query_semantic_graph()` to find datasets
+- `discover_datasets()` to find datasets
 - `execute_opal_query()` to get metrics  
 - `create_visualization()` to chart results
             """.strip()
@@ -1647,7 +1652,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
     Perfect for finding metrics by name, purpose, dimensions, or use case.
     
     IMPORTANT: This tool provides error FREQUENCIES and performance metrics. For complete error analysis 
-    (actual error messages, stack traces), follow up with log dataset queries using query_semantic_graph().
+    (actual error messages, stack traces), follow up with log dataset queries using discover_datasets().
     
     Args:
         query: Search query (e.g., "error rate", "cpu usage", "database latency", "service performance")
@@ -1799,7 +1804,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 ---
 💡 **Next Steps**: 
 - Use `execute_opal_query()` with the dataset ID to query specific metrics
-- Use `query_semantic_graph()` to find related datasets  
+- Use `discover_datasets()` to find related datasets  
 - Use `create_visualization()` to chart the metric data
 """
             
