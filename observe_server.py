@@ -201,7 +201,7 @@ async def list_datasets(ctx: Context, match: Optional[str] = None, workspace_id:
         interface=interface
     )
 
-@mcp.tool()
+# @mcp.tool()  # COMMENTED OUT - Use enhanced discover_datasets() with schema info instead
 @requires_scopes(['admin', 'read'])
 async def get_dataset_info(ctx: Context, dataset_id: str) -> str:
     """
@@ -398,6 +398,7 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
     """
     try:
         import asyncpg
+        import json
         from typing import List, Dict, Any
         
         # Database connection using environment variables
@@ -434,11 +435,55 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
             # Format results
             formatted_results = []
             for i, row in enumerate(results, 1):
+                # Parse JSON fields safely
+                try:
+                    query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
+                    nested_field_paths = json.loads(row.get('nested_field_paths', '{}')) if row.get('nested_field_paths') else {}
+                    nested_field_analysis = json.loads(row.get('nested_field_analysis', '{}')) if row.get('nested_field_analysis') else {}
+                    common_use_cases = row.get('common_use_cases', []) or []
+                except (json.JSONDecodeError, TypeError):
+                    query_patterns = []
+                    nested_field_paths = {}
+                    nested_field_analysis = {}
+                    common_use_cases = []
+
                 # Format interface types
                 interfaces_str = ""
                 if row['interface_types']:
                     interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
-                
+
+                # Format key fields
+                key_fields_str = ""
+                if row.get('key_fields'):
+                    key_fields = row['key_fields'][:4]  # Show top 4
+                    key_fields_str = f"**Key Fields**: {', '.join(key_fields)}"
+                    if len(row['key_fields']) > 4:
+                        key_fields_str += f" (+{len(row['key_fields'])-4} more)"
+                    key_fields_str += "\n"
+
+                # Format nested field information
+                nested_info_str = ""
+                if nested_field_paths:
+                    important_fields = nested_field_analysis.get('important_fields', []) if nested_field_analysis else []
+                    if important_fields:
+                        nested_text = ', '.join(important_fields[:3])
+                        if len(important_fields) > 3:
+                            nested_text += f" (+{len(important_fields)-3} more)"
+                        nested_info_str = f"**Nested Fields**: {nested_text}\n"
+
+                # Format query guidance
+                query_guidance_str = ""
+                if query_patterns and len(query_patterns) > 0:
+                    primary_pattern = query_patterns[0]
+                    if isinstance(primary_pattern, dict) and primary_pattern.get('pattern'):
+                        query_guidance_str = f"**Query Example**: `{primary_pattern['pattern']}`\n"
+
+                # Format usage scenarios
+                usage_str = ""
+                if common_use_cases:
+                    usage_scenarios = common_use_cases[:2]  # Show top 2
+                    usage_str = f"**Common Uses**: {', '.join(usage_scenarios)}\n"
+
                 # Calculate combined relevance score
                 combined_score = max(row['rank'], row.get('similarity_score', 0))
                 score_details = []
@@ -451,6 +496,8 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 **Dataset ID**: `{row['dataset_id']}`
 **Category**: {row['business_category']} / {row['technical_category']}
 {interfaces_str}**Purpose**: {row['inferred_purpose']}
+**Usage**: {row.get('typical_usage', 'Not specified')}
+{key_fields_str}{nested_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
 **Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
                 formatted_results.append(result_text)
@@ -1717,9 +1764,15 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
                 try:
                     dimensions = json.loads(row['common_dimensions']) if row['common_dimensions'] else {}
                     value_range = json.loads(row['value_range']) if row['value_range'] else {}
+                    query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
+                    nested_field_paths = json.loads(row.get('nested_field_paths', '{}')) if row.get('nested_field_paths') else {}
+                    nested_field_analysis = json.loads(row.get('nested_field_analysis', '{}')) if row.get('nested_field_analysis') else {}
                 except (json.JSONDecodeError, TypeError):
                     dimensions = {}
                     value_range = {}
+                    query_patterns = []
+                    nested_field_paths = {}
+                    nested_field_analysis = {}
                 
                 # Format dimension keys
                 dim_keys = list(dimensions.keys()) if dimensions else []
@@ -1736,15 +1789,31 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
                 # Format last seen
                 last_seen = row['last_seen'].strftime('%Y-%m-%d %H:%M') if row['last_seen'] else 'Unknown'
                 
-                # Format metric type and query pattern
+                # Format metric type and query patterns
                 metric_type = row.get('metric_type', 'unknown')
-                query_pattern = row.get('query_pattern', '')
                 common_fields = row.get('common_fields', [])
-                
-                # Create query guidance section
+
+                # Create enhanced query guidance section
                 query_guidance = ""
-                if query_pattern:
-                    query_guidance = f"**Query Pattern**: `{query_pattern}`\n"
+                if query_patterns and len(query_patterns) > 0:
+                    # Show primary query pattern
+                    primary_pattern = query_patterns[0]
+                    pattern_text = primary_pattern.get('pattern', '') if isinstance(primary_pattern, dict) else str(primary_pattern)
+                    if pattern_text:
+                        query_guidance = f"**Query Pattern**: `{pattern_text}`\n"
+                        # Show use case if available
+                        if isinstance(primary_pattern, dict) and primary_pattern.get('use_case'):
+                            query_guidance += f"**Use Case**: {primary_pattern['use_case']}\n"
+
+                # Add nested field information
+                if nested_field_paths:
+                    important_fields = nested_field_analysis.get('important_fields', []) if nested_field_analysis else []
+                    if important_fields:
+                        nested_text = ', '.join(important_fields[:3])
+                        if len(important_fields) > 3:
+                            nested_text += f" (+{len(important_fields)-3} more)"
+                        query_guidance += f"**Key Nested Fields**: {nested_text}\n"
+
                 if common_fields:
                     field_list = ', '.join(common_fields[:3])
                     if len(common_fields) > 3:

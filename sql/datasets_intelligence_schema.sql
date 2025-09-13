@@ -29,9 +29,14 @@ CREATE TABLE IF NOT EXISTS datasets_intelligence (
     inferred_purpose TEXT NOT NULL,
     typical_usage TEXT NOT NULL,
     
-    -- Key schema information  
+    -- Key schema information
     key_fields TEXT[], -- Important field names for investigations
     sample_data_summary TEXT, -- Brief summary of sample data patterns
+
+    -- Query assistance (enhanced with nested field support)
+    query_patterns JSONB, -- Multiple OPAL query patterns: [{"pattern": "...", "description": "...", "use_case": "..."}]
+    nested_field_paths JSONB, -- Important nested field paths: {"field_path": {"frequency": 0.8, "sample_values": [...], "cardinality": 50}}
+    nested_field_analysis JSONB, -- Analysis of nested fields: {"important_fields": [...], "field_types": {...}, "max_depth": 3}
     
     -- Usage patterns
     common_use_cases TEXT[], -- Array of common investigation scenarios
@@ -63,6 +68,9 @@ CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_name_trgm ON datasets_intel
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_purpose_trgm ON datasets_intelligence USING GIN (inferred_purpose gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_usage_trgm ON datasets_intelligence USING GIN (typical_usage gin_trgm_ops);
 
+-- Drop existing functions to avoid return type conflicts
+DROP FUNCTION IF EXISTS search_datasets(text,integer,text,text,text);
+
 -- Fast search function
 CREATE OR REPLACE FUNCTION search_datasets(
     search_query TEXT,
@@ -72,23 +80,37 @@ CREATE OR REPLACE FUNCTION search_datasets(
     interface_filter TEXT DEFAULT NULL
 )
 RETURNS TABLE (
-    dataset_id VARCHAR(255),
-    dataset_name VARCHAR(500),
+    dataset_id TEXT,
+    dataset_name TEXT,
     inferred_purpose TEXT,
-    business_category VARCHAR(50),
-    technical_category VARCHAR(50),
+    typical_usage TEXT,
+    business_category TEXT,
+    technical_category TEXT,
     interface_types TEXT[],
+    key_fields TEXT[],
+    query_patterns JSONB,
+    nested_field_paths JSONB,
+    nested_field_analysis JSONB,
+    common_use_cases TEXT[],
+    data_frequency TEXT,
     rank REAL
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
-        di.dataset_id,
-        di.dataset_name,
+    SELECT
+        di.dataset_id::TEXT,
+        di.dataset_name::TEXT,
         di.inferred_purpose,
-        di.business_category,
-        di.technical_category,
+        di.typical_usage,
+        di.business_category::TEXT,
+        di.technical_category::TEXT,
         di.interface_types,
+        di.key_fields,
+        di.query_patterns,
+        di.nested_field_paths,
+        di.nested_field_analysis,
+        di.common_use_cases,
+        di.data_frequency::TEXT,
         ts_rank(di.search_vector, plainto_tsquery('english', search_query)) AS rank
     FROM datasets_intelligence di
     WHERE 
@@ -103,6 +125,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Drop existing enhanced function to avoid return type conflicts
+DROP FUNCTION IF EXISTS search_datasets_enhanced(text,integer,text,text,text,real);
+
 -- Enhanced search function with trigram similarity
 CREATE OR REPLACE FUNCTION search_datasets_enhanced(
     search_query TEXT,
@@ -113,12 +138,19 @@ CREATE OR REPLACE FUNCTION search_datasets_enhanced(
     similarity_threshold REAL DEFAULT 0.2
 )
 RETURNS TABLE (
-    dataset_id VARCHAR(255),
-    dataset_name VARCHAR(500),
+    dataset_id TEXT,
+    dataset_name TEXT,
     inferred_purpose TEXT,
-    business_category VARCHAR(50),
-    technical_category VARCHAR(50),
+    typical_usage TEXT,
+    business_category TEXT,
+    technical_category TEXT,
     interface_types TEXT[],
+    key_fields TEXT[],
+    query_patterns JSONB,
+    nested_field_paths JSONB,
+    nested_field_analysis JSONB,
+    common_use_cases TEXT[],
+    data_frequency TEXT,
     rank REAL,
     similarity_score REAL
 ) AS $$
@@ -131,12 +163,19 @@ BEGIN
     RETURN QUERY
     WITH fulltext_results AS (
         SELECT
-            di.dataset_id,
-            di.dataset_name,
+            di.dataset_id::TEXT,
+            di.dataset_name::TEXT,
             di.inferred_purpose,
-            di.business_category,
-            di.technical_category,
+            di.typical_usage,
+            di.business_category::TEXT,
+            di.technical_category::TEXT,
             di.interface_types,
+            di.key_fields,
+            di.query_patterns,
+            di.nested_field_paths,
+            di.nested_field_analysis,
+            di.common_use_cases,
+            di.data_frequency::TEXT,
             ts_rank(di.search_vector, plainto_tsquery('english', search_query)) AS rank,
             0.0::REAL AS similarity_score
         FROM datasets_intelligence di
@@ -149,12 +188,19 @@ BEGIN
     ),
     similarity_results AS (
         SELECT
-            di.dataset_id,
-            di.dataset_name,
+            di.dataset_id::TEXT,
+            di.dataset_name::TEXT,
             di.inferred_purpose,
-            di.business_category,
-            di.technical_category,
+            di.typical_usage,
+            di.business_category::TEXT,
+            di.technical_category::TEXT,
             di.interface_types,
+            di.key_fields,
+            di.query_patterns,
+            di.nested_field_paths,
+            di.nested_field_analysis,
+            di.common_use_cases,
+            di.data_frequency::TEXT,
             0.0::REAL AS rank,
             GREATEST(
                 similarity(unaccent(lower(di.dataset_name)), cleaned_query),

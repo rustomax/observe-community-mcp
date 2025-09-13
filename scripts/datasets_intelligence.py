@@ -134,7 +134,8 @@ class DatasetsIntelligenceAnalyzer:
             'datasets_skipped': 0,
             'datasets_failed': 0,
             'datasets_excluded': 0,
-            'datasets_empty': 0
+            'datasets_empty': 0,
+            'datasets_not_targeted': 0
         }
         
         # Rate limiting configuration
@@ -206,6 +207,70 @@ class DatasetsIntelligenceAnalyzer:
             await conn.execute(schema_sql)
             logger.info("Datasets intelligence schema created/verified")
     
+    def should_include_dataset(self, dataset: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+        """
+        Determine if a dataset should be included in analysis.
+        Uses the same filtering logic as the working list_datasets function.
+        Focus on logs, traces, resources, and reference tables only.
+        """
+        config = dataset.get('config', {})
+        state = dataset.get('state', {})
+
+        name = config.get('name', '').lower()
+        dataset_type = state.get('kind', '')
+        interfaces = state.get('interfaces', [])
+
+        # Extract interface paths (following the same logic as _format_dataset_interfaces)
+        interface_paths = []
+        if interfaces:
+            for iface in interfaces:
+                if isinstance(iface, dict):
+                    # Extract meaningful value from interface dict (same logic as working code)
+                    if 'path' in iface:
+                        interface_paths.append(iface['path'])
+                    elif 'name' in iface:
+                        interface_paths.append(iface['name'])
+                    elif 'type' in iface:
+                        interface_paths.append(iface['type'])
+                elif iface is not None:
+                    interface_paths.append(str(iface))
+
+        # Target interfaces we want to analyze (based on user requirements)
+        target_interfaces = {
+            'log',              # Log data - critical for error investigation
+            'otel_span',        # OpenTelemetry traces - critical for request tracing
+        }
+
+        # Target dataset types we want to analyze (these are dataset types, not interfaces)
+        target_dataset_types = {
+            'Resource',         # Resource data - for inventory and configuration
+            'reference_table'   # Reference/lookup tables
+        }
+
+        # Include if dataset has any of our target interfaces
+        if any(iface in target_interfaces for iface in interface_paths):
+            return True, None
+
+        # Include if dataset is one of our target types
+        if dataset_type in target_dataset_types:
+            return True, None
+
+        # For datasets without clear interfaces, check for valuable patterns in name
+        valuable_patterns = [
+            # Configuration and inventory data
+            'config', 'inventory', 'catalog', 'schema',
+            # Reference/lookup data
+            'reference', 'lookup', 'mapping', 'dimension',
+            # Entity data
+            'entity', 'service', 'host', 'node', 'pod'
+        ]
+
+        if any(pattern in name for pattern in valuable_patterns):
+            return True, None
+
+        # Exclude everything else
+        return False, "not_target_interface"
+
     def should_exclude_dataset(self, dataset: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """
         Determine if a dataset should be excluded from analysis.
@@ -252,25 +317,71 @@ class DatasetsIntelligenceAnalyzer:
         
         return False, None
     
-    async def fetch_all_datasets(self) -> List[Dict[str, Any]]:
-        """Fetch all datasets from Observe API."""
-        url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/dataset"
-        
-        async def _fetch():
+    async def fetch_targeted_datasets(self) -> List[Dict[str, Any]]:
+        """Fetch only the datasets we want to analyze using targeted API calls."""
+        base_url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/dataset"
+        all_datasets = []
+
+        # Define the specific combinations we want (excluding metrics - covered by metrics intelligence)
+        target_combinations = [
+            # Event datasets with interfaces (logs only)
+            {"type": "Event", "interface": "log"},
+
+            # Interval datasets with interfaces (traces only)
+            {"type": "Interval", "interface": "otel_span"},
+
+            # Resource datasets (no interface filter)
+            {"type": "Resource"},
+        ]
+
+        async def _fetch_with_params(params: Dict[str, Any]):
             await self.rate_limit_observe()
-            response = await self.http_client.get(url)
+            response = await self.http_client.get(base_url, params=params)
             response.raise_for_status()
-            
+
             data = response.json()
             datasets = data.get('data', [])
-            logger.info(f"Discovered {len(datasets)} datasets from Observe")
             return datasets
-        
-        try:
-            return await self.retry_with_backoff(_fetch)
-        except Exception as e:
-            logger.error(f"Failed to fetch datasets after retries: {e}")
-            raise
+
+        logger.info("🎯 Fetching targeted datasets using efficient API calls...")
+
+        for combo in target_combinations:
+            try:
+                # Prepare API parameters
+                params = {"type": combo["type"]}
+                if "interface" in combo:
+                    params["interface"] = [combo["interface"]]  # API expects a list
+
+                # Log what we're fetching
+                if "interface" in combo:
+                    logger.info(f"   Fetching {combo['type']} datasets with {combo['interface']} interface...")
+                else:
+                    logger.info(f"   Fetching {combo['type']} datasets...")
+
+                datasets = await self.retry_with_backoff(lambda: _fetch_with_params(params))
+
+                if datasets:
+                    logger.info(f"   → Found {len(datasets)} {combo['type']}{' + ' + combo.get('interface', '') if 'interface' in combo else ''} datasets")
+                    all_datasets.extend(datasets)
+                else:
+                    logger.info(f"   → No datasets found for this combination")
+
+            except Exception as e:
+                logger.error(f"Failed to fetch {combo} datasets: {e}")
+                # Continue with other combinations rather than failing completely
+                continue
+
+        # Remove duplicates (in case a dataset appears in multiple calls)
+        seen_ids = set()
+        unique_datasets = []
+        for dataset in all_datasets:
+            dataset_id = dataset.get('meta', {}).get('id') or dataset.get('id')
+            if dataset_id and dataset_id not in seen_ids:
+                seen_ids.add(dataset_id)
+                unique_datasets.append(dataset)
+
+        logger.info(f"📊 Total unique targeted datasets: {len(unique_datasets)} (from {len(all_datasets)} total calls)")
+        return unique_datasets
     
     async def check_dataset_needs_update(self, dataset_id: str, name: str, dataset_type: str, interfaces: List[str]) -> bool:
         """
@@ -328,6 +439,459 @@ class DatasetsIntelligenceAnalyzer:
             # If we can't check, err on the side of updating
             return True
     
+    async def fetch_sample_data(self, dataset_id: str, dataset_type: str, sample_size: int = 10) -> List[Dict[str, Any]]:
+        """Fetch sample data from a dataset to analyze actual field structure."""
+        # Use different OPAL verbs based on dataset type
+        if dataset_type == "Resource":
+            query = f"topk {sample_size}"
+        else:
+            query = f"limit {sample_size}"
+
+        url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/meta/export/query"
+
+        payload = {
+            "query": {
+                "stages": [
+                    {
+                        "input": [
+                            {
+                                "inputName": "main",
+                                "datasetId": dataset_id
+                            }
+                        ],
+                        "stageID": "query_stage",
+                        "pipeline": query
+                    }
+                ]
+            },
+            "rowCount": str(sample_size),
+            "format": "ndjson"
+        }
+
+        # Check 24-hour window for data
+        params = {"interval": "24h"}
+
+        async def _fetch_sample():
+            logger.debug(f"Fetching sample data from dataset {dataset_id}")
+
+            await self.rate_limit_observe()
+            response = await self.http_client.post(url, json=payload, params=params)
+
+            if response.status_code != 200:
+                logger.warning(f"Sample data fetch failed for dataset {dataset_id}: {response.status_code}")
+                return []
+
+            # Parse NDJSON response
+            sample_data = []
+            response_text = response.text.strip()
+
+            if response_text:
+                lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+
+                for line in lines:
+                    try:
+                        sample_data.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        logger.debug(f"Failed to parse sample data line: {e}")
+                        continue
+
+            logger.debug(f"Fetched {len(sample_data)} sample records from dataset {dataset_id}")
+            return sample_data
+
+        try:
+            return await self.retry_with_backoff(_fetch_sample)
+        except Exception as e:
+            logger.warning(f"Failed to fetch sample data for dataset {dataset_id}: {e}")
+            return []
+
+    async def analyze_sample_data_structure(self, dataset_id: str, dataset_type: str, interface_types: List[str], technical_category: str) -> Dict[str, Any]:
+        """Analyze sample data to understand nested field structure and generate validated query patterns."""
+        try:
+            # Fetch actual sample data from the dataset
+            sample_data = await self.fetch_sample_data(dataset_id, dataset_type)
+
+            if not sample_data:
+                # Fallback to basic patterns if no sample data available
+                logger.debug(f"No sample data available for {dataset_id}, using fallback patterns")
+                return await self.generate_fallback_patterns(dataset_type, interface_types, technical_category)
+
+            logger.debug(f"Analyzing structure of {len(sample_data)} sample records for dataset {dataset_id}")
+
+            # Analyze actual field structure from sample data
+            field_analysis = self.analyze_field_structure(sample_data)
+
+            # Generate validated query patterns based on actual fields
+            query_patterns = self.generate_field_aware_patterns(field_analysis, technical_category, dataset_type)
+
+            # Analyze nested fields from sample data
+            nested_analysis = self.analyze_nested_fields_from_sample(sample_data)
+
+            return {
+                'query_patterns': query_patterns,
+                'nested_field_paths': nested_analysis.get('nested_field_paths', {}),
+                'nested_field_analysis': nested_analysis.get('nested_field_analysis', {}),
+                'sample_schema_fields': list(field_analysis.get('top_level_fields', [])),
+            }
+
+        except Exception as e:
+            logger.warning(f"Error in sample data structure analysis for {dataset_id}: {e}")
+            # Fallback to basic patterns on error
+            return await self.generate_fallback_patterns(dataset_type, interface_types, technical_category)
+
+    def analyze_field_structure(self, sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze field structure from sample data."""
+        if not sample_data:
+            return {}
+
+        field_frequency = {}
+        field_types = {}
+        field_samples = {}
+
+        # Analyze all fields across samples
+        for record in sample_data:
+            self._analyze_record_fields(record, field_frequency, field_types, field_samples)
+
+        total_records = len(sample_data)
+
+        # Calculate field statistics
+        top_level_fields = set()
+        common_fields = {}
+
+        for field_path, frequency in field_frequency.items():
+            presence_rate = frequency / total_records
+
+            # Track top-level fields
+            if '.' not in field_path:
+                top_level_fields.add(field_path)
+
+            # Consider fields present in >50% of records as common
+            if presence_rate > 0.5:
+                common_fields[field_path] = {
+                    'frequency': presence_rate,
+                    'type': field_types.get(field_path, 'unknown'),  # Safe access with default
+                    'samples': list(field_samples.get(field_path, set()))[:5]  # Safe access with default
+                }
+
+        return {
+            'total_records': total_records,
+            'top_level_fields': top_level_fields,
+            'common_fields': common_fields,
+            'all_field_frequency': field_frequency
+        }
+
+    def _analyze_record_fields(self, obj: Any, field_frequency: Dict, field_types: Dict, field_samples: Dict, prefix: str = "") -> None:
+        """Recursively analyze fields in a record."""
+        try:
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    try:
+                        # Handle special characters in field names
+                        safe_key = str(key) if key is not None else "null_key"
+                        field_path = f"{prefix}.{safe_key}" if prefix else safe_key
+
+                        # Track field frequency
+                        if field_path not in field_frequency:
+                            field_frequency[field_path] = 0
+                            field_samples[field_path] = set()
+                        field_frequency[field_path] += 1
+
+                        # Track field type and samples
+                        if not isinstance(value, (dict, list)):
+                            field_types[field_path] = type(value).__name__
+                            if value is not None:
+                                try:
+                                    field_samples[field_path].add(str(value)[:100])  # Limit sample size
+                                except (TypeError, UnicodeDecodeError):
+                                    field_samples[field_path].add("<unprintable>")
+
+                        # Recurse into nested structures (limit depth)
+                        if isinstance(value, dict) and prefix.count('.') < 3:
+                            self._analyze_record_fields(value, field_frequency, field_types, field_samples, field_path)
+                        elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict) and prefix.count('.') < 2:
+                            self._analyze_record_fields(value[0], field_frequency, field_types, field_samples, f"{field_path}[]")
+
+                    except Exception as e:
+                        logger.debug(f"Error processing field {key}: {e}")
+                        continue
+        except Exception as e:
+            logger.debug(f"Error analyzing record fields: {e}")
+
+    def generate_field_aware_patterns(self, field_analysis: Dict[str, Any], technical_category: str, dataset_type: str) -> List[Dict[str, str]]:
+        """Generate OPAL query patterns based on actual field analysis."""
+        patterns = []
+        common_fields = field_analysis.get('common_fields', {})
+
+        # Always add basic patterns that work for any dataset
+        if dataset_type == "Resource":
+            patterns.append({
+                "name": "Current Resources",
+                "pattern": "topk 100",
+                "description": "Get current resource state",
+                "use_case": "Inventory and configuration tracking"
+            })
+        else:
+            patterns.append({
+                "name": "Recent Data",
+                "pattern": "sort desc(timestamp) | limit 50",
+                "description": "Get recent records",
+                "use_case": "Real-time monitoring"
+            })
+
+        # Generate field-aware patterns based on detected fields
+        if technical_category == "Logs":
+            # Look for common log fields
+            if any(field in common_fields for field in ['level', 'severity', 'logLevel']):
+                level_field = next((f for f in ['level', 'severity', 'logLevel'] if f in common_fields), 'level')
+                patterns.append({
+                    "name": "Error Search",
+                    "pattern": f"filter {level_field} = \"ERROR\" OR {level_field} = \"error\"",
+                    "description": "Find error messages in logs",
+                    "use_case": "Error investigation and debugging"
+                })
+
+            if any(field in common_fields for field in ['message', 'msg', 'log', 'content']):
+                message_field = next((f for f in ['message', 'msg', 'log', 'content'] if f in common_fields), 'message')
+                patterns.append({
+                    "name": "Pattern Search",
+                    "pattern": f"filter contains({message_field}, \"pattern\")",
+                    "description": "Search for specific patterns in log messages",
+                    "use_case": "Pattern analysis and troubleshooting"
+                })
+
+        elif technical_category == "Traces":
+            # Look for common trace fields
+            if any(field in common_fields for field in ['status_code', 'statusCode', 'status']):
+                status_field = next((f for f in ['status_code', 'statusCode', 'status'] if f in common_fields), 'status_code')
+                patterns.append({
+                    "name": "Error Traces",
+                    "pattern": f"filter {status_field} = \"ERROR\" OR {status_field} = \"error\"",
+                    "description": "Find traces with errors",
+                    "use_case": "Error root cause analysis"
+                })
+
+            if any(field in common_fields for field in ['duration', 'elapsed', 'latency']):
+                duration_field = next((f for f in ['duration', 'elapsed', 'latency'] if f in common_fields), 'duration')
+                patterns.append({
+                    "name": "Latency Analysis",
+                    "pattern": f"filter {duration_field} > 1000 | sort desc({duration_field})",
+                    "description": "Find slow operations",
+                    "use_case": "Performance optimization"
+                })
+
+        elif technical_category == "Metrics":
+            patterns.append({
+                "name": "Latest Values",
+                "pattern": "align 5m, value: avg(m()) | sort desc(timestamp) | limit 10",
+                "description": "Get current metric values",
+                "use_case": "Performance monitoring"
+            })
+
+        return patterns
+
+    def analyze_nested_fields_from_sample(self, sample_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze nested fields from actual sample data."""
+        if not sample_data:
+            return {}
+
+        nested_field_paths = {}
+        field_occurrence = {}
+
+        for record in sample_data:
+            self._extract_nested_paths(record, nested_field_paths, field_occurrence)
+
+        # Calculate statistics
+        total_records = len(sample_data)
+        important_fields = []
+
+        for field_path, info in nested_field_paths.items():
+            frequency = field_occurrence.get(field_path, 0) / total_records
+            cardinality = len(info['sample_values'])
+
+            # Consider nested fields important if present in >20% and reasonable cardinality
+            if frequency > 0.2 and cardinality < 50 and '.' in field_path:
+                important_fields.append(field_path)
+
+        # Convert sets to lists for JSON serialization
+        json_safe_nested_paths = {}
+        for field_path, info in nested_field_paths.items():
+            json_safe_nested_paths[field_path] = {
+                'type': info['type'],
+                'sample_values': list(info['sample_values'])  # Convert set to list
+            }
+
+        return {
+            'nested_field_paths': json_safe_nested_paths,
+            'nested_field_analysis': {
+                'important_fields': important_fields[:10],  # Top 10
+                'total_nested_fields': len(nested_field_paths),
+                'max_depth': max([path.count('.') for path in nested_field_paths.keys()] + [0])
+            }
+        }
+
+    def _extract_nested_paths(self, obj: Any, nested_paths: Dict, occurrence: Dict, prefix: str = "", max_depth: int = 4) -> None:
+        """Extract nested field paths from a record."""
+        if max_depth <= 0 or not isinstance(obj, dict):
+            return
+
+        for key, value in obj.items():
+            field_path = f"{prefix}.{key}" if prefix else key
+
+            # Track occurrence
+            if field_path not in occurrence:
+                occurrence[field_path] = 0
+            occurrence[field_path] += 1
+
+            if not isinstance(value, (dict, list)) and value is not None:
+                # Store leaf field information
+                if field_path not in nested_paths:
+                    nested_paths[field_path] = {
+                        'type': type(value).__name__,
+                        'sample_values': set()
+                    }
+
+                nested_paths[field_path]['sample_values'].add(str(value)[:100])
+
+            # Recurse for nested objects
+            elif isinstance(value, dict):
+                self._extract_nested_paths(value, nested_paths, occurrence, field_path, max_depth - 1)
+
+    async def generate_fallback_patterns(self, dataset_type: str, interface_types: List[str], technical_category: str) -> Dict[str, Any]:
+        """Generate fallback patterns when sample data is not available."""
+        # This is the original hardcoded logic as fallback
+        query_patterns = []
+
+        # Base patterns for different data types
+        if technical_category == "Logs":
+            query_patterns = [
+                {
+                    "name": "Error Search",
+                    "pattern": "filter level = \"ERROR\" OR severity = \"error\"",
+                    "description": "Find error messages in logs",
+                    "use_case": "Error investigation and debugging"
+                },
+                {
+                    "name": "Recent Activity",
+                    "pattern": "sort desc(timestamp) | limit 50",
+                    "description": "Get recent log entries",
+                    "use_case": "Real-time monitoring"
+                },
+                {
+                    "name": "Search Pattern",
+                    "pattern": "filter contains(message, \"pattern\")",
+                    "description": "Search for specific patterns in log messages",
+                    "use_case": "Pattern analysis and troubleshooting"
+                }
+            ]
+        elif technical_category == "Metrics":
+            query_patterns = [
+                {
+                    "name": "Latest Values",
+                    "pattern": "align 5m, value: avg(m()) | sort desc(timestamp) | limit 10",
+                    "description": "Get current metric values",
+                    "use_case": "Performance monitoring"
+                },
+                {
+                    "name": "Time Series",
+                    "pattern": "align 1m, value: sum(m())",
+                    "description": "Time series analysis of metrics",
+                    "use_case": "Trend analysis and capacity planning"
+                }
+            ]
+        elif technical_category == "Traces":
+            query_patterns = [
+                {
+                    "name": "Recent Spans",
+                    "pattern": "sort desc(timestamp) | limit 100",
+                    "description": "Get recent trace spans",
+                    "use_case": "Request flow analysis"
+                },
+                {
+                    "name": "Error Spans",
+                    "pattern": "filter status_code = \"ERROR\" OR error = true",
+                    "description": "Find spans with errors",
+                    "use_case": "Error root cause analysis"
+                },
+                {
+                    "name": "Latency Analysis",
+                    "pattern": "filter duration > 1000000000 | sort desc(duration)",
+                    "description": "Find slow operations (>1s duration)",
+                    "use_case": "Performance optimization"
+                }
+            ]
+        elif technical_category == "Resources":
+            query_patterns = [
+                {
+                    "name": "Current Resources",
+                    "pattern": "topk 100",
+                    "description": "Get current resource state",
+                    "use_case": "Inventory and configuration tracking"
+                }
+            ]
+        else:
+            # Default event patterns
+            query_patterns = [
+                {
+                    "name": "Recent Events",
+                    "pattern": "sort desc(timestamp) | limit 100",
+                    "description": "Get recent events",
+                    "use_case": "Activity monitoring"
+                }
+            ]
+
+        # For now, we'll simulate nested field analysis since we'd need actual data
+        # In a real implementation, this would fetch sample data and analyze JSON structures
+        nested_field_paths = {}
+        nested_field_analysis = {}
+
+        # NO ASSUMPTIONS - fallback should not assume any specific field structure
+        # The whole point is to discover what's actually there!
+        nested_field_paths = {}
+        nested_field_analysis = {
+            "important_fields": [],
+            "total_nested_fields": 0,
+            "max_depth": 0
+        }
+
+        # Generic patterns that make NO ASSUMPTIONS about field names
+        basic_examples = {
+            "Logs": [
+                {
+                    'name': 'Sample Records',
+                    'description': 'Get sample records to understand data structure',
+                    'query': 'limit 10'
+                }
+            ],
+            "Metrics": [
+                {
+                    'name': 'Sample Records',
+                    'description': 'Get sample records to understand data structure',
+                    'query': 'limit 10'
+                }
+            ],
+            "Traces": [
+                {
+                    'name': 'Sample Records',
+                    'description': 'Get sample records to understand data structure',
+                    'query': 'limit 10'
+                }
+            ],
+            "Resources": [
+                {
+                    'name': 'Current Resources',
+                    'description': 'Get current resource state',
+                    'query': 'topk 100'
+                }
+            ]
+        }
+
+        return {
+            'query_patterns': query_patterns,
+            'nested_field_paths': nested_field_paths,
+            'nested_field_analysis': nested_field_analysis,
+            'sample_schema_fields': [],  # Could be enhanced with actual field analysis
+            'query_examples': basic_examples.get(dataset_type, basic_examples["Logs"])
+        }
+
     async def check_dataset_has_data(self, dataset_id: str, dataset_type: str) -> bool:
         """Check if a dataset has any data over the last 24 hours."""
         # Use different OPAL verbs based on dataset type
@@ -657,10 +1221,11 @@ class DatasetsIntelligenceAnalyzer:
                 INSERT INTO datasets_intelligence (
                     dataset_id, dataset_name, dataset_type, workspace_id, interface_types,
                     business_category, technical_category, inferred_purpose, typical_usage,
-                    key_fields, common_use_cases, data_frequency, first_seen, last_seen,
+                    key_fields, sample_data_summary, query_patterns, nested_field_paths, nested_field_analysis,
+                    common_use_cases, data_frequency, first_seen, last_seen,
                     excluded, exclusion_reason, confidence_score, last_analyzed
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22
                 ) ON CONFLICT (dataset_id) DO UPDATE SET
                     dataset_name = EXCLUDED.dataset_name,
                     dataset_type = EXCLUDED.dataset_type,
@@ -671,6 +1236,10 @@ class DatasetsIntelligenceAnalyzer:
                     inferred_purpose = EXCLUDED.inferred_purpose,
                     typical_usage = EXCLUDED.typical_usage,
                     key_fields = EXCLUDED.key_fields,
+                    sample_data_summary = EXCLUDED.sample_data_summary,
+                    query_patterns = EXCLUDED.query_patterns,
+                    nested_field_paths = EXCLUDED.nested_field_paths,
+                    nested_field_analysis = EXCLUDED.nested_field_analysis,
                     common_use_cases = EXCLUDED.common_use_cases,
                     data_frequency = EXCLUDED.data_frequency,
                     last_seen = EXCLUDED.last_seen,
@@ -690,6 +1259,10 @@ class DatasetsIntelligenceAnalyzer:
                 dataset_data['inferred_purpose'],
                 dataset_data['typical_usage'],
                 dataset_data['key_fields'],
+                dataset_data.get('sample_data_summary', ''),
+                json.dumps(dataset_data.get('query_patterns', [])) if dataset_data.get('query_patterns') else None,
+                json.dumps(dataset_data.get('nested_field_paths', {})) if dataset_data.get('nested_field_paths') else None,
+                json.dumps(dataset_data.get('nested_field_analysis', {})) if dataset_data.get('nested_field_analysis') else None,
                 dataset_data['common_use_cases'],
                 dataset_data['data_frequency'],
                 dataset_data['first_seen'],
@@ -726,9 +1299,9 @@ class DatasetsIntelligenceAnalyzer:
                     interface_types.append(iface['path'])
         
         logger.info(f"Analyzing dataset: {name} ({dataset_id})")
-        
+
         try:
-            # Check if should be excluded
+            # Check if should be excluded based on internal criteria (since we've already targeted correctly)
             excluded, exclusion_reason = self.should_exclude_dataset(dataset)
             
             if excluded:
@@ -744,6 +1317,10 @@ class DatasetsIntelligenceAnalyzer:
                     'inferred_purpose': '',
                     'typical_usage': '',
                     'key_fields': [],
+                    'sample_data_summary': '',
+                    'query_patterns': [],
+                    'nested_field_paths': {},
+                    'nested_field_analysis': {},
                     'common_use_cases': [],
                     'data_frequency': '',
                     'first_seen': datetime.now(),
@@ -773,7 +1350,12 @@ class DatasetsIntelligenceAnalyzer:
             
             # Generate rule-based analysis
             analysis = await self.generate_dataset_analysis(name, dataset_type, interface_types)
-            
+
+            # Analyze sample data structure for enhanced fields
+            structure_analysis = await self.analyze_sample_data_structure(
+                dataset_id, dataset_type, interface_types, analysis['technical_category']
+            )
+
             # Store dataset intelligence
             await self.store_dataset_intelligence({
                 'dataset_id': dataset_id,
@@ -785,7 +1367,11 @@ class DatasetsIntelligenceAnalyzer:
                 'technical_category': analysis['technical_category'],
                 'inferred_purpose': analysis['inferred_purpose'],
                 'typical_usage': analysis['typical_usage'],
-                'key_fields': [],  # TODO: Could be enhanced with schema analysis
+                'key_fields': structure_analysis.get('sample_schema_fields', []),
+                'sample_data_summary': f"Dataset contains {analysis['technical_category'].lower()} data with {len(structure_analysis.get('query_patterns', []))} query patterns",
+                'query_patterns': structure_analysis.get('query_patterns', []),
+                'nested_field_paths': structure_analysis.get('nested_field_paths', {}),
+                'nested_field_analysis': structure_analysis.get('nested_field_analysis', {}),
                 'common_use_cases': analysis['common_use_cases'],
                 'data_frequency': analysis['data_frequency'],
                 'first_seen': datetime.now(),  # TODO: Could be enhanced with actual timestamps
@@ -809,20 +1395,24 @@ class DatasetsIntelligenceAnalyzer:
         logger.info("╔═══════════════════════════════════════════════════════════════╗")
         logger.info("║              🗄️  Datasets Intelligence Analyzer               ║")
         logger.info("║                                                               ║")
-        logger.info("║  Analyzing Observe datasets for fast semantic discovery      ║")
+        logger.info("║  Analyzing targeted datasets for observability intelligence  ║")
+        logger.info("║  Focus: Logs • Traces • Resources (Metrics handled separately) ║")
         if self.force_mode:
             logger.info("║                    🧹 FORCE MODE ENABLED 🧹                    ║")
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
         logger.info("🚀 Starting dataset analysis...")
         
-        # Fetch all datasets
-        datasets = await self.fetch_all_datasets()
-        
+        # Fetch targeted datasets only
+        datasets = await self.fetch_targeted_datasets()
+
         if limit:
             datasets = datasets[:limit]
             logger.info(f"Limited analysis to {limit} datasets")
-        
+
+        logger.info(f"🎯 Ready to analyze {len(datasets)} targeted datasets")
+        logger.info("🔍 Fetched: Event datasets with log interface + Interval datasets with otel_span interface + Resource datasets")
+
         # Process datasets
         for i, dataset in enumerate(datasets):
             logger.info(f"Progress: {i+1}/{len(datasets)}")
@@ -841,7 +1431,7 @@ class DatasetsIntelligenceAnalyzer:
         logger.info("║                    📈 Dataset Analysis Statistics            ║")
         logger.info("╠═══════════════════════════════════════════════════════════════╣")
         logger.info(f"║ Datasets processed: {self.stats['datasets_processed']:>35} ║")
-        logger.info(f"║ Datasets skipped: {self.stats['datasets_skipped']:>37} ║")
+        logger.info(f"║ Datasets skipped (not targeted): {self.stats['datasets_skipped']:>24} ║")
         logger.info(f"║ Datasets excluded: {self.stats['datasets_excluded']:>36} ║")
         logger.info(f"║ Datasets empty: {self.stats['datasets_empty']:>39} ║")
         logger.info(f"║ Datasets failed: {self.stats['datasets_failed']:>38} ║")

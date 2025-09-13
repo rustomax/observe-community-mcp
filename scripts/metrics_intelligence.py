@@ -220,15 +220,135 @@ class MetricsIntelligenceAnalyzer:
             await conn.execute(schema_sql)
             logger.info("Metrics intelligence schema created/verified")
     
+    async def get_metrics_with_data(self, dataset_id: str) -> Dict[str, int]:
+        """
+        Get all metrics that have data in the last 24 hours with their counts.
+        More efficient than checking each metric individually.
+
+        Returns:
+            Dict mapping metric_name -> count for metrics with data
+        """
+        validation_query = """
+        statsby count(), group_by(metric)
+        """
+
+        try:
+            result = await self.execute_opal_query(dataset_id, validation_query, "15m")
+
+            if not result:
+                logger.debug(f"No metric data found in dataset {dataset_id} in last 15m")
+                return {}
+
+            metrics_with_data = {}
+            for row in result:
+                metric_name = row.get('metric', '')
+                count_value = row.get('count()', row.get('count', 0))
+
+                if metric_name and count_value:
+                    try:
+                        count_int = int(str(count_value))
+                        if count_int > 0:
+                            metrics_with_data[metric_name] = count_int
+                            logger.debug(f"Metric {metric_name} has {count_int} data points in last 24h")
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Could not parse count {count_value} for metric {metric_name}: {e}")
+                        # If we can't parse but got result, include it
+                        metrics_with_data[metric_name] = 1  # Default to 1 to include
+
+            logger.info(f"Found {len(metrics_with_data)} metrics with recent data (15m) in dataset {dataset_id}")
+            return metrics_with_data
+
+        except Exception as e:
+            logger.warning(f"Failed to get metric data counts for dataset {dataset_id}: {e}")
+            # If validation fails completely, return empty dict (fail open at individual level)
+            return {}
+
+    async def has_recent_data(self, dataset_id: str, metric_name: str) -> bool:
+        """
+        Check if a metric has any data in the last 24 hours.
+
+        Note: This is the individual fallback method.
+        Use get_metrics_with_data() for bulk validation when possible.
+
+        Returns:
+            True if metric has recent data, False if empty/stale
+        """
+        # Query to check for any data points in the last 24 hours
+        validation_query = f"""
+        filter metric = "{metric_name}"
+        | statsby count()
+        """
+
+        try:
+            result = await self.execute_opal_query(dataset_id, validation_query, "15m")
+
+            if not result or len(result) == 0:
+                logger.debug(f"No data found for metric {metric_name} in last 15m")
+                return False
+
+            # Check if we got any count > 0
+            for row in result:
+                count_value = row.get('count()', row.get('count', 0))
+                if count_value:
+                    try:
+                        # Convert to int in case it's returned as string
+                        count_int = int(str(count_value))
+                        if count_int > 0:
+                            logger.debug(f"Metric {metric_name} has {count_int} data points in last 15m")
+                            return True
+                    except (ValueError, TypeError) as e:
+                        logger.debug(f"Could not parse count value {count_value} for metric {metric_name}: {e}")
+                        # If we can't parse the count but got a result, assume it has data
+                        return True
+
+            logger.debug(f"Metric {metric_name} has no data points in last 15m")
+            return False
+
+        except Exception as e:
+            logger.warning(f"Failed to validate data for metric {metric_name}: {e}")
+            # If validation fails, include the metric (fail open)
+            return True
+
+    async def store_excluded_metric(self, dataset_id: str, dataset_name: str, metric_name: str,
+                                  exclusion_type: str, exclusion_reason: str) -> None:
+        """Store an excluded metric in the database for tracking purposes."""
+        try:
+            query = """
+                INSERT INTO metrics_intelligence (
+                    dataset_id, metric_name, dataset_name, dataset_type, workspace_id,
+                    metric_type, unit, description, common_dimensions, dimension_cardinality,
+                    sample_dimensions, value_type, value_range, sample_values, data_frequency,
+                    last_seen, first_seen, inferred_purpose, typical_usage, business_category,
+                    technical_category, common_fields, nested_field_paths, nested_field_analysis,
+                    excluded, exclusion_reason, confidence_score, last_analyzed
+                ) VALUES (
+                    $1, $2, $3, 'unknown', NULL, 'unknown', NULL, NULL, '{}', '{}',
+                    '{}', 'unknown', '{}', '{}', 'none', NULL, NULL,
+                    'Excluded metric', 'Not analyzed due to exclusion', 'Unknown', 'Unknown',
+                    '{}', '{}', '{}', TRUE, $4, 0.0, NOW()
+                ) ON CONFLICT (dataset_id, metric_name) DO UPDATE SET
+                    excluded = TRUE,
+                    exclusion_reason = EXCLUDED.exclusion_reason,
+                    last_analyzed = NOW()
+            """
+
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(query, dataset_id, metric_name, dataset_name, exclusion_reason)
+                logger.debug(f"Stored excluded metric: {metric_name} - {exclusion_reason}")
+
+        except Exception as e:
+            logger.error(f"Failed to store excluded metric {metric_name}: {e}")
+
     def should_exclude_metric(self, metric_name: str, labels_or_attributes: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
         """
-        Determine if a metric should be excluded from analysis.
-        
+        Determine if a metric should be excluded from analysis based on static criteria.
+        Note: This is for static exclusions only. Data validation happens separately.
+
         Returns:
             (exclude: bool, reason: str)
         """
-        # No exclusions - analyze all metrics comprehensively
-        # Let users decide what's valuable to them
+        # No static exclusions - analyze all metrics comprehensively
+        # Data validation (empty metrics) is handled separately in has_recent_data()
         return False, None
     
     async def check_metric_needs_update(self, dataset_id: str, metric_name: str, sample_data_count: int) -> bool:
@@ -441,26 +561,130 @@ class MetricsIntelligenceAnalyzer:
             logger.warning(f"Failed to execute query for dataset {dataset_id} after retries: {e}")
             return None
     
+    def extract_nested_fields(self, data: Any, parent_path: str = "", max_depth: int = 4) -> Dict[str, Any]:
+        """Recursively extract nested field paths and their value samples."""
+        if max_depth <= 0:
+            return {}
+
+        nested_fields = {}
+
+        if isinstance(data, dict):
+            for key, value in data.items():
+                current_path = f"{parent_path}.{key}" if parent_path else key
+
+                # Store this field path
+                if not isinstance(value, (dict, list)):
+                    nested_fields[current_path] = {
+                        'type': type(value).__name__,
+                        'sample_value': str(value)[:100] if value is not None else None
+                    }
+
+                # Recurse into nested structures
+                if isinstance(value, dict) and len(value) <= 20:  # Limit expansion for large objects
+                    nested_fields.update(self.extract_nested_fields(value, current_path, max_depth - 1))
+                elif isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                    # Analyze first list item for structure
+                    nested_fields.update(self.extract_nested_fields(value[0], f"{current_path}[]", max_depth - 1))
+
+        return nested_fields
+
+    def analyze_nested_field_patterns(self, metric_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Analyze patterns in nested JSON fields across the dataset."""
+        all_nested_fields = {}
+        field_occurrence_count = {}
+        field_cardinality = {}
+
+        # Analyze nested structures in key JSON fields
+        json_fields_to_analyze = ['labels', 'attributes', 'resource_attributes', 'meta', 'properties', 'context']
+
+        for row in metric_data:
+            for field_name in json_fields_to_analyze:
+                if field_name in row and isinstance(row[field_name], dict):
+                    nested_fields = self.extract_nested_fields(row[field_name], field_name)
+
+                    for field_path, field_info in nested_fields.items():
+                        # Track occurrence
+                        if field_path not in field_occurrence_count:
+                            field_occurrence_count[field_path] = 0
+                            field_cardinality[field_path] = set()
+
+                        field_occurrence_count[field_path] += 1
+                        if field_info['sample_value']:
+                            field_cardinality[field_path].add(field_info['sample_value'])
+
+                        # Store field info
+                        all_nested_fields[field_path] = field_info
+
+        # Calculate field importance scores
+        total_rows = len(metric_data)
+        important_nested_fields = {}
+
+        for field_path, occurrence_count in field_occurrence_count.items():
+            presence_rate = occurrence_count / total_rows if total_rows > 0 else 0
+            cardinality = len(field_cardinality[field_path])
+
+            # Consider field important if present in >5% of records and has reasonable cardinality
+            if presence_rate > 0.05 and cardinality < 1000:
+                important_nested_fields[field_path] = {
+                    'presence_rate': presence_rate,
+                    'cardinality': cardinality,
+                    'sample_values': list(field_cardinality[field_path])[:10],
+                    'field_type': all_nested_fields[field_path]['type']
+                }
+
+        return {
+            'nested_fields': important_nested_fields,
+            'total_nested_fields_found': len(all_nested_fields),
+            'important_fields_count': len(important_nested_fields)
+        }
+
     async def analyze_metric_dimensions(self, metric_data: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze dimensions/labels/attributes of a metric."""
+        """Analyze dimensions/labels/attributes of a metric with enhanced nested field analysis."""
         dimension_values = {}
         dimension_keys = set()
-        
+
+        # Enhanced: Analyze nested JSON field patterns
+        nested_analysis = self.analyze_nested_field_patterns(metric_data)
+
         for row in metric_data:
             # Handle different dataset structures
             dimensions = {}
-            
+
             # Prometheus-style labels
             if 'labels' in row and isinstance(row['labels'], dict):
                 dimensions.update(row['labels'])
-            
+
             # OpenTelemetry attributes
             if 'attributes' in row and isinstance(row['attributes'], dict):
                 dimensions.update(row['attributes'])
-            
+
             # Resource attributes
             if 'resource_attributes' in row and isinstance(row['resource_attributes'], dict):
                 dimensions.update(row['resource_attributes'])
+
+            # Enhanced: Include important nested fields as dimensions
+            for field_path, field_info in nested_analysis['nested_fields'].items():
+                # Convert nested field path to value if it exists in this row
+                try:
+                    parts = field_path.split('.')
+                    current_value = row
+                    for part in parts:
+                        if part.endswith('[]'):
+                            part = part[:-2]
+                            if isinstance(current_value.get(part), list) and len(current_value[part]) > 0:
+                                current_value = current_value[part][0]
+                            else:
+                                current_value = None
+                                break
+                        else:
+                            current_value = current_value.get(part) if isinstance(current_value, dict) else None
+                        if current_value is None:
+                            break
+
+                    if current_value is not None:
+                        dimensions[field_path] = current_value
+                except (KeyError, TypeError, AttributeError):
+                    continue
             
             # Collect dimension keys and values
             for key, value in dimensions.items():
@@ -503,7 +727,8 @@ class MetricsIntelligenceAnalyzer:
         return {
             'common_dimensions': common_dimensions,
             'dimension_cardinality': dimension_cardinality,
-            'sample_dimensions': sample_dimensions
+            'sample_dimensions': sample_dimensions,
+            'nested_field_analysis': nested_analysis
         }
     
     async def analyze_metric_values(self, metric_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -591,16 +816,35 @@ class MetricsIntelligenceAnalyzer:
         # Default to gauge for unknown patterns
         return 'gauge'
     
-    def generate_query_pattern(self, metric_name: str, metric_type: str) -> str:
-        """Generate suggested OPAL query pattern based on metric type."""
-        if metric_type == 'tdigest':
-            return f'align 5m, combined: tdigest_combine(m_tdigest("{metric_name}")) | make_col p95: tdigest_quantile(combined, 0.95)'
-        elif metric_type == 'histogram':
-            return f'align 5m, combined: tdigest_combine(m_tdigest("{metric_name}")) | make_col p95: tdigest_quantile(combined, 0.95)'
-        elif metric_type in ['counter', 'gauge']:
-            return f'align 5m, total: sum(m("{metric_name}")) | statsby sum(total), group_by(service_name)'
-        else:
-            return f'filter metric = "{metric_name}" | statsby sum(value), group_by(service_name)'
+    def get_metric_type_info(self, metric_type: str) -> Dict[str, str]:
+        """Get metadata about the metric type for LLM context."""
+        type_info = {
+            'tdigest': {
+                'description': 'Distribution metric (latency, duration) - use tdigest functions',
+                'typical_aggregations': 'tdigest_quantile() for percentiles, tdigest_combine() with align',
+                'common_use_cases': 'Latency analysis, performance monitoring, SLA tracking'
+            },
+            'histogram': {
+                'description': 'Histogram metric - use tdigest functions for percentiles',
+                'typical_aggregations': 'tdigest_quantile() for percentiles, tdigest_combine() with align',
+                'common_use_cases': 'Response time distributions, resource usage patterns'
+            },
+            'counter': {
+                'description': 'Counter metric (monotonically increasing) - use rate() function',
+                'typical_aggregations': 'rate() for rate calculation, sum() for totals',
+                'common_use_cases': 'Request counts, error counts, throughput analysis'
+            },
+            'gauge': {
+                'description': 'Gauge metric (point-in-time values) - use avg() or latest values',
+                'typical_aggregations': 'avg(), min(), max() for current values',
+                'common_use_cases': 'Resource utilization, queue lengths, current state'
+            }
+        }
+        return type_info.get(metric_type, {
+            'description': f'Unknown metric type: {metric_type}',
+            'typical_aggregations': 'sum(), avg(), count() based on use case',
+            'common_use_cases': 'General metric analysis'
+        })
     
     def expand_metric_keywords(self, metric_name: str) -> Set[str]:
         """Expand keywords from metric name for better matching."""
@@ -851,7 +1095,7 @@ class MetricsIntelligenceAnalyzer:
             "business_category": business_category,
             "technical_category": technical_category,
             "metric_type": metric_type,
-            "query_pattern": self.generate_query_pattern(metric_name, metric_type),
+            "metric_type_info": self.get_metric_type_info(metric_type),
             "common_fields": self.extract_common_fields(metric_data)
         }
     
@@ -865,10 +1109,10 @@ class MetricsIntelligenceAnalyzer:
                     metric_type, unit, description, common_dimensions, dimension_cardinality,
                     sample_dimensions, value_type, value_range, sample_values, data_frequency,
                     last_seen, first_seen, inferred_purpose, typical_usage, business_category,
-                    technical_category, query_pattern, common_fields, excluded, exclusion_reason, confidence_score, last_analyzed
+                    technical_category, common_fields, nested_field_paths, nested_field_analysis, excluded, exclusion_reason, confidence_score, last_analyzed
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+                    $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
                 ) ON CONFLICT (dataset_id, metric_name) DO UPDATE SET
                     dataset_name = EXCLUDED.dataset_name,
                     dataset_type = EXCLUDED.dataset_type,
@@ -888,8 +1132,9 @@ class MetricsIntelligenceAnalyzer:
                     typical_usage = EXCLUDED.typical_usage,
                     business_category = EXCLUDED.business_category,
                     technical_category = EXCLUDED.technical_category,
-                    query_pattern = EXCLUDED.query_pattern,
                     common_fields = EXCLUDED.common_fields,
+                    nested_field_paths = EXCLUDED.nested_field_paths,
+                    nested_field_analysis = EXCLUDED.nested_field_analysis,
                     excluded = EXCLUDED.excluded,
                     exclusion_reason = EXCLUDED.exclusion_reason,
                     confidence_score = EXCLUDED.confidence_score,
@@ -916,8 +1161,9 @@ class MetricsIntelligenceAnalyzer:
                 metric_data['typical_usage'],
                 metric_data['business_category'],
                 metric_data['technical_category'],
-                metric_data['query_pattern'],
                 metric_data['common_fields'],
+                json.dumps(metric_data['nested_field_paths']) if metric_data.get('nested_field_paths') else None,
+                json.dumps(metric_data['nested_field_analysis']) if metric_data.get('nested_field_analysis') else None,
                 metric_data['excluded'],
                 metric_data['exclusion_reason'],
                 metric_data['confidence_score'],
@@ -1079,7 +1325,7 @@ class MetricsIntelligenceAnalyzer:
             metrics_list = None
             for i, metrics_query in enumerate(metrics_queries):
                 logger.debug(f"Trying metrics query variation {i+1} for dataset {dataset_id}")
-                metrics_list = await self.execute_opal_query(dataset_id, metrics_query, "15m")
+                metrics_list = await self.execute_opal_query(dataset_id, metrics_query, "24h")
                 if metrics_list:
                     logger.debug(f"Query variation {i+1} succeeded for dataset {dataset_id}")
                     
@@ -1109,20 +1355,44 @@ class MetricsIntelligenceAnalyzer:
             
             logger.info(f"Discovered {len(metrics_list)} unique metrics in {dataset_name}")
             self.stats['metrics_discovered'] += len(metrics_list)
-            
-            # Analyze each metric with detailed progress tracking
-            for i, metric_info in enumerate(metrics_list):
+
+            # Bulk validate metrics with recent data (more efficient)
+            logger.info(f"Validating data availability for all metrics in {dataset_name}")
+            metrics_with_data = await self.get_metrics_with_data(dataset_id)
+
+            # Filter metrics list to only those with recent data
+            valid_metrics = []
+            for metric_info in metrics_list:
+                metric_name = metric_info.get('metric', '')
+                if metric_name in metrics_with_data:
+                    valid_metrics.append(metric_info)
+                elif metric_name:  # Metric discovered but has no recent data
+                    logger.info(f"Excluding metric {metric_name}: no data in last 15 minutes ({metrics_with_data.get(metric_name, 0)} data points)")
+                    self.stats['metrics_excluded'] += 1
+                    # Store the exclusion in database
+                    await self.store_excluded_metric(dataset_id, dataset_name, metric_name,
+                                                   "no recent data", "No data points in last 15 minutes")
+
+            if not valid_metrics:
+                logger.warning(f"No metrics with recent data found in {dataset_name}")
+                self.stats['datasets_skipped'] += 1
+                return
+
+            logger.info(f"Processing {len(valid_metrics)} metrics with recent data (excluded {len(metrics_list) - len(valid_metrics)} empty metrics)")
+
+            # Analyze each valid metric with detailed progress tracking
+            for i, metric_info in enumerate(valid_metrics):
                 metric_name = metric_info.get('metric', '')
                 if not metric_name:
                     continue
                 
-                logger.info(f"Processing metric {i+1}/{len(metrics_list)}: {metric_name}")
-                
+                logger.info(f"Processing metric {i+1}/{len(valid_metrics)}: {metric_name}")
+
                 # Check if metric needs update (skip if analyzed recently)
                 needs_update = await self.check_metric_needs_update(dataset_id, metric_name, 0)
                 if not needs_update:
                     continue
-                
+
                 # Fetch sample data for this specific metric
                 logger.debug(f"Fetching data for metric: {metric_name}")
                 metric_query = f"""
@@ -1206,7 +1476,6 @@ class MetricsIntelligenceAnalyzer:
                     'excluded': False,
                     'exclusion_reason': None,
                     'confidence_score': 1.0,
-                    'query_pattern': analysis['query_pattern'],
                     'common_fields': analysis['common_fields']
                 })
                 

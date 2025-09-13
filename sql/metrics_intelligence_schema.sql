@@ -42,9 +42,11 @@ CREATE TABLE metrics_intelligence (
     business_category TEXT,            -- Infrastructure, Application, Security, etc.
     technical_category TEXT,           -- Performance, Error, Resource, Business, etc.
     
-    -- Query assistance
-    query_pattern TEXT,                -- Suggested OPAL query pattern for this metric
+    -- Query assistance (enhanced with nested field support)
+    query_patterns JSONB,              -- DEPRECATED: Multiple OPAL query patterns (no longer populated)
     common_fields TEXT[],              -- Common field names available for grouping
+    nested_field_paths JSONB,          -- Important nested field paths: {"field_path": {"frequency": 0.8, "sample_values": [...], "cardinality": 50}}
+    nested_field_analysis JSONB,       -- Analysis of nested fields: {"important_fields": [...], "field_types": {...}, "max_depth": 3}
     
     -- Full-text search vectors for fast text search
     search_vector TSVECTOR,             -- Searchable text: metric name, description, purpose, dimensions
@@ -157,6 +159,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Drop existing functions to avoid return type conflicts
+DROP FUNCTION IF EXISTS search_metrics_enhanced(text,integer,text,text,real);
+
 -- Enhanced search function with trigram similarity for metrics
 CREATE OR REPLACE FUNCTION search_metrics_enhanced(
     search_query TEXT,
@@ -173,8 +178,9 @@ RETURNS TABLE (
     business_category TEXT,
     technical_category TEXT,
     metric_type TEXT,
-    query_pattern TEXT,
     common_fields TEXT[],
+    nested_field_paths JSONB,
+    nested_field_analysis JSONB,
     common_dimensions JSONB,
     value_range JSONB,
     data_frequency TEXT,
@@ -198,8 +204,9 @@ BEGIN
             m.business_category,
             m.technical_category,
             m.metric_type,
-            m.query_pattern,
             m.common_fields,
+            m.nested_field_paths,
+            m.nested_field_analysis,
             m.common_dimensions,
             m.value_range,
             m.data_frequency,
@@ -222,8 +229,9 @@ BEGIN
             m.business_category,
             m.technical_category,
             m.metric_type,
-            m.query_pattern,
             m.common_fields,
+            m.nested_field_paths,
+            m.nested_field_analysis,
             m.common_dimensions,
             m.value_range,
             m.data_frequency,
@@ -258,7 +266,6 @@ BEGIN
         cr.business_category,
         cr.technical_category,
         cr.metric_type,
-        cr.query_pattern,
         cr.common_fields,
         cr.common_dimensions,
         cr.value_range,
