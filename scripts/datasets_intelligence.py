@@ -16,7 +16,7 @@ import os
 import sys
 import argparse
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple, Set
 import asyncpg
 import httpx
@@ -142,6 +142,9 @@ class DatasetsIntelligenceAnalyzer:
         self.observe_delay = 0.2  # 200ms between Observe API calls
         self.max_retries = 3
         self.base_retry_delay = 1.0
+
+        # Force mode flag
+        self.force_mode = False
     
     async def rate_limit_observe(self) -> None:
         """Apply rate limiting for Observe API calls."""
@@ -274,6 +277,10 @@ class DatasetsIntelligenceAnalyzer:
         Check if a dataset needs to be updated based on existing database record.
         Returns True if dataset needs analysis, False if it can be skipped.
         """
+        # Force mode: always analyze
+        if self.force_mode:
+            return True
+
         try:
             async with self.db_pool.acquire() as conn:
                 # Check if dataset exists and when it was last analyzed
@@ -305,7 +312,8 @@ class DatasetsIntelligenceAnalyzer:
                 
                 # Check if analyzed within last 7 days
                 if result['last_analyzed']:
-                    days_since_analysis = (datetime.utcnow() - result['last_analyzed']).total_seconds() / (24 * 3600)
+                    # Use timezone-naive datetime for comparison (database stores timezone-naive)
+                    days_since_analysis = (datetime.now() - result['last_analyzed']).total_seconds() / (24 * 3600)
                     if days_since_analysis < 7:
                         logger.info(f"Skipping {name} - analyzed {days_since_analysis:.1f} days ago")
                         self.stats['datasets_skipped'] += 1
@@ -404,52 +412,186 @@ class DatasetsIntelligenceAnalyzer:
             logger.warning(f"Failed to check data for dataset {dataset_id} after retries: {e}")
             return True  # Default to including dataset if we can't check
 
-    async def generate_dataset_analysis(self, name: str, dataset_type: str, interfaces: List[str]) -> Dict[str, Any]:
-        """Generate rule-based analysis of the dataset for fast processing."""
-        
-        # Rule-based categorization based on dataset name patterns
-        name_lower = name.lower()
-        
-        # Determine business category based on name patterns
-        if any(keyword in name_lower for keyword in ['kubernetes', 'host', 'infrastructure', 'system', 'container', 'node']):
-            business_category = "Infrastructure"
-        elif any(keyword in name_lower for keyword in ['service', 'application', 'app', 'opentelemetry', 'span', 'trace']):
-            business_category = "Application"
-        elif any(keyword in name_lower for keyword in ['database', 'db', 'sql', 'query']):
-            business_category = "Database"
-        elif any(keyword in name_lower for keyword in ['user', 'journey', 'hero', 'session', 'cdp']):
-            business_category = "User"
-        elif any(keyword in name_lower for keyword in ['network', 'connection', 'traffic']):
-            business_category = "Network"
-        elif any(keyword in name_lower for keyword in ['storage', 'volume', 'disk', 'filesystem']):
-            business_category = "Storage"
-        elif any(keyword in name_lower for keyword in ['security', 'auth', 'permission']):
-            business_category = "Security"
-        elif any(keyword in name_lower for keyword in ['monitor', 'alert', 'slo']):
-            business_category = "Monitoring"
-        elif any(keyword in name_lower for keyword in ['business', 'revenue', 'financial']):
-            business_category = "Business"
-        else:
-            business_category = "Infrastructure"  # Default
-        
-        # Determine technical category based on interfaces and name patterns
-        if 'log' in interfaces:
-            technical_category = "Logs"
-        elif 'metric' in interfaces or 'metric_metadata' in interfaces:
-            technical_category = "Metrics"
-        elif 'otel_span' in interfaces or any(keyword in name_lower for keyword in ['span', 'trace']):
-            technical_category = "Traces"
-        elif dataset_type == "Resource":
-            technical_category = "Resources"
-        elif dataset_type == "Interval":
-            if any(keyword in name_lower for keyword in ['session', 'journey']):
-                technical_category = "Sessions"
+    def expand_keywords(self, name_lower: str) -> Set[str]:
+        """Expand keywords from dataset name for better matching."""
+        expanded_keywords = set()
+
+        # Add original words
+        words = name_lower.replace('/', ' ').replace('-', ' ').replace('_', ' ').split()
+        expanded_keywords.update(words)
+
+        # Add common abbreviations and expansions
+        keyword_expansions = {
+            'k8s': ['kubernetes', 'k8s', 'kube'],
+            'kubernetes': ['kubernetes', 'k8s', 'kube', 'container', 'pod'],
+            'app': ['application', 'app', 'service'],
+            'application': ['application', 'app', 'service'],
+            'db': ['database', 'db', 'sql'],
+            'database': ['database', 'db', 'sql'],
+            'auth': ['authentication', 'auth', 'security'],
+            'svc': ['service', 'svc', 'app'],
+            'service': ['service', 'svc', 'app', 'application'],
+            'otel': ['opentelemetry', 'otel', 'trace', 'span'],
+            'opentelemetry': ['opentelemetry', 'otel', 'trace', 'span'],
+            'log': ['logs', 'log', 'logging'],
+            'logs': ['logs', 'log', 'logging'],
+            'metric': ['metrics', 'metric', 'monitoring'],
+            'metrics': ['metrics', 'metric', 'monitoring'],
+            'infra': ['infrastructure', 'infra', 'system'],
+            'infrastructure': ['infrastructure', 'infra', 'system'],
+            'host': ['host', 'node', 'server', 'machine'],
+            'node': ['node', 'host', 'server', 'machine'],
+            'network': ['network', 'net', 'connection', 'traffic'],
+            'net': ['network', 'net', 'connection'],
+            'user': ['user', 'customer', 'session'],
+            'error': ['error', 'exception', 'failure', 'issue'],
+            'perf': ['performance', 'perf', 'latency', 'speed'],
+            'performance': ['performance', 'perf', 'latency', 'speed'],
+        }
+
+        # Apply expansions
+        for word in list(expanded_keywords):
+            if word in keyword_expansions:
+                expanded_keywords.update(keyword_expansions[word])
+
+        return expanded_keywords
+
+    def categorize_with_enhanced_matching(self, name_lower: str, expanded_keywords: Set[str], interfaces: List[str], dataset_type: str) -> Tuple[str, str]:
+        """Enhanced categorization using expanded keywords."""
+
+        # Enhanced business category matching with expanded keywords
+        business_patterns = {
+            "Infrastructure": {
+                'primary': ['kubernetes', 'k8s', 'host', 'infrastructure', 'system', 'container', 'node', 'server', 'machine', 'infra'],
+                'secondary': ['pod', 'cluster', 'deployment', 'hardware', 'vm', 'virtualization']
+            },
+            "Application": {
+                'primary': ['service', 'application', 'app', 'opentelemetry', 'span', 'trace', 'otel'],
+                'secondary': ['api', 'web', 'microservice', 'frontend', 'backend', 'endpoint']
+            },
+            "Database": {
+                'primary': ['database', 'db', 'sql', 'query', 'postgres', 'mysql', 'redis'],
+                'secondary': ['table', 'schema', 'transaction', 'index', 'collection']
+            },
+            "User": {
+                'primary': ['user', 'journey', 'hero', 'session', 'cdp', 'customer'],
+                'secondary': ['visitor', 'behavior', 'interaction', 'engagement', 'conversion']
+            },
+            "Network": {
+                'primary': ['network', 'connection', 'traffic', 'net', 'tcp', 'http'],
+                'secondary': ['bandwidth', 'packet', 'protocol', 'dns', 'load', 'proxy']
+            },
+            "Storage": {
+                'primary': ['storage', 'volume', 'disk', 'filesystem', 'file'],
+                'secondary': ['backup', 'archive', 'blob', 'object', 'bucket']
+            },
+            "Security": {
+                'primary': ['security', 'auth', 'permission', 'authentication', 'authorization'],
+                'secondary': ['token', 'certificate', 'encryption', 'audit', 'compliance']
+            },
+            "Monitoring": {
+                'primary': ['monitor', 'alert', 'slo', 'sli', 'health'],
+                'secondary': ['check', 'probe', 'status', 'notification', 'threshold']
+            },
+            "Business": {
+                'primary': ['business', 'revenue', 'financial', 'sales', 'billing'],
+                'secondary': ['order', 'payment', 'invoice', 'transaction', 'commerce']
+            }
+        }
+
+        business_scores = {}
+        for category, patterns in business_patterns.items():
+            score = 0
+            # Primary keywords get higher weight
+            for keyword in patterns['primary']:
+                if keyword in expanded_keywords or keyword in name_lower:
+                    score += 2
+            # Secondary keywords get lower weight
+            for keyword in patterns['secondary']:
+                if keyword in expanded_keywords or keyword in name_lower:
+                    score += 1
+            business_scores[category] = score
+
+        # Get business category with highest score
+        business_category = max(business_scores, key=business_scores.get) if max(business_scores.values()) > 0 else "Infrastructure"
+
+        # Enhanced technical category matching
+        technical_patterns = {
+            "Logs": {
+                'interfaces': ['log'],
+                'keywords': ['log', 'logs', 'logging', 'syslog', 'audit'],
+                'weight': 3
+            },
+            "Metrics": {
+                'interfaces': ['metric', 'metric_metadata'],
+                'keywords': ['metric', 'metrics', 'monitoring', 'gauge', 'counter', 'histogram'],
+                'weight': 3
+            },
+            "Traces": {
+                'interfaces': ['otel_span'],
+                'keywords': ['span', 'trace', 'tracing', 'opentelemetry', 'otel'],
+                'weight': 3
+            },
+            "Resources": {
+                'interfaces': [],
+                'keywords': ['resource', 'inventory', 'config', 'configuration'],
+                'weight': 2
+            },
+            "Sessions": {
+                'interfaces': [],
+                'keywords': ['session', 'journey', 'user', 'visitor'],
+                'weight': 2
+            },
+            "Alerts": {
+                'interfaces': [],
+                'keywords': ['alert', 'notification', 'alarm', 'warning'],
+                'weight': 2
+            },
+            "Events": {
+                'interfaces': [],
+                'keywords': ['event', 'activity', 'action', 'occurrence'],
+                'weight': 1
+            }
+        }
+
+        technical_scores = {}
+        for category, pattern in technical_patterns.items():
+            score = 0
+            # Interface matching gets highest priority
+            if any(iface in interfaces for iface in pattern['interfaces']):
+                score += pattern['weight'] * 2
+            # Keyword matching
+            if any(keyword in expanded_keywords or keyword in name_lower for keyword in pattern['keywords']):
+                score += pattern['weight']
+            technical_scores[category] = score
+
+        # Handle dataset type-based categorization
+        if not max(technical_scores.values()):
+            if dataset_type == "Resource":
+                technical_category = "Resources"
+            elif dataset_type == "Interval":
+                if any(keyword in expanded_keywords for keyword in ['session', 'journey', 'user']):
+                    technical_category = "Sessions"
+                else:
+                    technical_category = "Events"
             else:
-                technical_category = "Events"  # Most intervals are events
-        elif any(keyword in name_lower for keyword in ['alert', 'notification']):
-            technical_category = "Alerts"
+                technical_category = "Events"
         else:
-            technical_category = "Events"  # Default
+            technical_category = max(technical_scores, key=technical_scores.get)
+
+        return business_category, technical_category
+
+    async def generate_dataset_analysis(self, name: str, dataset_type: str, interfaces: List[str]) -> Dict[str, Any]:
+        """Generate enhanced rule-based analysis with better keyword matching."""
+
+        # Normalize and expand keywords
+        name_lower = name.lower()
+        expanded_keywords = self.expand_keywords(name_lower)
+
+        # Enhanced categorization
+        business_category, technical_category = self.categorize_with_enhanced_matching(
+            name_lower, expanded_keywords, interfaces, dataset_type
+        )
         
         # Generate purpose and usage based on patterns
         if 'logs' in name_lower:
@@ -555,7 +697,7 @@ class DatasetsIntelligenceAnalyzer:
                 dataset_data['excluded'],
                 dataset_data['exclusion_reason'],
                 dataset_data['confidence_score'],
-                datetime.now()
+                datetime.now()  # Use timezone-naive to match database schema
             ])
     
     async def analyze_dataset(self, dataset: Dict[str, Any]) -> None:
@@ -668,6 +810,8 @@ class DatasetsIntelligenceAnalyzer:
         logger.info("║              🗄️  Datasets Intelligence Analyzer               ║")
         logger.info("║                                                               ║")
         logger.info("║  Analyzing Observe datasets for fast semantic discovery      ║")
+        if self.force_mode:
+            logger.info("║                    🧹 FORCE MODE ENABLED 🧹                    ║")
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
         logger.info("🚀 Starting dataset analysis...")
@@ -704,6 +848,13 @@ class DatasetsIntelligenceAnalyzer:
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
     
+    async def clear_database(self) -> None:
+        """Clear all data from datasets_intelligence table for fresh start."""
+        async with self.db_pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM datasets_intelligence")
+            count = result.split()[-1] if result else "0"
+            logger.info(f"🧹 Cleared {count} existing records from database")
+
     async def cleanup(self) -> None:
         """Cleanup resources."""
         if self.http_client:
@@ -715,7 +866,8 @@ async def main():
     parser = argparse.ArgumentParser(description="Analyze Observe datasets for fast semantic search")
     parser.add_argument('--limit', type=int, help='Limit number of datasets to analyze')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
-    
+    parser.add_argument('--force', action='store_true', help='Force clean database and reprocess all datasets from scratch')
+
     args = parser.parse_args()
     
     # Configure colored logging
@@ -744,6 +896,15 @@ async def main():
     
     try:
         await analyzer.initialize_database()
+
+        # Set force mode
+        analyzer.force_mode = args.force
+
+        # Clear database if force mode is enabled
+        if args.force:
+            logger.info("🧹 Force mode enabled - clearing database...")
+            await analyzer.clear_database()
+
         await analyzer.analyze_all_datasets(limit=args.limit)
         
     except KeyboardInterrupt:

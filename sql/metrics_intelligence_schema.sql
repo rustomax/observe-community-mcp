@@ -71,8 +71,13 @@ CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_excluded ON metrics_intellig
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_last_seen ON metrics_intelligence(last_seen DESC);
 
 -- Full-text search index for fast metric discovery
-CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_search_vector 
+CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_search_vector
 ON metrics_intelligence USING gin(search_vector);
+
+-- Trigram indexes for similarity matching (fuzzy search)
+CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_name_trgm ON metrics_intelligence USING GIN (metric_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_purpose_trgm ON metrics_intelligence USING GIN (inferred_purpose gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_usage_trgm ON metrics_intelligence USING GIN (typical_usage gin_trgm_ops);
 
 -- Trigger to automatically update search vector when data changes
 CREATE OR REPLACE FUNCTION update_metrics_search_vector() RETURNS TRIGGER AS $$
@@ -148,6 +153,123 @@ BEGIN
         m.excluded = FALSE
         AND m.search_vector @@ plainto_tsquery('english', search_query)
     ORDER BY rank DESC, m.metric_name
+    LIMIT max_results;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Enhanced search function with trigram similarity for metrics
+CREATE OR REPLACE FUNCTION search_metrics_enhanced(
+    search_query TEXT,
+    max_results INTEGER DEFAULT 20,
+    category_filter TEXT DEFAULT NULL,
+    technical_filter TEXT DEFAULT NULL,
+    similarity_threshold REAL DEFAULT 0.2
+)
+RETURNS TABLE (
+    metric_name TEXT,
+    dataset_name TEXT,
+    inferred_purpose TEXT,
+    typical_usage TEXT,
+    business_category TEXT,
+    technical_category TEXT,
+    metric_type TEXT,
+    query_pattern TEXT,
+    common_fields TEXT[],
+    common_dimensions JSONB,
+    value_range JSONB,
+    data_frequency TEXT,
+    last_seen TIMESTAMP,
+    rank REAL,
+    similarity_score REAL
+) AS $$
+DECLARE
+    cleaned_query TEXT;
+BEGIN
+    -- Clean and normalize query
+    cleaned_query := unaccent(lower(trim(search_query)));
+
+    RETURN QUERY
+    WITH fulltext_results AS (
+        SELECT
+            m.metric_name,
+            m.dataset_name,
+            m.inferred_purpose,
+            m.typical_usage,
+            m.business_category,
+            m.technical_category,
+            m.metric_type,
+            m.query_pattern,
+            m.common_fields,
+            m.common_dimensions,
+            m.value_range,
+            m.data_frequency,
+            m.last_seen,
+            ts_rank(m.search_vector, plainto_tsquery('english', search_query)) AS rank,
+            0.0::REAL AS similarity_score
+        FROM metrics_intelligence m
+        WHERE
+            excluded = FALSE
+            AND m.search_vector @@ plainto_tsquery('english', search_query)
+            AND (category_filter IS NULL OR m.business_category = category_filter)
+            AND (technical_filter IS NULL OR m.technical_category = technical_filter)
+    ),
+    similarity_results AS (
+        SELECT
+            m.metric_name,
+            m.dataset_name,
+            m.inferred_purpose,
+            m.typical_usage,
+            m.business_category,
+            m.technical_category,
+            m.metric_type,
+            m.query_pattern,
+            m.common_fields,
+            m.common_dimensions,
+            m.value_range,
+            m.data_frequency,
+            m.last_seen,
+            0.0::REAL AS rank,
+            GREATEST(
+                similarity(unaccent(lower(m.metric_name)), cleaned_query),
+                similarity(unaccent(lower(m.inferred_purpose)), cleaned_query),
+                similarity(unaccent(lower(m.typical_usage)), cleaned_query)
+            ) AS similarity_score
+        FROM metrics_intelligence m
+        WHERE
+            excluded = FALSE
+            AND (category_filter IS NULL OR m.business_category = category_filter)
+            AND (technical_filter IS NULL OR m.technical_category = technical_filter)
+            AND (
+                similarity(unaccent(lower(m.metric_name)), cleaned_query) > similarity_threshold
+                OR similarity(unaccent(lower(m.inferred_purpose)), cleaned_query) > similarity_threshold
+                OR similarity(unaccent(lower(m.typical_usage)), cleaned_query) > similarity_threshold
+            )
+    ),
+    combined_results AS (
+        SELECT * FROM fulltext_results
+        UNION
+        SELECT * FROM similarity_results
+    )
+    SELECT
+        cr.metric_name,
+        cr.dataset_name,
+        cr.inferred_purpose,
+        cr.typical_usage,
+        cr.business_category,
+        cr.technical_category,
+        cr.metric_type,
+        cr.query_pattern,
+        cr.common_fields,
+        cr.common_dimensions,
+        cr.value_range,
+        cr.data_frequency,
+        cr.last_seen,
+        cr.rank,
+        cr.similarity_score
+    FROM combined_results cr
+    ORDER BY
+        -- Prioritize full-text matches, then similarity
+        (CASE WHEN cr.rank > 0 THEN cr.rank ELSE cr.similarity_score * 0.5 END) DESC
     LIMIT max_results;
 END;
 $$ LANGUAGE plpgsql;

@@ -2,8 +2,10 @@
 -- Fast dataset discovery using PostgreSQL full-text search
 -- This replaces the embeddings-based semantic graph approach with rule-based analysis
 
--- Enable vector extension if not already enabled
+-- Enable required extensions
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 -- Drop old table if exists
 DROP TABLE IF EXISTS dataset_intelligence CASCADE;
@@ -56,6 +58,11 @@ CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_type ON datasets_intelligen
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_interfaces ON datasets_intelligence USING GIN (interface_types);
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_excluded ON datasets_intelligence (excluded) WHERE excluded = FALSE;
 
+-- Trigram indexes for similarity matching (fuzzy search)
+CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_name_trgm ON datasets_intelligence USING GIN (dataset_name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_purpose_trgm ON datasets_intelligence USING GIN (inferred_purpose gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_usage_trgm ON datasets_intelligence USING GIN (typical_usage gin_trgm_ops);
+
 -- Fast search function
 CREATE OR REPLACE FUNCTION search_datasets(
     search_query TEXT,
@@ -92,6 +99,98 @@ BEGIN
         AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
     ORDER BY 
         ts_rank(di.search_vector, plainto_tsquery('english', search_query)) DESC
+    LIMIT max_results;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Enhanced search function with trigram similarity
+CREATE OR REPLACE FUNCTION search_datasets_enhanced(
+    search_query TEXT,
+    max_results INTEGER DEFAULT 20,
+    business_category_filter TEXT DEFAULT NULL,
+    technical_category_filter TEXT DEFAULT NULL,
+    interface_filter TEXT DEFAULT NULL,
+    similarity_threshold REAL DEFAULT 0.2
+)
+RETURNS TABLE (
+    dataset_id VARCHAR(255),
+    dataset_name VARCHAR(500),
+    inferred_purpose TEXT,
+    business_category VARCHAR(50),
+    technical_category VARCHAR(50),
+    interface_types TEXT[],
+    rank REAL,
+    similarity_score REAL
+) AS $$
+DECLARE
+    cleaned_query TEXT;
+BEGIN
+    -- Clean and normalize query
+    cleaned_query := unaccent(lower(trim(search_query)));
+
+    RETURN QUERY
+    WITH fulltext_results AS (
+        SELECT
+            di.dataset_id,
+            di.dataset_name,
+            di.inferred_purpose,
+            di.business_category,
+            di.technical_category,
+            di.interface_types,
+            ts_rank(di.search_vector, plainto_tsquery('english', search_query)) AS rank,
+            0.0::REAL AS similarity_score
+        FROM datasets_intelligence di
+        WHERE
+            excluded = FALSE
+            AND di.search_vector @@ plainto_tsquery('english', search_query)
+            AND (business_category_filter IS NULL OR di.business_category = business_category_filter)
+            AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
+            AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
+    ),
+    similarity_results AS (
+        SELECT
+            di.dataset_id,
+            di.dataset_name,
+            di.inferred_purpose,
+            di.business_category,
+            di.technical_category,
+            di.interface_types,
+            0.0::REAL AS rank,
+            GREATEST(
+                similarity(unaccent(lower(di.dataset_name)), cleaned_query),
+                similarity(unaccent(lower(di.inferred_purpose)), cleaned_query),
+                similarity(unaccent(lower(di.typical_usage)), cleaned_query)
+            ) AS similarity_score
+        FROM datasets_intelligence di
+        WHERE
+            excluded = FALSE
+            AND (business_category_filter IS NULL OR di.business_category = business_category_filter)
+            AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
+            AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
+            AND (
+                similarity(unaccent(lower(di.dataset_name)), cleaned_query) > similarity_threshold
+                OR similarity(unaccent(lower(di.inferred_purpose)), cleaned_query) > similarity_threshold
+                OR similarity(unaccent(lower(di.typical_usage)), cleaned_query) > similarity_threshold
+            )
+    ),
+    combined_results AS (
+        SELECT * FROM fulltext_results
+        UNION
+        SELECT * FROM similarity_results
+    )
+    SELECT
+        cr.dataset_id,
+        cr.dataset_name,
+        cr.inferred_purpose,
+        cr.business_category,
+        cr.technical_category,
+        cr.interface_types,
+        cr.rank,
+        cr.similarity_score
+    FROM combined_results cr
+    ORDER BY
+        -- Prioritize full-text matches, then similarity
+        (CASE WHEN cr.rank > 0 THEN cr.rank ELSE cr.similarity_score * 0.5 END) DESC
     LIMIT max_results;
 END;
 $$ LANGUAGE plpgsql;

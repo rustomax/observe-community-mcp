@@ -410,10 +410,10 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         conn = await asyncpg.connect(DATABASE_URL)
         
         try:
-            # Use the fast search function
+            # Use the enhanced search function with trigram similarity
             results = await conn.fetch("""
-                SELECT * FROM search_datasets($1, $2, $3, $4, $5)
-            """, query, max_results, business_category_filter, technical_category_filter, interface_filter)
+                SELECT * FROM search_datasets_enhanced($1, $2, $3, $4, $5, $6)
+            """, query, max_results, business_category_filter, technical_category_filter, interface_filter, 0.2)
             
             if not results:
                 return f"""# 🔍 Dataset Discovery Results
@@ -439,11 +439,19 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
                 if row['interface_types']:
                     interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
                 
+                # Calculate combined relevance score
+                combined_score = max(row['rank'], row.get('similarity_score', 0))
+                score_details = []
+                if row['rank'] > 0:
+                    score_details.append(f"text-match: {row['rank']:.3f}")
+                if row.get('similarity_score', 0) > 0:
+                    score_details.append(f"similarity: {row['similarity_score']:.3f}")
+
                 result_text = f"""## {i}. {row['dataset_name']}
 **Dataset ID**: `{row['dataset_id']}`
 **Category**: {row['business_category']} / {row['technical_category']}
 {interfaces_str}**Purpose**: {row['inferred_purpose']}
-**Relevance Score**: {row['rank']:.3f}
+**Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
                 formatted_results.append(result_text)
             
@@ -1683,35 +1691,10 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         conn = await asyncpg.connect(DATABASE_URL)
         
         try:
-            # Build the search query
-            search_query = f"""
-            SELECT 
-                metric_name,
-                dataset_name,
-                inferred_purpose,
-                typical_usage,
-                business_category,
-                technical_category,
-                metric_type,
-                query_pattern,
-                common_fields,
-                common_dimensions,
-                value_range,
-                data_frequency,
-                last_seen,
-                ts_rank(search_vector, plainto_tsquery('english', $1)) AS rank
-            FROM metrics_intelligence 
-            WHERE 
-                excluded = FALSE
-                AND search_vector @@ plainto_tsquery('english', $1)
-                {f"AND business_category = '{category_filter}'" if category_filter else ""}
-                {f"AND technical_category = '{technical_filter}'" if technical_filter else ""}
-            ORDER BY rank DESC, metric_name
-            LIMIT $2
-            """
-            
-            # Execute search
-            results = await conn.fetch(search_query, query, max_results)
+            # Use the enhanced search function with trigram similarity
+            results = await conn.fetch("""
+                SELECT * FROM search_metrics_enhanced($1, $2, $3, $4, $5)
+            """, query, max_results, category_filter, technical_filter, 0.2)
             
             if not results:
                 return f"""# 🔍 Metrics Discovery Results
@@ -1768,6 +1751,14 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
                         field_list += f" (+{len(common_fields)-3} more)"
                     query_guidance += f"**Common Fields**: {field_list}\n"
                 
+                # Calculate combined relevance score
+                combined_score = max(row['rank'], row.get('similarity_score', 0))
+                score_details = []
+                if row['rank'] > 0:
+                    score_details.append(f"text-match: {row['rank']:.3f}")
+                if row.get('similarity_score', 0) > 0:
+                    score_details.append(f"similarity: {row['similarity_score']:.3f}")
+
                 result_text = f"""## {i}. {row['metric_name']}
 **Dataset**: {row['dataset_name']}
 **Category**: {row['business_category']} / {row['technical_category']}
@@ -1777,7 +1768,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 {dim_text}
 {query_guidance}{range_text}
 **Frequency**: {row['data_frequency']} | **Last Seen**: {last_seen}
-**Relevance Score**: {row['rank']:.3f}
+**Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
                 formatted_results.append(result_text)
             

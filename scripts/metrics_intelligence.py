@@ -18,7 +18,7 @@ import sys
 import argparse
 import time
 import statistics
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple, Set
 import asyncpg
 import httpx
@@ -155,6 +155,9 @@ class MetricsIntelligenceAnalyzer:
         
         # Cardinality thresholds
         self.HIGH_CARDINALITY_THRESHOLD = 1000  # Warn about dimensions with >1000 unique values
+
+        # Force mode flag
+        self.force_mode = False
     
     
     async def rate_limit_observe(self) -> None:
@@ -232,12 +235,15 @@ class MetricsIntelligenceAnalyzer:
         """
         Check if a metric needs to be updated based on existing database record.
         Returns True if metric needs analysis, False if it can be skipped.
-        
+
         Criteria for skipping:
         - Metric exists in database with same dataset_id and metric_name
         - Last analyzed within the last 24 hours
         - Sample data count is similar (within 20% difference)
         """
+        # Force mode: always analyze
+        if self.force_mode:
+            return True
         try:
             async with self.db_pool.acquire() as conn:
                 # Check if metric exists and when it was last analyzed
@@ -256,7 +262,8 @@ class MetricsIntelligenceAnalyzer:
                 
                 # Check if analyzed within last 24 hours
                 if last_analyzed:
-                    hours_since_analysis = (datetime.utcnow() - last_analyzed).total_seconds() / 3600
+                    # Use timezone-naive datetime for comparison (database stores timezone-naive)
+                    hours_since_analysis = (datetime.now() - last_analyzed).total_seconds() / 3600
                     if hours_since_analysis < 24:
                         logger.info(f"Skipping {metric_name} - analyzed {hours_since_analysis:.1f} hours ago")
                         self.stats['metrics_skipped'] += 1
@@ -595,6 +602,174 @@ class MetricsIntelligenceAnalyzer:
         else:
             return f'filter metric = "{metric_name}" | statsby sum(value), group_by(service_name)'
     
+    def expand_metric_keywords(self, metric_name: str) -> Set[str]:
+        """Expand keywords from metric name for better matching."""
+        expanded_keywords = set()
+
+        # Add original words
+        name_lower = metric_name.lower()
+        words = name_lower.replace('/', ' ').replace('-', ' ').replace('_', ' ').replace('.', ' ').split()
+        expanded_keywords.update(words)
+
+        # Add common metric abbreviations and expansions
+        keyword_expansions = {
+            'cpu': ['cpu', 'processor', 'compute', 'utilization'],
+            'mem': ['memory', 'mem', 'ram'],
+            'memory': ['memory', 'mem', 'ram'],
+            'disk': ['disk', 'storage', 'volume', 'filesystem'],
+            'net': ['network', 'net', 'bandwidth', 'traffic'],
+            'network': ['network', 'net', 'bandwidth', 'traffic'],
+            'req': ['request', 'req', 'http'],
+            'request': ['request', 'req', 'http'],
+            'resp': ['response', 'resp', 'http'],
+            'response': ['response', 'resp', 'http'],
+            'err': ['error', 'err', 'failure', 'exception'],
+            'error': ['error', 'err', 'failure', 'exception'],
+            'latency': ['latency', 'duration', 'time', 'delay'],
+            'duration': ['duration', 'latency', 'time', 'delay'],
+            'throughput': ['throughput', 'rate', 'qps', 'rps'],
+            'rate': ['rate', 'throughput', 'qps', 'rps'],
+            'qps': ['qps', 'queries', 'rate', 'throughput'],
+            'rps': ['rps', 'requests', 'rate', 'throughput'],
+            'http': ['http', 'web', 'request', 'response'],
+            'web': ['web', 'http', 'request', 'response'],
+            'db': ['database', 'db', 'sql', 'query'],
+            'database': ['database', 'db', 'sql', 'query'],
+            'k8s': ['kubernetes', 'k8s', 'container', 'pod'],
+            'kubernetes': ['kubernetes', 'k8s', 'container', 'pod'],
+            'container': ['container', 'pod', 'docker', 'k8s'],
+            'pod': ['pod', 'container', 'kubernetes', 'k8s'],
+            'svc': ['service', 'svc', 'app'],
+            'service': ['service', 'svc', 'app', 'application'],
+            'app': ['application', 'app', 'service'],
+            'application': ['application', 'app', 'service'],
+            'total': ['total', 'sum', 'count', 'aggregate'],
+            'count': ['count', 'total', 'number'],
+            'sum': ['sum', 'total', 'aggregate'],
+            'avg': ['average', 'avg', 'mean'],
+            'average': ['average', 'avg', 'mean'],
+            'min': ['minimum', 'min', 'lowest'],
+            'max': ['maximum', 'max', 'highest'],
+            'p95': ['percentile95', 'p95', '95th'],
+            'p99': ['percentile99', 'p99', '99th'],
+        }
+
+        # Apply expansions
+        for word in list(expanded_keywords):
+            if word in keyword_expansions:
+                expanded_keywords.update(keyword_expansions[word])
+
+        return expanded_keywords
+
+    def categorize_metric_with_enhanced_matching(self, metric_name: str, expanded_keywords: Set[str], metric_type: str, dimensions: Dict[str, Any]) -> Tuple[str, str]:
+        """Enhanced metric categorization using expanded keywords."""
+
+        # Enhanced business category matching
+        business_patterns = {
+            "Infrastructure": {
+                'primary': ['cpu', 'memory', 'disk', 'filesystem', 'host', 'node', 'server', 'system'],
+                'secondary': ['hardware', 'vm', 'container', 'pod', 'cluster'],
+                'weight': 3
+            },
+            "Application": {
+                'primary': ['service', 'application', 'app', 'http', 'request', 'response', 'endpoint'],
+                'secondary': ['api', 'web', 'microservice', 'frontend', 'backend'],
+                'weight': 3
+            },
+            "Database": {
+                'primary': ['database', 'db', 'sql', 'query', 'transaction', 'connection'],
+                'secondary': ['table', 'index', 'postgres', 'mysql', 'redis'],
+                'weight': 3
+            },
+            "Network": {
+                'primary': ['network', 'net', 'bandwidth', 'traffic', 'connection', 'tcp'],
+                'secondary': ['packet', 'protocol', 'dns', 'load', 'proxy'],
+                'weight': 2
+            },
+            "Storage": {
+                'primary': ['storage', 'volume', 'disk', 'filesystem', 'file', 'io'],
+                'secondary': ['backup', 'archive', 'blob', 'object', 'bucket'],
+                'weight': 2
+            },
+            "Monitoring": {
+                'primary': ['monitor', 'health', 'status', 'check', 'probe'],
+                'secondary': ['alert', 'notification', 'threshold', 'sla', 'slo'],
+                'weight': 1
+            }
+        }
+
+        business_scores = {}
+        for category, pattern in business_patterns.items():
+            score = 0
+            # Primary keywords get higher weight
+            for keyword in pattern['primary']:
+                if keyword in expanded_keywords or keyword in metric_name.lower():
+                    score += pattern['weight'] * 2
+            # Secondary keywords get lower weight
+            for keyword in pattern['secondary']:
+                if keyword in expanded_keywords or keyword in metric_name.lower():
+                    score += pattern['weight']
+            business_scores[category] = score
+
+        # Get business category with highest score
+        business_category = max(business_scores, key=business_scores.get) if max(business_scores.values()) > 0 else "Application"
+
+        # Enhanced technical category matching
+        technical_patterns = {
+            "Error": {
+                'keywords': ['error', 'err', 'failure', 'exception', 'fault'],
+                'metric_types': ['counter'],
+                'weight': 4
+            },
+            "Latency": {
+                'keywords': ['latency', 'duration', 'time', 'delay', 'response_time'],
+                'metric_types': ['histogram', 'tdigest', 'gauge'],
+                'weight': 4
+            },
+            "Performance": {
+                'keywords': ['cpu', 'memory', 'utilization', 'usage', 'load', 'throughput'],
+                'metric_types': ['gauge', 'counter'],
+                'weight': 3
+            },
+            "Count": {
+                'keywords': ['count', 'total', 'number', 'requests', 'connections'],
+                'metric_types': ['counter'],
+                'weight': 3
+            },
+            "Resource": {
+                'keywords': ['disk', 'storage', 'filesystem', 'volume', 'capacity'],
+                'metric_types': ['gauge'],
+                'weight': 2
+            },
+            "Throughput": {
+                'keywords': ['rate', 'qps', 'rps', 'throughput', 'bandwidth'],
+                'metric_types': ['gauge', 'counter'],
+                'weight': 3
+            },
+            "Availability": {
+                'keywords': ['health', 'status', 'up', 'down', 'available'],
+                'metric_types': ['gauge'],
+                'weight': 2
+            }
+        }
+
+        technical_scores = {}
+        for category, pattern in technical_patterns.items():
+            score = 0
+            # Keyword matching
+            for keyword in pattern['keywords']:
+                if keyword in expanded_keywords or keyword in metric_name.lower():
+                    score += pattern['weight']
+            # Metric type matching
+            if metric_type in pattern['metric_types']:
+                score += pattern['weight']
+            technical_scores[category] = score
+
+        # Get technical category with highest score
+        technical_category = max(technical_scores, key=technical_scores.get) if max(technical_scores.values()) > 0 else "Performance"
+
+        return business_category, technical_category
+
     def extract_common_fields(self, metric_data: List[Dict[str, Any]]) -> List[str]:
         """Extract commonly available fields for grouping."""
         common_fields = []
@@ -1056,6 +1231,8 @@ class MetricsIntelligenceAnalyzer:
         logger.info("║              📊 Metrics Intelligence Analyzer                ║")
         logger.info("║                                                               ║")
         logger.info("║  Analyzing Observe metrics for semantic search discovery     ║")
+        if self.force_mode:
+            logger.info("║                    🧹 FORCE MODE ENABLED 🧹                    ║")
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
         logger.info("🚀 Starting metrics analysis...")
@@ -1095,6 +1272,13 @@ class MetricsIntelligenceAnalyzer:
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
     
+    async def clear_database(self) -> None:
+        """Clear all data from metrics_intelligence table for fresh start."""
+        async with self.db_pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM metrics_intelligence")
+            count = result.split()[-1] if result else "0"
+            logger.info(f"🧹 Cleared {count} existing metrics records from database")
+
     async def cleanup(self) -> None:
         """Cleanup resources."""
         if self.http_client:
@@ -1106,6 +1290,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Analyze Observe metrics for semantic search")
     parser.add_argument('--limit', type=int, help='Limit number of datasets to analyze')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
+    parser.add_argument('--force', action='store_true', help='Force clean database and reprocess all metrics from scratch')
     
     args = parser.parse_args()
     
@@ -1132,9 +1317,18 @@ async def main():
         logging.getLogger('httpcore').setLevel(logging.WARNING)
     
     analyzer = MetricsIntelligenceAnalyzer()
-    
+
     try:
         await analyzer.initialize_database()
+
+        # Set force mode
+        analyzer.force_mode = args.force
+
+        # Clear database if force mode is enabled
+        if args.force:
+            logger.info("🧹 Force mode enabled - clearing metrics database...")
+            await analyzer.clear_database()
+
         await analyzer.analyze_all_metrics(limit=args.limit)
         
     except KeyboardInterrupt:
