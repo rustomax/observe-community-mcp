@@ -182,7 +182,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         timeout=timeout
     )
 
-@mcp.tool()
+# @mcp.tool()  # COMMENTED OUT - Use discover_datasets() instead for better search
 @requires_scopes(['admin', 'read'])
 async def list_datasets(ctx: Context, match: Optional[str] = None, workspace_id: Optional[str] = None, type: Optional[str] = None, interface: Optional[str] = None) -> str:
     """
