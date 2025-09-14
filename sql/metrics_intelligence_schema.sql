@@ -177,6 +177,7 @@ CREATE OR REPLACE FUNCTION search_metrics_enhanced(
 )
 RETURNS TABLE (
     metric_name TEXT,
+    dataset_id TEXT,
     dataset_name TEXT,
     inferred_purpose TEXT,
     typical_usage TEXT,
@@ -203,6 +204,7 @@ BEGIN
     WITH fulltext_results AS (
         SELECT
             m.metric_name,
+            m.dataset_id,
             m.dataset_name,
             m.inferred_purpose,
             m.typical_usage,
@@ -228,6 +230,7 @@ BEGIN
     similarity_results AS (
         SELECT
             m.metric_name,
+            m.dataset_id,
             m.dataset_name,
             m.inferred_purpose,
             m.typical_usage,
@@ -265,6 +268,7 @@ BEGIN
     )
     SELECT
         cr.metric_name,
+        cr.dataset_id,
         cr.dataset_name,
         cr.inferred_purpose,
         cr.typical_usage,

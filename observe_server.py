@@ -674,6 +674,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 
                 result_text = f"""## {i}. {row['metric_name']}
 **Dataset**: {row['dataset_name']}
+**Dataset ID**: `{row['dataset_id']}`
 **Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
 **Type**: {metric_type}
 **Purpose**: {row['inferred_purpose']}
