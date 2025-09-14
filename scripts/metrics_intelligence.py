@@ -817,7 +817,7 @@ class MetricsIntelligenceAnalyzer:
         return 'gauge'
     
     def get_metric_type_info(self, metric_type: str) -> Dict[str, str]:
-        """Get metadata about the metric type for LLM context."""
+        """Get metadata about the metric type for analysis context."""
         type_info = {
             'tdigest': {
                 'description': 'Distribution metric (latency, duration) - use tdigest functions',
@@ -1417,110 +1417,178 @@ class MetricsIntelligenceAnalyzer:
 
             logger.info(f"Processing {len(valid_metrics)} metrics with recent data (excluded {len(metrics_list) - len(valid_metrics)} empty metrics)")
 
-            # Analyze each valid metric with detailed progress tracking
-            for i, metric_info in enumerate(valid_metrics):
-                metric_name = metric_info.get('metric', '')
-                if not metric_name:
-                    continue
-                
-                logger.info(f"Processing metric {i+1}/{len(valid_metrics)}: {metric_name}")
+            # OPTIMIZATION: Fetch sample data for all metrics using statsby to ensure we get all metrics
+            logger.info(f"Fetching sample data for all valid metrics (much faster than individual queries)")
 
-                # Check if metric needs update (skip if analyzed recently)
-                needs_update = await self.check_metric_needs_update(dataset_id, metric_name, 0)
-                if not needs_update:
-                    continue
+            # Use make_table + dedup to get one representative row per metric with all fields preserved
+            # This is much better than statsby which drops fields with any() functions
+            bulk_query = """
+            filter metric != ""
+            | make_table
+            | dedup metric
+            """
 
-                # Fetch sample data for this specific metric
-                logger.debug(f"Fetching data for metric: {metric_name}")
-                metric_query = f"""
-                filter metric = "{metric_name}"
-                | limit 1000
-                """
-                
-                metric_data = await self.execute_opal_query(dataset_id, metric_query, "15m")
-                
-                if not metric_data:
-                    logger.debug(f"No data found for metric {metric_name}")
-                    continue
-                
-                logger.debug(f"Analyzing {len(metric_data)} data points for {metric_name}")
-                
-                # Analyze dimensions and values
-                dimensions = await self.analyze_metric_dimensions(metric_data)
-                values = await self.analyze_metric_values(metric_data)
-                
-                # Check for high cardinality dimensions
-                high_card_dims = [k for k, v in dimensions['dimension_cardinality'].items() 
-                                 if v > self.HIGH_CARDINALITY_THRESHOLD]
-                if high_card_dims:
-                    logger.warning(f"High cardinality dimensions in {metric_name}: {high_card_dims}")
-                    self.stats['high_cardinality_metrics'] += 1
-                
-                # Generate LLM analysis
-                logger.debug(f"Generating LLM analysis for {metric_name}")
-                analysis = await self.generate_metric_analysis(
-                    metric_name, metric_data, dataset_name, dimensions, values
-                )
-                
-                # Skip embedding generation - using tsvector instead for fast text search
-                
-                # Determine timestamps (handle both ISO format and nanoseconds since epoch)
-                timestamps = []
-                for row in metric_data:
-                    if 'timestamp' not in row:
+            logger.debug(f"Executing bulk dedup query to get sample data for all metrics")
+            all_metric_samples = await self.execute_opal_query(dataset_id, bulk_query, "15m")
+
+            if not all_metric_samples:
+                logger.warning(f"No bulk data found for any metrics in {dataset_name}")
+                self.stats['datasets_skipped'] += 1
+                return
+
+            logger.info(f"Retrieved sample data for {len(all_metric_samples)} metrics via bulk query")
+
+            # Filter to only metrics that passed our validation
+            valid_metric_names_set = {m.get('metric', '') for m in valid_metrics if m.get('metric')}
+
+            valid_samples = []
+            for sample in all_metric_samples:
+                metric_name = sample.get('metric', '')
+                if metric_name in valid_metric_names_set:
+                    valid_samples.append(sample)
+
+            logger.info(f"Found {len(valid_samples)} valid metrics in bulk sample data")
+
+            if not valid_samples:
+                logger.warning(f"No valid metrics found in bulk sample data for {dataset_name}")
+                self.stats['datasets_skipped'] += 1
+                return
+
+            # For metrics that need detailed analysis, fetch more data efficiently
+            # Use a smaller batch approach for metrics that need full analysis
+            batch_size = 20  # Process metrics in batches to balance efficiency vs. query size
+
+            for batch_start in range(0, len(valid_samples), batch_size):
+                batch_samples = valid_samples[batch_start:batch_start + batch_size]
+                batch_metrics = [s['metric'] for s in batch_samples]
+
+                logger.info(f"Processing batch {batch_start//batch_size + 1}/{(len(valid_samples) + batch_size - 1)//batch_size} ({len(batch_metrics)} metrics)")
+
+                # Fetch detailed data for this batch
+                if len(batch_metrics) <= 10:  # Safe size for filter metric in
+                    batch_query = f"""
+                    filter metric in ({', '.join([f'"{name}"' for name in batch_metrics])})
+                    | limit 1000
+                    """
+                else:  # Fall back to individual queries for large batches
+                    batch_query = None
+
+                if batch_query:
+                    batch_detailed_data = await self.execute_opal_query(dataset_id, batch_query, "15m")
+
+                    # Group batch data by metric
+                    batch_data_grouped = {}
+                    if batch_detailed_data:
+                        for row in batch_detailed_data:
+                            metric_name = row.get('metric', '')
+                            if metric_name in batch_metrics:
+                                if metric_name not in batch_data_grouped:
+                                    batch_data_grouped[metric_name] = []
+                                batch_data_grouped[metric_name].append(row)
+                else:
+                    batch_data_grouped = {}
+
+                # Process each metric in this batch
+                for i, sample in enumerate(batch_samples):
+                    metric_name = sample.get('metric', '')
+                    if not metric_name:
                         continue
-                    try:
-                        ts = row['timestamp']
-                        if isinstance(ts, str):
-                            # Try ISO format first
-                            if 'T' in ts or 'Z' in ts:
-                                timestamps.append(datetime.fromisoformat(ts.replace('Z', '+00:00')))
+
+                    global_index = batch_start + i + 1
+                    logger.info(f"Processing metric {global_index}/{len(valid_samples)}: {metric_name}")
+
+                    # Check if metric needs update (skip if analyzed recently)
+                    needs_update = await self.check_metric_needs_update(dataset_id, metric_name, 0)
+                    if not needs_update:
+                        continue
+
+                    # Use batch data if available, otherwise fall back to sample data
+                    metric_data = batch_data_grouped.get(metric_name, [])
+
+                    # If no detailed data available, use the full sample row (dedup preserves all fields)
+                    if not metric_data:
+                        metric_data = [sample]  # sample already has all original fields intact
+
+                    if not metric_data:
+                        logger.debug(f"No data found for metric {metric_name}")
+                        continue
+
+                    logger.debug(f"Analyzing {len(metric_data)} data points for {metric_name}")
+
+                    # Analyze dimensions and values
+                    dimensions = await self.analyze_metric_dimensions(metric_data)
+                    values = await self.analyze_metric_values(metric_data)
+
+                    # Check for high cardinality dimensions
+                    high_card_dims = [k for k, v in dimensions['dimension_cardinality'].items()
+                                     if v > self.HIGH_CARDINALITY_THRESHOLD]
+                    if high_card_dims:
+                        logger.warning(f"High cardinality dimensions in {metric_name}: {high_card_dims}")
+                        self.stats['high_cardinality_metrics'] += 1
+
+                    # Generate rule-based analysis
+                    logger.debug(f"Generating analysis for {metric_name}")
+                    analysis = await self.generate_metric_analysis(
+                        metric_name, metric_data, dataset_name, dimensions, values
+                    )
+
+                    # Determine timestamps (handle both ISO format and nanoseconds since epoch)
+                    timestamps = []
+                    for row in metric_data:
+                        if 'timestamp' not in row:
+                            continue
+                        try:
+                            ts = row['timestamp']
+                            if isinstance(ts, str):
+                                # Try ISO format first
+                                if 'T' in ts or 'Z' in ts:
+                                    timestamps.append(datetime.fromisoformat(ts.replace('Z', '+00:00')))
+                                else:
+                                    # Try parsing as nanoseconds since epoch
+                                    timestamps.append(datetime.fromtimestamp(int(ts) / 1_000_000_000))
                             else:
-                                # Try parsing as nanoseconds since epoch
+                                # Assume it's nanoseconds since epoch
                                 timestamps.append(datetime.fromtimestamp(int(ts) / 1_000_000_000))
-                        else:
-                            # Assume it's nanoseconds since epoch
-                            timestamps.append(datetime.fromtimestamp(int(ts) / 1_000_000_000))
-                    except (ValueError, TypeError) as e:
-                        logger.debug(f"Failed to parse timestamp {row.get('timestamp')}: {e}")
-                        continue
-                first_seen = min(timestamps) if timestamps else datetime.now()
-                last_seen = max(timestamps) if timestamps else datetime.now()
-                
-                # Store metric intelligence
-                await self.store_metric_intelligence({
-                    'dataset_id': dataset_id,
-                    'metric_name': metric_name,
-                    'dataset_name': dataset_name,
-                    'dataset_type': dataset_type,
-                    'workspace_id': workspace_id,
-                    'metric_type': analysis['metric_type'],
-                    'unit': metric_data[0].get('unit', ''),
-                    'description': metric_data[0].get('description', ''),
-                    'common_dimensions': dimensions['common_dimensions'],
-                    'dimension_cardinality': dimensions['dimension_cardinality'],
-                    'sample_dimensions': dimensions['sample_dimensions'],
-                    'value_type': values['value_type'],
-                    'value_range': values['value_range'],
-                    'sample_values': values['sample_values'],
-                    'data_frequency': values['data_frequency'],
-                    'last_seen': last_seen,
-                    'first_seen': first_seen,
-                    'inferred_purpose': analysis['inferred_purpose'],
-                    'typical_usage': analysis['typical_usage'],
-                    'business_categories': analysis['business_categories'],
-                    'technical_category': analysis['technical_category'],
-                    'excluded': False,
-                    'exclusion_reason': None,
-                    'confidence_score': 1.0,
-                    'common_fields': analysis['common_fields']
-                })
-                
-                self.stats['metrics_processed'] += 1
-                logger.info(f"Successfully analyzed metric: {metric_name}")
-                
-                # Small delay to avoid overwhelming APIs
-                await asyncio.sleep(0.1)
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Failed to parse timestamp {row.get('timestamp')}: {e}")
+                            continue
+                    first_seen = min(timestamps) if timestamps else datetime.now()
+                    last_seen = max(timestamps) if timestamps else datetime.now()
+
+                    # Store metric intelligence
+                    await self.store_metric_intelligence({
+                        'dataset_id': dataset_id,
+                        'metric_name': metric_name,
+                        'dataset_name': dataset_name,
+                        'dataset_type': dataset_type,
+                        'workspace_id': workspace_id,
+                        'metric_type': analysis['metric_type'],
+                        'unit': metric_data[0].get('unit', ''),
+                        'description': metric_data[0].get('description', ''),
+                        'common_dimensions': dimensions['common_dimensions'],
+                        'dimension_cardinality': dimensions['dimension_cardinality'],
+                        'sample_dimensions': dimensions['sample_dimensions'],
+                        'value_type': values['value_type'],
+                        'value_range': values['value_range'],
+                        'sample_values': values['sample_values'],
+                        'data_frequency': values['data_frequency'],
+                        'last_seen': last_seen,
+                        'first_seen': first_seen,
+                        'inferred_purpose': analysis['inferred_purpose'],
+                        'typical_usage': analysis['typical_usage'],
+                        'business_categories': analysis['business_categories'],
+                        'technical_category': analysis['technical_category'],
+                        'excluded': False,
+                        'exclusion_reason': None,
+                        'confidence_score': 1.0,
+                        'common_fields': analysis['common_fields']
+                    })
+
+                    self.stats['metrics_processed'] += 1
+                    logger.info(f"Successfully analyzed metric: {metric_name}")
+
+                    # Brief pause for database operations
+                    await asyncio.sleep(0.01)
             
             self.stats['datasets_processed'] += 1
             logger.info(f"Successfully analyzed dataset: {dataset_name}")

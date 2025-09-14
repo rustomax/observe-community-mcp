@@ -2,220 +2,115 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.95+-009688?style=flat-square&logo=fastapi&logoColor=white)
-![Pinecone](https://img.shields.io/badge/Pinecone-Vector_Search-FF6C37?style=flat-square&logo=pinecone&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-BM25-336791?style=flat-square&logo=postgresql&logoColor=white)
 ![Model Context Protocol](https://img.shields.io/badge/MCP-Compatible-6366F1?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJMMTMuMDkgOC4yNkwyMCA5TDEzLjA5IDE1Ljc0TDEyIDIyTDEwLjkxIDE1Ljc0TDQgOUwxMC45MSA4LjI2TDEyIDJaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K&logoColor=white)
 ![Observe](https://img.shields.io/badge/Observe-Platform-FF8C00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KY2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4=&logoColor=white)
 
-A Model Context Protocol (MCP) server that provides LLMs with access to [Observe](https://observeinc.com) platform functionality through semantic search and LLM-powered dataset intelligence.
+A Model Context Protocol (MCP) server that provides LLMs with intelligent access to [Observe](https://observeinc.com) platform data through semantic search, automated dataset discovery, and metrics intelligence.
 
-## Purpose
+## What This Does
 
-This MCP server enables LLMs to interact with Observe platform data through a set of 7 tools. It includes dataset discovery capabilities powered by LLM reasoning, OPAL query execution, semantic search for documentation, and AI-powered observability investigations.
+This MCP server transforms how LLMs interact with observability data by providing intelligent discovery and search capabilities for the Observe platform. Instead of requiring users to know specific dataset names or metric structures, it enables natural language queries that automatically find relevant data sources and provide contextual analysis.
 
-**Key capabilities:**
-- Dataset discovery using LLM-powered semantic analysis
-- OPAL query execution against Observe datasets
-- Vector-based search for OPAL documentation and runbooks  
-- AI-powered observability investigations with GPT-5 reasoning
-- JWT-based authentication with role-based access control
+**Key Features:**
+- **Smart Dataset Discovery**: Find relevant datasets using natural language descriptions
+- **Metrics Intelligence**: Discover and understand metrics with automated categorization and usage guidance
+- **Documentation Search**: Fast BM25-powered search through Observe documentation and OPAL reference
+- **OPAL Query Execution**: Run queries against any Observe dataset with multi-dataset join support
+- **Zero External Dependencies**: Self-contained with PostgreSQL BM25 search (no Pinecone/OpenAI required)
 
-> **⚠️ DISCLAIMER**: This is an experimental MCP server for testing and collaboration. Use at your own risk. A production-ready version, based on a completely different code base, is available to Observe customers.
+> **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
 
 ## Table of Contents
 
-- [Purpose](#purpose)
-- [Available MCP Tools](#available-mcp-tools)
+- [Available Tools](#available-tools)
 - [Quick Start](#quick-start)
-  - [Prerequisites](#prerequisites)
-  - [Installation](#installation)
-  - [Environment Setup](#environment-setup)
-  - [Database Setup](#database-setup)
-  - [Initialize Vector Database](#initialize-vector-database)
-- [Running the Server](#running-the-server)
-  - [Docker (Recommended)](#docker-recommended)
-  - [Manual Python Execution](#manual-python-execution)
-- [Authentication Setup](#authentication-setup)
-- [Using with Claude Desktop](#using-with-claude-desktop)
-- [Architecture Overview](#architecture-overview)
-- [Dataset Intelligence System](#dataset-intelligence-system)
+- [Architecture](#architecture)
+- [Intelligence Systems](#intelligence-systems)
+- [Authentication](#authentication)
+- [Usage Examples](#usage-examples)
 - [Maintenance](#maintenance)
 
-## Available MCP Tools
+## Available Tools
 
-This MCP server provides 7 core tools for Observe platform access:
+The server provides 6 intelligent tools for Observe platform interaction:
 
-### Dataset Intelligence
-- **`query_semantic_graph`**: Find relevant datasets using LLM-powered analysis of query intent and dataset metadata. This uses a chached and semantically enriched dataset metadata.
-- **`list_datasets`**: List available datasets with filtering options (a direct API call to Observe)
-- **`get_dataset_info`**: Get detailed schema information about specific datasets (a direct API call to Observe)
+### 📊 Dataset & Metrics Discovery
+- **`discover_datasets`**: Find datasets using natural language queries with intelligent categorization and usage examples
+- **`discover_metrics`**: Search through 500+ analyzed metrics with business/technical categorization and relevance scoring
+- **`list_datasets`**: List available datasets with filtering options (direct Observe API)
+- **`get_dataset_info`**: Get detailed schema information for specific datasets (direct Observe API)
 
-### Query Execution
-- **`execute_opal_query`**: Execute OPAL queries against Observe datasets with error handling and multi-dataset support (a direct API call to Observe)
+### 🔍 Query & Search
+- **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
+- **`get_relevant_docs`**: Search Observe documentation and OPAL language reference using fast PostgreSQL BM25 search
 
-### Knowledge & Documentation
-- **`get_relevant_docs`**: Search Observe documentation, include OPAL language reference (semantic vector search)
-- **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as an Observe expert
+### 🤖 System Integration
+- **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as Observe platform experts
 
-### AI-Powered Investigations
-- **`o11y_scout`**: Autonomous observability investigation agent powered by GPT-5 with reasoning capabilities. Takes a natural language query and executes multi-step investigations using real data from Observe platform tools to provide data-driven analysis and recommendations.
-
-Each tool includes error handling, authentication validation, and structured result formatting.
-
-![Claude Desktop using Observe MCP Server](./images/claude_investigation.png)
+Each tool includes authentication validation, error handling, and structured result formatting optimized for LLM consumption.
 
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.11+
-- Docker and Docker Compose (recommended)
-- Pinecone account with API key
-- Observe API credentials (customer ID and token)
-- OpenAI API key (for LLM-powered dataset intelligence)
+- **Docker & Docker Compose** (recommended approach)
+- **Python 3.11+** (for manual installation)
+- **Observe API credentials** (customer ID and token)
 
-### Installation
+### 1. Clone and Configure
 
 ```bash
 git clone https://github.com/your-repo/observe-community-mcp.git
 cd observe-community-mcp
-```
 
-### Environment Setup
-
-Copy the example environment file and configure your credentials:
-
-```bash
+# Copy and configure environment
 cp .env.template .env
-# Edit .env with your API keys and configuration
+# Edit .env with your Observe credentials (see below)
 ```
 
-Required variables:
+### 2. Environment Configuration
+
+Edit your `.env` file with these required values:
 
 ```bash
-# Observe Platform
-OBSERVE_CUSTOMER_ID=your_customer_id
-OBSERVE_TOKEN=your_api_token  
-OBSERVE_DOMAIN=observeinc.com
+# Observe Platform Access
+OBSERVE_CUSTOMER_ID="your_customer_id"
+OBSERVE_TOKEN="your_api_token"
+OBSERVE_DOMAIN="observeinc.com"
 
-# Vector Search (Pinecone)
-PINECONE_API_KEY=your_pinecone_key
-PINECONE_DOCS_INDEX=observe-docs
-
-# LLM Intelligence (OpenAI)
-OPENAI_API_KEY=your_openai_key
-
-# Database (Dataset Intelligence)
-POSTGRES_PASSWORD=secure_password
-
-# Security
+# MCP Authentication (see Authentication section)
 PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----
-your_public_key_here
+your_public_key_content_here
 -----END PUBLIC KEY-----"
+
+# Database Security
+SEMANTIC_GRAPH_PASSWORD="your_secure_postgres_password"
 ```
 
-### Database Setup
-
-The server requires a PostgreSQL database with pgvector extension for dataset intelligence functionality. This is automatically configured when using Docker Compose.
-
-**Important**: The dataset intelligence system requires populating the database with dataset metadata before first use.
-
-### Initialize Vector Database
-
-Populate the Pinecone indices with documentation:
+### 3. Start with Docker (Recommended)
 
 ```bash
-# Populate documentation index
-python scripts/populate_docs_index.py
-
-# Initialize dataset intelligence database (REQUIRED)
-# This populates PostgreSQL with dataset metadata and embeddings
-python scripts/populate_dataset_intelligence.py
-```
-
-> **Note**: If you don't have access to Observe documentation files, contact your Observe representative.
-
-Options for all scripts:
-- `--force`: Recreate the index from scratch
-- `--verbose`: Enable detailed logging
-
-
-## Running the Server
-
-### Docker (Recommended)
-
-```bash
-# Start with Docker Compose
+# Build and start all services
 docker-compose up --build
+
+# The server will be available at http://localhost:8000
 ```
 
-The server will be available at `http://localhost:8000` with automatic health checks and PostgreSQL database.
-
-### Manual Python Execution
-
-For development:
+### 4. Initialize Intelligence Systems
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# Populate documentation search index
+docker exec observe-mcp-server python scripts/setup_bm25_docs.py
 
-# Initialize database (required before first run)
-python scripts/populate_dataset_intelligence.py
-
-# Start server
-python observe_server.py
+# Build dataset and metrics intelligence (takes 5-10 minutes)
+docker exec observe-mcp-server python scripts/datasets_intelligence.py
+docker exec observe-mcp-server python scripts/metrics_intelligence.py
 ```
 
-## Authentication Setup
+### 5. Connect with Claude Desktop
 
-> **⚠️ CRITICAL: READ THIS SECTION COMPLETELY**
-
-There are two types of authentication mechanisms used in this server:
-
-**Observe API authentication (Observe API bearer token)** - Uses your Observe API token to access platform data. This token inherits the permissions of the user who created it.
-
-> **⚠️ IMPORTANT**: Once a user is authenticated to the MCP server, they assume the identity of the user who generated the Observe token, not their own identity. Use RBAC and limit the Observe API token to specific roles and permissions you want available to MCP server users.
-
-**MCP authentication (MCP bearer token)** - Controls access to the MCP server itself. This is necessary because the server exposes resource-intensive APIs (Pinecone, OpenAI).
-
-![Authentication](./images/mcp_auth.png)
-
-The MCP server includes basic RBAC with predefined roles: `admin`, `read`, `write`. These do not map to Observe roles and only control MCP server tool access.
-
-### Setting up MCP Authentication
-
-Create private and public key files:
-
-```bash
-openssl genrsa -out private_key.pem 2048
-openssl rsa -in private_key.pem -pubout -out public_key.pem
-```
-
-This creates:
-- `private_key.pem` - Keep this secret. Used to sign MCP bearer tokens.
-- `public_key.pem` - Add to the server configuration for token verification.
-
-Copy the public key to your `.env` file:
-
-```bash
-cat public_key.pem
-# Copy output to .env as PUBLIC_KEY_PEM
-```
-
-Generate user tokens:
-
-```bash
-cd ./scripts
-generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
-```
-
-> **Security**: Keep token expiration times short (hours rather than days).
-
-**Local-only deployment**: If running locally without public access, you can disable MCP authentication by modifying the server configuration.
-
-## Using with Claude Desktop
-
-Add the following to your `claude_desktop_config.json`:
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
@@ -225,107 +120,210 @@ Add the following to your `claude_desktop_config.json`:
       "args": [
         "mcp-remote@latest",
         "http://localhost:8000/sse",
-        "--header",
-        "Authorization: Bearer your_mcp_token_here"
+        "--header", "Authorization: Bearer your_mcp_token_here"
       ]
     }
   }
 }
 ```
 
-> **Network Configuration Note**: MCP clients typically restrict HTTP access to localhost only. For internet-accessible deployments, implement an HTTPS reverse proxy with proper DNS configuration and SSL certificates.
+## Architecture
 
-The server will be available with 7 MCP tools for dataset discovery, query execution, documentation search, and AI-powered investigations.
+The MCP server uses a modern, self-contained architecture built for performance and reliability:
 
-![Claude Desktop using Observe MCP Server](./images/claude_tools.png)
+### Core Components
 
-## Architecture Overview
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **MCP Server** | FastAPI + MCP Protocol | Tool definitions and request handling |
+| **Observe Integration** | Python asyncio + Observe API | Dataset queries and metadata access |
+| **Search Engine** | PostgreSQL + ParadeDB BM25 | Fast documentation and content search |
+| **Intelligence Systems** | PostgreSQL + Rule-based Analysis | Dataset and metrics discovery with categorization |
+| **Authentication** | JWT + RSA signatures | Secure access control |
 
-The MCP server uses a modular architecture:
+### Data Flow
 
-| Component | Purpose |
-|-----------|---------| 
-| `observe_server.py` | Main MCP server with 6 tool definitions |
-| `src/observe/` | Observe API integration (queries, datasets, client) |
-| `src/dataset_intelligence/` | LLM-powered dataset discovery with PostgreSQL + pgvector |
-| `src/pinecone/` | Vector database operations for documentation search |
-| `src/auth/` | JWT authentication and scope-based authorization |
-| `scripts/` | Database population and maintenance scripts |
-
-**Technology Stack:**
-- **MCP Server**: FastAPI + MCP Protocol
-- **Dataset Intelligence**: PostgreSQL + pgvector + OpenAI GPT-4
-- **Query Engine**: Python asyncio + Observe API
-- **Vector Search**: Pinecone + OpenAI embeddings
-- **Authentication**: JWT + RSA keys
-- **Caching**: PostgreSQL-based dataset metadata caching
-
-## Dataset Semantic Search System
-
-The dataset semantic search system uses LLM reasoning to understand user queries and match them with relevant Observe datasets.
-
-### How It Works
-
-1. **Query Analysis**: Analyzes user queries to detect explicit dataset mentions, domain keywords, and intent
-2. **Candidate Selection**: Retrieves relevant datasets from PostgreSQL cache with smart sampling
-3. **LLM Ranking**: Uses GPT-4 to rank datasets based on relevance with detailed explanations  
-4. **Result Enhancement**: Applies quality filters and diversity balancing
-
-### Key Features
-
-**Explicit Dataset Detection**: Recognizes when users mention specific datasets by name
 ```
-"Give me k8s logs" → Kubernetes Explorer/Kubernetes Logs (prioritized)
-"Show me span data" → OpenTelemetry/Span (prioritized)
+Claude/LLM Request
+    ↓
+MCP Server (FastAPI)
+    ↓
+Intelligence Layer (PostgreSQL)
+    ↓
+Observe Platform (OPAL Queries)
+    ↓
+Structured Results → LLM
 ```
 
-**Domain Intelligence**: Maps query domains to appropriate dataset types
+### Database Schema
+
+**PostgreSQL with Extensions:**
+- `pg_search` (ParadeDB BM25) - Fast full-text search
+- Standard PostgreSQL - Metadata storage and analysis
+
+**Key Tables:**
+- `datasets_intelligence` - Analyzed dataset metadata with categories and usage patterns
+- `metrics_intelligence` - 500+ metrics with business/technical categorization
+- `documentation_chunks` - Searchable documentation content with BM25 indexing
+
+## Intelligence Systems
+
+### Dataset Intelligence
+
+Automatically categorizes and analyzes all Observe datasets to enable natural language discovery:
+
+**Categories:**
+- **Business**: Application, Infrastructure, Database, User, Security, Network
+- **Technical**: Logs, Metrics, Traces, Events, Resources
+- **Usage Patterns**: Common query examples, grouping suggestions, typical use cases
+
+**Example Query:** *"Find kubernetes error logs"* → Automatically discovers and ranks Kubernetes log datasets
+
+### Metrics Intelligence
+
+Analyzes 500+ metrics from Observe with comprehensive metadata:
+
+**Analysis Includes:**
+- **Categorization**: Business domain (Infrastructure/Application/Database) + Technical type (Error/Latency/Performance)
+- **Dimensions**: Common grouping fields with cardinality analysis
+- **Usage Guidance**: Typical aggregation functions, alerting patterns, troubleshooting approaches
+- **Value Analysis**: Data ranges, frequencies, and patterns
+
+**Example Query:** *"CPU memory utilization metrics"* → Returns relevant infrastructure performance metrics with usage guidance
+
+### Documentation Search
+
+Fast BM25 full-text search through:
+- Complete OPAL language reference
+- Observe platform documentation
+- Query examples and troubleshooting guides
+
+**Search Features:**
+- Relevance scoring with BM25 algorithm
+- Context-aware chunk retrieval
+- No external API dependencies
+
+## Authentication
+
+### MCP Server Authentication
+
+The server uses JWT-based authentication to control access:
+
+```bash
+# Generate RSA key pair
+openssl genrsa -out private_key.pem 2048
+openssl rsa -in private_key.pem -pubout -out public_key.pem
+
+# Add public key to .env file
+cat public_key.pem  # Copy to PUBLIC_KEY_PEM
+
+# Generate user tokens
+./scripts/generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
 ```
-"database performance" → Database Call datasets
-"trace analysis" → OpenTelemetry/Span datasets  
-"error investigation" → Log datasets + Error spans
+
+### Observe API Access
+
+**Important Security Note**: Once authenticated to the MCP server, users assume the identity and permissions of the Observe API token configured in the environment. Use Observe RBAC to limit the token's permissions appropriately.
+
+## Usage Examples
+
+### Dataset Discovery
+```
+User: "Find datasets with Kubernetes pod logs"
+→ Returns ranked list of Kubernetes log datasets with usage examples
 ```
 
-**Smart Prioritization**: Applies observability expertise
-- OpenTelemetry/Span always ranks first for trace/performance queries
-- Log datasets prioritized for debugging/error queries
-- Database datasets top-ranked for SQL/performance queries
+### Metrics Search
+```
+User: "Show me HTTP error rate metrics"
+→ Finds relevant HTTP request/error metrics with categorization and query suggestions
+```
 
-### Performance
+### Documentation Search
+```
+User: "How do I use OPAL filter syntax?"
+→ Returns relevant documentation sections with examples
+```
 
-The system provides dataset recommendations typically within 1-3 seconds, with high accuracy for domain-specific queries. It maintains a local cache of dataset metadata in PostgreSQL for performance.
+### Multi-Dataset Queries
+```
+User: "Join service metrics with trace data"
+→ Provides guidance and executes complex multi-dataset OPAL queries
+```
 
 ## Maintenance
 
-### Update Vector Databases
+### Update Intelligence Data
 
 ```bash
-# Update documentation index
-python scripts/populate_docs_index.py --force
+# Refresh dataset intelligence (when new datasets are added)
+docker exec observe-mcp-server python scripts/datasets_intelligence.py --force
 
-# Update dataset intelligence cache
-python scripts/populate_dataset_intelligence.py --force
+# Update metrics intelligence (daily recommended)
+docker exec observe-mcp-server python scripts/metrics_intelligence.py --force
+
+# Rebuild documentation index (when docs change)
+docker exec observe-mcp-server python scripts/setup_bm25_docs.py --force
 ```
 
 ### Monitor Performance
 
 ```bash
-# Check logs for performance metrics
-docker logs observe-mcp-server | grep "[SEMANTIC_GRAPH]"
+# Check server logs
+docker logs observe-mcp-server
 
 # Check database status
-docker exec observe-opal-memory psql -U opal -d opal_memory -c "\dt"
+docker exec observe-semantic-graph psql -U semantic_graph -d semantic_graph -c "\dt"
+
+# Check search performance
+docker logs observe-mcp-server | grep "docs search"
 ```
 
-### Common Issues
+### Troubleshooting
 
-1. **No dataset recommendations**: Verify OpenAI API key and database population
-2. **Slow responses**: Check PostgreSQL connection and dataset cache
-3. **Authentication errors**: Validate JWT token and public key configuration
-4. **Missing documentation**: Run populate scripts with `--force` flag
+**Common Issues:**
 
-All scripts support `--force` to recreate indices and `--verbose` for detailed logging.
+1. **Empty search results**: Run intelligence scripts to populate data
+2. **Slow performance**: Check PostgreSQL connection and restart if needed
+3. **Authentication failures**: Verify JWT token and public key configuration
+4. **Missing datasets**: Confirm Observe API credentials and network access
+
+**Performance Optimization:**
+
+The system is designed for fast response times:
+- Dataset discovery: < 2 seconds
+- Metrics search: < 1 second
+- Documentation search: < 500ms
+- Intelligence updates: Run overnight or when data changes
 
 ---
 
-> **Contributing**: Issues, feature requests, and pull requests are welcome. This project demonstrates LLM-native observability tooling approaches.
+## Development
+
+### Manual Setup
+
+```bash
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Start PostgreSQL (separate terminal)
+docker run --name observe-postgres -p 5432:5432 -e POSTGRES_PASSWORD=yourpassword paradedb/paradedb:latest
+
+# Initialize and run server
+python scripts/setup_bm25_docs.py
+python scripts/datasets_intelligence.py
+python scripts/metrics_intelligence.py
+python observe_server.py
+```
+
+### Contributing
+
+This project demonstrates modern approaches to LLM-native observability tooling. Issues, feature requests, and pull requests are welcome.
+
+**Architecture Principles:**
+- Self-contained (minimal external dependencies)
+- Fast (< 2 second response times)
+- Intelligent (automated categorization and discovery)
+- Reliable (comprehensive error handling)

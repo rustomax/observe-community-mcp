@@ -23,9 +23,8 @@ services:
       # === MCP Authentication ===
       - PUBLIC_KEY_PEM=${PUBLIC_KEY_PEM}
       
-      # === Vector Search (Pinecone) ===
-      - PINECONE_API_KEY=${PINECONE_API_KEY}
-      - PINECONE_DOCS_INDEX=${PINECONE_DOCS_INDEX:-observe-docs}
+      # === Document Search (BM25) ===
+      # Now using PostgreSQL BM25 search - no external dependencies needed
       
       # === Database (Semantic Graph) ===
       - POSTGRES_HOST=postgres
@@ -56,10 +55,10 @@ services:
       retries: 3
       start_period: 40s
 
-  # PostgreSQL with pgvector extension
-  # Required for semantic graph intelligence (query_semantic_graph)
+  # PostgreSQL with pgvector + BM25 extensions
+  # Required for semantic graph intelligence (query_semantic_graph) + BM25 docs search
   postgres:
-    image: pgvector/pgvector:pg15
+    image: paradedb/paradedb:latest
     container_name: observe-semantic-graph
     environment:
       POSTGRES_DB: semantic_graph
@@ -77,6 +76,7 @@ services:
       -c logging_collector=off
     volumes:
       - semantic_graph_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d/
     ports:
       - "5432:5432"
     restart: unless-stopped

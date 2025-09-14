@@ -27,17 +27,16 @@ except Exception as e:
     pass
     raise
 
-# Try to import Pinecone and related helpers
+# Import BM25 document search
 try:
-    import pinecone
-    from src.pinecone.search import search_docs
+    from src.postgres.doc_search import search_docs_bm25 as search_docs
 except ImportError as e:
-    # Define fallback search functions
+    # Define fallback search function
     def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
         return [{
-            "text": f"Error: Pinecone not available. The server cannot perform vector search because the pinecone package is not installed. Please install it with 'pip install pinecone>=3.0.0' and restart the server. Your query was: {query}", 
-            "source": "error", 
-            "title": "Pinecone Not Available", 
+            "text": f"Error: PostgreSQL BM25 search not available. The server cannot perform document search because the BM25 modules are not properly installed. Please ensure PostgreSQL is running and the documentation_chunks table exists. Your query was: {query}",
+            "source": "error",
+            "title": "BM25 Search Not Available",
             "score": 1.0
         }]
 
@@ -150,7 +149,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
 async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str:
-    """Get relevant documentation for a query using Pinecone vector search"""
+    """Get relevant documentation for a query using PostgreSQL BM25 search"""
     try:
         # Import required modules
         import os
@@ -159,44 +158,44 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         # Log the documentation search operation
         semantic_logger.info(f"docs search | query:'{query}' | n_results:{n_results}")
 
-        chunk_results = search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
-        
+        chunk_results = await search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
+
         if not chunk_results:
             return f"No relevant documents found for: '{query}'"
-        
+
         # Group chunks by source document
         docs_by_source = defaultdict(list)
         for result in chunk_results:
             source = result.get("source", "")
             if source and source != "error":
                 docs_by_source[source].append(result)
-        
+
         # Calculate average score for each document
         doc_scores = {}
         for source, chunks in docs_by_source.items():
             avg_score = sum(chunk.get("score", 0.0) for chunk in chunks) / len(chunks)
             doc_scores[source] = avg_score
-        
+
         # Sort documents by average score and limit to requested number
         sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:n_results]
-        
+
         if not sorted_docs:
             return f"No valid documents found for: '{query}'"
-        
+
         response = f"Found {len(sorted_docs)} relevant documents for: '{query}'\\n\\n"
-        
+
         # Read and format each full document
         for i, (source, score) in enumerate(sorted_docs, 1):
             try:
                 # Read the entire document file
                 with open(source, 'r', encoding='utf-8') as f:
                     document_content = f.read()
-                
+
                 # Get metadata from the first chunk of this source
                 first_chunk = docs_by_source[source][0]
                 title = first_chunk.get("title", os.path.basename(source).replace(".md", "").replace("_", " ").title())
                 source_filename = os.path.basename(source)
-                
+
                 response += f"### Document {i}: {title}\\n"
                 response += f"Source: {source_filename}\\n"
                 response += f"Relevance Score: {score:.2f}\\n\\n"
@@ -206,7 +205,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
                 # Use the chunk text as fallback if we can't read the file
                 chunks_text = "\\n\\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
                 title = os.path.basename(source).replace(".md", "").replace("_", " ").title()
-                
+
                 response += f"### Document {i}: {title}\\n"
                 response += f"Source: {os.path.basename(source)}\\n"
                 response += f"Relevance Score: {score:.2f}\\n"
@@ -219,7 +218,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
         return response
     except Exception as e:
-        return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_docs_index.py."
+        return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the BM25 index by running scripts/populate_docs_bm25.py."
 
 
 @mcp.tool()
