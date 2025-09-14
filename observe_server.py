@@ -67,11 +67,7 @@ from src.logging import (
     opal_logger
 )
 
-# Visualization imports removed - create_visualization tool was removed
-
 from fastmcp import Context
-
-# OpenAI Agents SDK imports removed - no longer needed
 
 # Create FastMCP instance with authentication
 mcp = create_authenticated_mcp(server_name="observe-community")
@@ -80,12 +76,6 @@ mcp = create_authenticated_mcp(server_name="observe-community")
 auth_provider = setup_auth_provider()
 initialize_auth_middleware(auth_provider)
 
-
-# --- MCP Tools (Refactored to use organized modules) ---
-
-# Authentication/system tools removed - keeping only core functionality
-
-# --- Observe API Tools (using refactored modules) ---
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
@@ -231,9 +221,6 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
     except Exception as e:
         return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_docs_index.py."
 
-# recommend_runbook tool removed - keeping only core functionality
-
-# Monitor and worksheet tools removed - keeping only core functionality
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
@@ -315,11 +302,6 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
         import traceback
         traceback.print_exc(file=sys.stderr)
         return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
-
-# --- Smart Tools (LLM-powered) ---
-
-# OPAL memory and NLP agent tools removed - keeping only core functionality
-
 
 
 @mcp.tool()
@@ -558,14 +540,6 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 **Query Params**: query='{query}', business_filter='{business_category_filter}', max_results={max_results}
 **Solution**: Check database connection and ensure dataset intelligence has been populated."""
 
-
-
-
-
-
-
-
-# --- Metrics Discovery Tool ---
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
