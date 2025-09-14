@@ -27,10 +27,9 @@ async def execute_opal_query(
     primary_dataset_id: str = None,
     secondary_dataset_ids: Optional[List[str]] = None,
     dataset_aliases: Optional[Dict[str, str]] = None,
-    time_range: Optional[str] = "1h", 
-    start_time: Optional[str] = None, 
-    end_time: Optional[str] = None, 
-    row_count: Optional[int] = 1000, 
+    time_range: Optional[str] = "1h",
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
     format: Optional[str] = "csv",
     timeout: Optional[float] = None
 ) -> str:
@@ -46,7 +45,6 @@ async def execute_opal_query(
         time_range: Time range for the query (e.g., "1h", "1d", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
-        row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
         timeout: Request timeout in seconds (default: uses client default of 30s)
         
@@ -98,7 +96,6 @@ async def execute_opal_query(
             time_range=time_range,
             start_time=start_time,
             end_time=end_time,
-            row_count=row_count,
             format=format
         )
         
@@ -143,7 +140,6 @@ def _validate_query_parameters(
     time_range: Optional[str],
     start_time: Optional[str],
     end_time: Optional[str],
-    row_count: Optional[int],
     format: Optional[str]
 ) -> tuple:
     """
@@ -152,10 +148,8 @@ def _validate_query_parameters(
     Returns:
         Tuple of (payload, params, headers) or error string
     """
-    # Validate row count
-    if row_count and row_count > 100000:
-        row_count = 100000
-        logger.warning(f"row count limited to maximum | requested:{row_count} | limited_to:100000")
+    # Use default row count of 1000 (was previously parameterized)
+    row_count = 1000
     
     # Prepare input datasets for the query
     input_datasets = [
@@ -342,11 +336,10 @@ class QueryBuilder:
         return " | ".join(self.pipeline_steps)
     
     async def execute(
-        self, 
+        self,
         time_range: Optional[str] = "1h",
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
-        row_count: Optional[int] = 1000,
         format: Optional[str] = "csv"
     ) -> str:
         """Execute the built query."""
@@ -359,6 +352,5 @@ class QueryBuilder:
             time_range=time_range,
             start_time=start_time,
             end_time=end_time,
-            row_count=row_count,
             format=format
         )

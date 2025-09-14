@@ -78,7 +78,7 @@ initialize_auth_middleware(auth_provider)
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
-async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, row_count: Optional[int] = 1000, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
+async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
     """
     Execute an OPAL query on single or multiple datasets.
     
@@ -91,7 +91,6 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         time_range: Time range for the query (e.g., "1h", "1d", "7d"). Used if start_time and end_time are not provided.
         start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
         end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
-        row_count: Maximum number of rows to return (default: 1000, max: 100000)
         format: Output format, either "csv" or "ndjson" (default: "csv")
         timeout: Request timeout in seconds (default: uses client default of 30s)
     
@@ -112,7 +111,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     # Log the OPAL query operation with sanitized query (truncated for security)
     query_preview = query[:100] + "..." if len(query) > 100 else query
     dataset_info = primary_dataset_id or dataset_id
-    opal_logger.info(f"query execution | dataset:{dataset_info} | query:'{query_preview}' | time_range:{time_range} | rows:{row_count}")
+    opal_logger.info(f"query execution | dataset:{dataset_info} | query:'{query_preview}' | time_range:{time_range}")
     
     # Parse JSON string parameters if provided
     parsed_secondary_dataset_ids = None
@@ -139,7 +138,6 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         time_range=time_range,
         start_time=start_time,
         end_time=end_time,
-        row_count=row_count,
         format=format,
         timeout=timeout
     )

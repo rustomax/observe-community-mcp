@@ -28,22 +28,19 @@ This MCP server transforms how LLMs interact with observability data by providin
 - [Architecture](#architecture)
 - [Intelligence Systems](#intelligence-systems)
 - [Authentication](#authentication)
-- [Usage Examples](#usage-examples)
 - [Maintenance](#maintenance)
 
 ## Available Tools
 
-The server provides 6 intelligent tools for Observe platform interaction:
+The server provides **5 intelligent tools** for Observe platform interaction:
 
-### 📊 Dataset & Metrics Discovery
+### 🔍 Discovery & Search
 - **`discover_datasets`**: Find datasets using natural language queries with intelligent categorization and usage examples
 - **`discover_metrics`**: Search through 500+ analyzed metrics with business/technical categorization and relevance scoring
-- **`list_datasets`**: List available datasets with filtering options (direct Observe API)
-- **`get_dataset_info`**: Get detailed schema information for specific datasets (direct Observe API)
-
-### 🔍 Query & Search
-- **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
 - **`get_relevant_docs`**: Search Observe documentation and OPAL language reference using fast PostgreSQL BM25 search
+
+### ⚡ Query Execution
+- **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
 
 ### 🤖 System Integration
 - **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as Observe platform experts
@@ -99,12 +96,16 @@ docker-compose up --build
 
 ### 4. Initialize Intelligence Systems
 
+Run these commands to populate the intelligence databases:
+
 ```bash
 # Populate documentation search index
 docker exec observe-mcp-server python scripts/setup_bm25_docs.py
 
-# Build dataset and metrics intelligence (takes 5-10 minutes)
+# Build dataset intelligence (analyzes all datasets in your Observe instance)
 docker exec observe-mcp-server python scripts/datasets_intelligence.py
+
+# Build metrics intelligence (analyzes 500+ metrics with categorization)
 docker exec observe-mcp-server python scripts/metrics_intelligence.py
 ```
 
@@ -131,6 +132,34 @@ Add to your `claude_desktop_config.json`:
 
 The MCP server uses a modern, self-contained architecture built for performance and reliability:
 
+### System Overview
+
+```mermaid
+graph TB
+    Claude[Claude/LLM] -->|MCP Protocol| Server[MCP Server<br/>FastAPI]
+    Server --> Auth[JWT Authentication]
+    Server --> Discovery[Intelligence Layer<br/>PostgreSQL + BM25]
+    Server --> ObserveAPI[Observe Platform<br/>OPAL Queries]
+
+    Discovery --> DatasetDB[(datasets_intelligence<br/>Dataset Metadata)]
+    Discovery --> MetricsDB[(metrics_intelligence<br/>500+ Metrics)]
+    Discovery --> DocsDB[(documentation_chunks<br/>BM25 Search)]
+
+    ObserveAPI --> Results[Structured Results]
+    Results --> Claude
+
+    subgraph "PostgreSQL Database"
+        DatasetDB
+        MetricsDB
+        DocsDB
+    end
+
+    subgraph "Docker Containers"
+        Server
+        Discovery
+    end
+```
+
 ### Core Components
 
 | Component | Technology | Purpose |
@@ -140,20 +169,6 @@ The MCP server uses a modern, self-contained architecture built for performance 
 | **Search Engine** | PostgreSQL + ParadeDB BM25 | Fast documentation and content search |
 | **Intelligence Systems** | PostgreSQL + Rule-based Analysis | Dataset and metrics discovery with categorization |
 | **Authentication** | JWT + RSA signatures | Secure access control |
-
-### Data Flow
-
-```
-Claude/LLM Request
-    ↓
-MCP Server (FastAPI)
-    ↓
-Intelligence Layer (PostgreSQL)
-    ↓
-Observe Platform (OPAL Queries)
-    ↓
-Structured Results → LLM
-```
 
 ### Database Schema
 
@@ -225,45 +240,19 @@ cat public_key.pem  # Copy to PUBLIC_KEY_PEM
 
 **Important Security Note**: Once authenticated to the MCP server, users assume the identity and permissions of the Observe API token configured in the environment. Use Observe RBAC to limit the token's permissions appropriately.
 
-## Usage Examples
-
-### Dataset Discovery
-```
-User: "Find datasets with Kubernetes pod logs"
-→ Returns ranked list of Kubernetes log datasets with usage examples
-```
-
-### Metrics Search
-```
-User: "Show me HTTP error rate metrics"
-→ Finds relevant HTTP request/error metrics with categorization and query suggestions
-```
-
-### Documentation Search
-```
-User: "How do I use OPAL filter syntax?"
-→ Returns relevant documentation sections with examples
-```
-
-### Multi-Dataset Queries
-```
-User: "Join service metrics with trace data"
-→ Provides guidance and executes complex multi-dataset OPAL queries
-```
-
 ## Maintenance
 
 ### Update Intelligence Data
 
 ```bash
 # Refresh dataset intelligence (when new datasets are added)
-docker exec observe-mcp-server python scripts/datasets_intelligence.py --force
+docker exec observe-mcp-server python scripts/datasets_intelligence.py
 
 # Update metrics intelligence (daily recommended)
-docker exec observe-mcp-server python scripts/metrics_intelligence.py --force
+docker exec observe-mcp-server python scripts/metrics_intelligence.py
 
 # Rebuild documentation index (when docs change)
-docker exec observe-mcp-server python scripts/setup_bm25_docs.py --force
+docker exec observe-mcp-server python scripts/setup_bm25_docs.py
 ```
 
 ### Monitor Performance
@@ -288,13 +277,13 @@ docker logs observe-mcp-server | grep "docs search"
 3. **Authentication failures**: Verify JWT token and public key configuration
 4. **Missing datasets**: Confirm Observe API credentials and network access
 
-**Performance Optimization:**
+**Performance Expectations:**
 
 The system is designed for fast response times:
 - Dataset discovery: < 2 seconds
 - Metrics search: < 1 second
 - Documentation search: < 500ms
-- Intelligence updates: Run overnight or when data changes
+- Intelligence updates: Run when data changes
 
 ---
 
@@ -309,7 +298,8 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # Start PostgreSQL (separate terminal)
-docker run --name observe-postgres -p 5432:5432 -e POSTGRES_PASSWORD=yourpassword paradedb/paradedb:latest
+docker run --name observe-postgres -p 5432:5432 \
+  -e POSTGRES_PASSWORD=yourpassword paradedb/paradedb:latest
 
 # Initialize and run server
 python scripts/setup_bm25_docs.py
@@ -317,6 +307,15 @@ python scripts/datasets_intelligence.py
 python scripts/metrics_intelligence.py
 python observe_server.py
 ```
+
+### Available Scripts
+
+| Script | Purpose | Runtime |
+|--------|---------|---------|
+| `scripts/setup_bm25_docs.py` | Initialize documentation search index | ~30 seconds |
+| `scripts/datasets_intelligence.py` | Analyze and categorize all datasets | ~5-10 minutes |
+| `scripts/metrics_intelligence.py` | Analyze and categorize metrics | ~5-10 minutes |
+| `scripts/generate_mcp_token.sh` | Generate JWT tokens for authentication | Instant |
 
 ### Contributing
 
