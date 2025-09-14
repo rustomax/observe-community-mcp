@@ -318,13 +318,13 @@ class MetricsIntelligenceAnalyzer:
                     dataset_id, metric_name, dataset_name, dataset_type, workspace_id,
                     metric_type, unit, description, common_dimensions, dimension_cardinality,
                     sample_dimensions, value_type, value_range, sample_values, data_frequency,
-                    last_seen, first_seen, inferred_purpose, typical_usage, business_category,
+                    last_seen, first_seen, inferred_purpose, typical_usage, business_categories,
                     technical_category, common_fields, nested_field_paths, nested_field_analysis,
                     excluded, exclusion_reason, confidence_score, last_analyzed
                 ) VALUES (
                     $1, $2, $3, 'unknown', NULL, 'unknown', NULL, NULL, '{}', '{}',
                     '{}', 'unknown', '{}', '{}', 'none', NULL, NULL,
-                    'Excluded metric', 'Not analyzed due to exclusion', 'Unknown', 'Unknown',
+                    'Excluded metric', 'Not analyzed due to exclusion', '["Unknown"]', 'Unknown',
                     '{}', '{}', '{}', TRUE, $4, 0.0, NOW()
                 ) ON CONFLICT (dataset_id, metric_name) DO UPDATE SET
                     excluded = TRUE,
@@ -905,7 +905,51 @@ class MetricsIntelligenceAnalyzer:
 
         return expanded_keywords
 
-    def categorize_metric_with_enhanced_matching(self, metric_name: str, expanded_keywords: Set[str], metric_type: str, dimensions: Dict[str, Any]) -> Tuple[str, str]:
+    def expand_keywords(self, name_lower: str) -> Set[str]:
+        """Expand keywords from metric name for better matching."""
+        expanded_keywords = set()
+
+        # Add original words
+        words = name_lower.replace('/', ' ').replace('-', ' ').replace('_', ' ').split()
+        expanded_keywords.update(words)
+
+        # Add common abbreviations and expansions
+        keyword_expansions = {
+            'k8s': ['kubernetes', 'k8s', 'kube'],
+            'kubernetes': ['kubernetes', 'k8s', 'kube', 'container', 'pod'],
+            'app': ['application', 'app', 'service'],
+            'application': ['application', 'app', 'service'],
+            'db': ['database', 'db', 'sql'],
+            'database': ['database', 'db', 'sql'],
+            'auth': ['authentication', 'auth', 'security'],
+            'svc': ['service', 'svc', 'app'],
+            'service': ['service', 'svc', 'app', 'application'],
+            'otel': ['opentelemetry', 'otel', 'trace', 'span'],
+            'opentelemetry': ['opentelemetry', 'otel', 'trace', 'span'],
+            'log': ['logs', 'log', 'logging'],
+            'logs': ['logs', 'log', 'logging'],
+            'metric': ['metrics', 'metric', 'monitoring'],
+            'metrics': ['metrics', 'metric', 'monitoring'],
+            'infra': ['infrastructure', 'infra', 'system'],
+            'infrastructure': ['infrastructure', 'infra', 'system'],
+            'host': ['host', 'node', 'server', 'machine'],
+            'node': ['node', 'host', 'server', 'machine'],
+            'network': ['network', 'net', 'connection', 'traffic'],
+            'net': ['network', 'net', 'connection'],
+            'user': ['user', 'customer', 'session'],
+            'error': ['error', 'exception', 'failure', 'issue'],
+            'perf': ['performance', 'perf', 'latency', 'speed'],
+            'performance': ['performance', 'perf', 'latency', 'speed'],
+        }
+
+        # Apply expansions
+        for word in list(expanded_keywords):
+            if word in keyword_expansions:
+                expanded_keywords.update(keyword_expansions[word])
+
+        return expanded_keywords
+
+    def categorize_metric_with_enhanced_matching(self, metric_name: str, expanded_keywords: Set[str], metric_type: str, dimensions: Dict[str, Any]) -> Tuple[List[str], str]:
         """Enhanced metric categorization using expanded keywords."""
 
         # Enhanced business category matching
@@ -955,8 +999,24 @@ class MetricsIntelligenceAnalyzer:
                     score += pattern['weight']
             business_scores[category] = score
 
-        # Get business category with highest score
-        business_category = max(business_scores, key=business_scores.get) if max(business_scores.values()) > 0 else "Application"
+        # Get business categories - include multiple if they have significant scores
+        business_categories = []
+        max_score = max(business_scores.values()) if business_scores.values() else 0
+
+        if max_score > 0:
+            # Include primary category (highest score)
+            primary_category = max(business_scores, key=business_scores.get)
+            business_categories.append(primary_category)
+
+            # Include additional categories if they score >= 50% of max score
+            threshold = max_score * 0.5
+            for category, score in business_scores.items():
+                if category != primary_category and score >= threshold:
+                    business_categories.append(category)
+
+        # Default to Application if no matches
+        if not business_categories:
+            business_categories = ["Application"]
 
         # Enhanced technical category matching
         technical_patterns = {
@@ -1012,7 +1072,7 @@ class MetricsIntelligenceAnalyzer:
         # Get technical category with highest score
         technical_category = max(technical_scores, key=technical_scores.get) if max(technical_scores.values()) > 0 else "Performance"
 
-        return business_category, technical_category
+        return business_categories, technical_category
 
     def extract_common_fields(self, metric_data: List[Dict[str, Any]]) -> List[str]:
         """Extract commonly available fields for grouping."""
@@ -1052,47 +1112,24 @@ class MetricsIntelligenceAnalyzer:
         # Rule-based categorization based on metric name patterns
         metric_lower = metric_name.lower()
         
-        # Determine business and technical categories based on name patterns
-        if any(keyword in metric_lower for keyword in ['cpu', 'memory', 'disk', 'network', 'container', 'node', 'host']):
-            business_category = "Infrastructure"
-        elif any(keyword in metric_lower for keyword in ['service', 'application', 'app', 'request', 'response']):
-            business_category = "Application"  
-        elif any(keyword in metric_lower for keyword in ['database', 'db', 'sql', 'query', 'connection']):
-            business_category = "Database"
-        elif any(keyword in metric_lower for keyword in ['storage', 'volume', 'filesystem', 'bytes']):
-            business_category = "Storage"
-        elif any(keyword in metric_lower for keyword in ['network', 'packet', 'bandwidth', 'connection']):
-            business_category = "Network"
-        else:
-            business_category = "Monitoring"
-            
-        # Determine technical category
-        if any(keyword in metric_lower for keyword in ['error', 'fail', 'exception']):
-            technical_category = "Error"
-        elif any(keyword in metric_lower for keyword in ['latency', 'duration', 'time', 'ms', 'seconds']):
-            technical_category = "Latency"
-        elif any(keyword in metric_lower for keyword in ['count', 'total', 'number']):
-            technical_category = "Count"
-        elif any(keyword in metric_lower for keyword in ['usage', 'utilization', 'percent']):
-            technical_category = "Resource"
-        elif any(keyword in metric_lower for keyword in ['throughput', 'rate', 'per_sec']):
-            technical_category = "Throughput"
-        elif any(keyword in metric_lower for keyword in ['available', 'up', 'down', 'status']):
-            technical_category = "Availability"
-        else:
-            technical_category = "Performance"
+        # Use enhanced categorization with multi-category support
+        expanded_keywords = self.expand_keywords(metric_lower)
+        business_categories, technical_category = self.categorize_metric_with_enhanced_matching(
+            metric_name, expanded_keywords, metric_type, dimensions
+        )
             
         # Generate simple purpose and usage text
         purpose = f"Tracks {metric_name.replace('_', ' ')} metrics for {dataset_name}"
         if description:
             purpose = description
             
-        usage = f"Monitor {technical_category.lower()} issues, analyze trends, set alerts, troubleshoot {business_category.lower()} problems"
+        primary_business = business_categories[0] if business_categories else "system"
+        usage = f"Monitor {technical_category.lower()} issues, analyze trends, set alerts, troubleshoot {primary_business.lower()} problems"
         
         return {
             "inferred_purpose": purpose,
             "typical_usage": usage,
-            "business_category": business_category,
+            "business_categories": business_categories,
             "technical_category": technical_category,
             "metric_type": metric_type,
             "metric_type_info": self.get_metric_type_info(metric_type),
@@ -1108,7 +1145,7 @@ class MetricsIntelligenceAnalyzer:
                     dataset_id, metric_name, dataset_name, dataset_type, workspace_id,
                     metric_type, unit, description, common_dimensions, dimension_cardinality,
                     sample_dimensions, value_type, value_range, sample_values, data_frequency,
-                    last_seen, first_seen, inferred_purpose, typical_usage, business_category,
+                    last_seen, first_seen, inferred_purpose, typical_usage, business_categories,
                     technical_category, common_fields, nested_field_paths, nested_field_analysis, excluded, exclusion_reason, confidence_score, last_analyzed
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
@@ -1130,7 +1167,7 @@ class MetricsIntelligenceAnalyzer:
                     last_seen = EXCLUDED.last_seen,
                     inferred_purpose = EXCLUDED.inferred_purpose,
                     typical_usage = EXCLUDED.typical_usage,
-                    business_category = EXCLUDED.business_category,
+                    business_categories = EXCLUDED.business_categories,
                     technical_category = EXCLUDED.technical_category,
                     common_fields = EXCLUDED.common_fields,
                     nested_field_paths = EXCLUDED.nested_field_paths,
@@ -1159,7 +1196,7 @@ class MetricsIntelligenceAnalyzer:
                 metric_data['first_seen'],
                 metric_data['inferred_purpose'],
                 metric_data['typical_usage'],
-                metric_data['business_category'],
+                json.dumps(metric_data['business_categories']),
                 metric_data['technical_category'],
                 metric_data['common_fields'],
                 json.dumps(metric_data['nested_field_paths']) if metric_data.get('nested_field_paths') else None,
@@ -1471,7 +1508,7 @@ class MetricsIntelligenceAnalyzer:
                     'first_seen': first_seen,
                     'inferred_purpose': analysis['inferred_purpose'],
                     'typical_usage': analysis['typical_usage'],
-                    'business_category': analysis['business_category'],
+                    'business_categories': analysis['business_categories'],
                     'technical_category': analysis['technical_category'],
                     'excluded': False,
                     'exclusion_reason': None,

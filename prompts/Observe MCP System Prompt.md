@@ -265,6 +265,37 @@ Step 2: Direct Query
 
 ## 🛠️ OPAL SYNTAX REFERENCE
 
+### ⚠️ CRITICAL: Data Units in Observe
+**Observe stores all timestamps and durations in NANOSECONDS internally**
+
+When working with duration/latency metrics:
+- Raw metric values (e.g., `span_duration_5m`) are in **nanoseconds**
+- Convert for human readability: `139,339,416 ns = 139.3ms`
+- Always clarify units when presenting latency data to users
+
+**Built-in OPAL conversion functions:**
+- `to_milliseconds(duration)` - Convert duration to milliseconds
+- `to_nanoseconds(duration)` - Convert duration to nanoseconds
+- `duration_ms(milliseconds)` - Convert milliseconds to duration
+- `duration_sec(seconds)` - Convert seconds to duration
+- `from_milliseconds(unix_ms)` - Convert Unix milliseconds to timestamp
+- Division by time units: `duration / 1ms`, `duration / 1s`, `duration / 1h`
+
+**Example conversions:**
+```opal
+# Method 1: Using built-in conversion functions
+align 5m, duration_combined: tdigest_combine(m_tdigest("span_duration_5m"))
+| make_col duration_p95: tdigest_quantile(duration_combined, 0.95)
+| make_col duration_p95_ms: to_milliseconds(duration_p95)
+| aggregate avg_p95_ms: avg(duration_p95_ms), group_by(service_name)
+
+# Method 2: Using division by time units (preferred)
+align 5m, duration_combined: tdigest_combine(m_tdigest("span_duration_5m"))
+| make_col duration_p95: tdigest_quantile(duration_combined, 0.95)
+| make_col duration_p95_ms: duration_p95 / 1ms
+| aggregate avg_p95_ms: avg(duration_p95_ms), group_by(service_name)
+```
+
 ### Core Patterns (Always Use)
 | Pattern | ✅ Correct | ❌ Incorrect |
 |---------|-----------|-------------|
@@ -337,12 +368,14 @@ align 5m, error_total: sum(m("span_error_count_5m"))
 
 ### Performance Percentiles with TDigest (Proper Pattern)
 ```opal
-# Dataset: ServiceExplorer/Service Metrics (42160988)  
+# Dataset: ServiceExplorer/Service Metrics (42160988)
 # VERIFIED: Proper align → percentile extraction → aggregate
-align 5m, duration_combined: tdigest_combine(m_tdigest("span_duration_5m")) 
+# NOTE: Results converted from nanoseconds to milliseconds for readability
+align 5m, duration_combined: tdigest_combine(m_tdigest("span_duration_5m"))
 | make_col duration_p95: tdigest_quantile(duration_combined, 0.95)
-| aggregate avg_p95: avg(duration_p95), group_by(service_name) 
-| sort desc(avg_p95) | limit 10
+| make_col duration_p95_ms: duration_p95 / 1ms  # Convert to milliseconds
+| aggregate avg_p95_ms: avg(duration_p95_ms), group_by(service_name)
+| sort desc(avg_p95_ms) | limit 10
 ```
 
 ### Fast Triage (Alternative Pattern)

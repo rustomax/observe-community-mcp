@@ -402,7 +402,7 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         from typing import List, Dict, Any
         
         # Database connection using environment variables
-        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
         
         # Validate parameters
         max_results = min(max(1, max_results), 30)  # Clamp between 1 and 30
@@ -411,10 +411,58 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         conn = await asyncpg.connect(DATABASE_URL)
         
         try:
-            # Use the enhanced search function with trigram similarity
-            results = await conn.fetch("""
-                SELECT * FROM search_datasets_enhanced($1, $2, $3, $4, $5, $6)
-            """, query, max_results, business_category_filter, technical_category_filter, interface_filter, 0.2)
+            # Working query with proper asyncpg parameters
+            if business_category_filter:
+                results = await conn.fetch("""
+                    SELECT
+                        di.dataset_id::TEXT,
+                        di.dataset_name::TEXT,
+                        di.inferred_purpose,
+                        di.typical_usage,
+                        di.business_categories,
+                        di.technical_category,
+                        di.interface_types,
+                        di.key_fields,
+                        di.query_patterns,
+                        di.nested_field_paths,
+                        di.nested_field_analysis,
+                        di.common_use_cases,
+                        di.data_frequency,
+                        FALSE as excluded,
+                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
+                        0.0::REAL as similarity_score
+                    FROM datasets_intelligence di
+                    WHERE di.excluded = FALSE
+                      AND di.search_vector @@ plainto_tsquery('english', $1)
+                      AND di.business_categories ? $2
+                    ORDER BY rank DESC
+                    LIMIT $3
+                """, query, business_category_filter, max_results)
+            else:
+                results = await conn.fetch("""
+                    SELECT
+                        di.dataset_id::TEXT,
+                        di.dataset_name::TEXT,
+                        di.inferred_purpose,
+                        di.typical_usage,
+                        di.business_categories,
+                        di.technical_category,
+                        di.interface_types,
+                        di.key_fields,
+                        di.query_patterns,
+                        di.nested_field_paths,
+                        di.nested_field_analysis,
+                        di.common_use_cases,
+                        di.data_frequency,
+                        FALSE as excluded,
+                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
+                        0.0::REAL as similarity_score
+                    FROM datasets_intelligence di
+                    WHERE di.excluded = FALSE
+                      AND di.search_vector @@ plainto_tsquery('english', $1)
+                    ORDER BY rank DESC
+                    LIMIT $2
+                """, query, max_results)
             
             if not results:
                 return f"""# 🔍 Dataset Discovery Results
@@ -494,7 +542,7 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 
                 result_text = f"""## {i}. {row['dataset_name']}
 **Dataset ID**: `{row['dataset_id']}`
-**Category**: {row['business_category']} / {row['technical_category']}
+**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
 {interfaces_str}**Purpose**: {row['inferred_purpose']}
 **Usage**: {row.get('typical_usage', 'Not specified')}
 {key_fields_str}{nested_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
@@ -505,11 +553,13 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
             # Get summary stats
             total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")
             category_counts = await conn.fetch("""
-                SELECT business_category, COUNT(*) as count 
-                FROM datasets_intelligence 
-                WHERE excluded = FALSE 
-                GROUP BY business_category 
-                ORDER BY count DESC 
+                SELECT
+                    jsonb_array_elements_text(business_categories) as business_category,
+                    COUNT(*) as count
+                FROM datasets_intelligence
+                WHERE excluded = FALSE
+                GROUP BY jsonb_array_elements_text(business_categories)
+                ORDER BY count DESC
                 LIMIT 5
             """)
             
@@ -524,9 +574,9 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 {chr(10).join(formatted_results)}
 
 ---
-💡 **Next Steps**: 
-- Use `get_dataset_info()` with the dataset ID to see full schema
+💡 **Next Steps**:
 - Use `execute_opal_query()` with the dataset ID to query the data
+- Use `discover_metrics()` to find related metrics for analysis
 """
             
         finally:
@@ -538,9 +588,17 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 **Error**: {str(e)}
 **Solution**: The dataset intelligence system requires asyncpg. Please install it with: pip install asyncpg"""
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         return f"""# ❌ Dataset Discovery Error
 **Issue**: Database query failed
 **Error**: {str(e)}
+**Type**: {type(e).__name__}
+**Traceback**:
+```
+{tb[:1000]}
+```
+**Query Params**: query='{query}', business_filter='{business_category_filter}', max_results={max_results}
 **Solution**: Check database connection and ensure dataset intelligence has been populated."""
 
 
@@ -1108,7 +1166,7 @@ if HAS_OPENAI_AGENTS:
                         'id': row['dataset_id'],
                         'name': row['dataset_name'], 
                         'dataset_type': 'Event',  # Default since we don't have this in the search results
-                        'business_category': row['business_category'],
+                        'business_category': ', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown']),
                         'technical_category': row['technical_category'],
                         'score': float(row['rank']),
                         'explanation': row['inferred_purpose']
@@ -1729,7 +1787,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         from typing import List, Dict, Any
         
         # Database connection using environment variables
-        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
         
         # Validate parameters
         max_results = min(max(1, max_results), 50)  # Clamp between 1 and 50
@@ -1830,7 +1888,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 
                 result_text = f"""## {i}. {row['metric_name']}
 **Dataset**: {row['dataset_name']}
-**Category**: {row['business_category']} / {row['technical_category']}
+**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
 **Type**: {metric_type}
 **Purpose**: {row['inferred_purpose']}
 **Usage**: {row['typical_usage']}
@@ -1844,10 +1902,12 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
             # Get summary stats
             total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")
             category_counts = await conn.fetch("""
-                SELECT business_category, COUNT(*) as count 
-                FROM metrics_intelligence 
-                WHERE excluded = FALSE 
-                GROUP BY business_category 
+                SELECT
+                    jsonb_array_elements_text(business_categories) as business_category,
+                    COUNT(*) as count
+                FROM metrics_intelligence
+                WHERE excluded = FALSE
+                GROUP BY jsonb_array_elements_text(business_categories)
                 ORDER BY count DESC
             """)
             
@@ -1862,10 +1922,9 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 {chr(10).join(formatted_results)}
 
 ---
-💡 **Next Steps**: 
+💡 **Next Steps**:
 - Use `execute_opal_query()` with the dataset ID to query specific metrics
-- Use `discover_datasets()` to find related datasets  
-- Use `create_visualization()` to chart the metric data
+- Use `discover_datasets()` to find related datasets for comprehensive analysis
 """
             
         finally:

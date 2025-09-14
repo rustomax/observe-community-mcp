@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS datasets_intelligence (
     interface_types TEXT[], -- ['log', 'metric', 'otel_span']
     
     -- Categorization (rule-based)
-    business_category VARCHAR(50) NOT NULL, -- Infrastructure, Application, Database, etc.
+    business_categories JSONB NOT NULL DEFAULT '[]'::jsonb, -- Array of categories: ["Infrastructure", "Application", "Database", etc.]
     technical_category VARCHAR(50) NOT NULL, -- Logs, Metrics, Traces, Events, Resources
     
     -- Analysis fields
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS datasets_intelligence (
 
 -- Indexes for fast searching
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_search ON datasets_intelligence USING GIN (search_vector);
-CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_category ON datasets_intelligence (business_category, technical_category);
+CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_category ON datasets_intelligence USING gin (business_categories);
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_type ON datasets_intelligence (dataset_type);
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_interfaces ON datasets_intelligence USING GIN (interface_types);
 CREATE INDEX IF NOT EXISTS idx_datasets_intelligence_excluded ON datasets_intelligence (excluded) WHERE excluded = FALSE;
@@ -84,7 +84,7 @@ RETURNS TABLE (
     dataset_name TEXT,
     inferred_purpose TEXT,
     typical_usage TEXT,
-    business_category TEXT,
+    business_categories JSONB,
     technical_category TEXT,
     interface_types TEXT[],
     key_fields TEXT[],
@@ -102,7 +102,7 @@ BEGIN
         di.dataset_name::TEXT,
         di.inferred_purpose,
         di.typical_usage,
-        di.business_category::TEXT,
+        di.business_categories,
         di.technical_category::TEXT,
         di.interface_types,
         di.key_fields,
@@ -116,7 +116,7 @@ BEGIN
     WHERE 
         excluded = FALSE
         AND di.search_vector @@ plainto_tsquery('english', search_query)
-        AND (business_category_filter IS NULL OR di.business_category = business_category_filter)
+        AND (business_category_filter IS NULL OR di.business_categories ? business_category_filter)
         AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
         AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
     ORDER BY 
@@ -142,7 +142,7 @@ RETURNS TABLE (
     dataset_name TEXT,
     inferred_purpose TEXT,
     typical_usage TEXT,
-    business_category TEXT,
+    business_categories JSONB,
     technical_category TEXT,
     interface_types TEXT[],
     key_fields TEXT[],
@@ -167,7 +167,7 @@ BEGIN
             di.dataset_name::TEXT,
             di.inferred_purpose,
             di.typical_usage,
-            di.business_category::TEXT,
+            di.business_categories,
             di.technical_category::TEXT,
             di.interface_types,
             di.key_fields,
@@ -182,7 +182,7 @@ BEGIN
         WHERE
             excluded = FALSE
             AND di.search_vector @@ plainto_tsquery('english', search_query)
-            AND (business_category_filter IS NULL OR di.business_category = business_category_filter)
+            AND (business_category_filter IS NULL OR di.business_categories ? business_category_filter)
             AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
             AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
     ),
@@ -192,7 +192,7 @@ BEGIN
             di.dataset_name::TEXT,
             di.inferred_purpose,
             di.typical_usage,
-            di.business_category::TEXT,
+            di.business_categories,
             di.technical_category::TEXT,
             di.interface_types,
             di.key_fields,
@@ -210,7 +210,7 @@ BEGIN
         FROM datasets_intelligence di
         WHERE
             excluded = FALSE
-            AND (business_category_filter IS NULL OR di.business_category = business_category_filter)
+            AND (business_category_filter IS NULL OR di.business_categories ? business_category_filter)
             AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
             AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
             AND (
@@ -228,7 +228,7 @@ BEGIN
         cr.dataset_id,
         cr.dataset_name,
         cr.inferred_purpose,
-        cr.business_category,
+        cr.business_categories,
         cr.technical_category,
         cr.interface_types,
         cr.rank,
@@ -249,7 +249,7 @@ BEGIN
         setweight(to_tsvector('english', COALESCE(NEW.dataset_name, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(NEW.inferred_purpose, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(NEW.typical_usage, '')), 'C') ||
-        setweight(to_tsvector('english', COALESCE(NEW.business_category, '') || ' ' || COALESCE(NEW.technical_category, '')), 'B') ||
+        setweight(to_tsvector('english', COALESCE(array_to_string(ARRAY(SELECT jsonb_array_elements_text(NEW.business_categories)), ' '), '') || ' ' || COALESCE(NEW.technical_category, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(array_to_string(NEW.interface_types, ' '), '')), 'D') ||
         setweight(to_tsvector('english', COALESCE(array_to_string(NEW.common_use_cases, ' '), '')), 'C');
     RETURN NEW;
@@ -281,15 +281,15 @@ CREATE TRIGGER datasets_intelligence_updated_at
 
 -- Convenience views for common queries
 CREATE OR REPLACE VIEW datasets_by_category AS
-SELECT 
-    business_category,
+SELECT
+    jsonb_array_elements_text(business_categories) as business_category,
     technical_category,
     COUNT(*) as dataset_count,
     array_agg(DISTINCT dataset_type) as types,
     array_agg(dataset_name ORDER BY dataset_name) as datasets
-FROM datasets_intelligence 
+FROM datasets_intelligence
 WHERE excluded = FALSE
-GROUP BY business_category, technical_category
+GROUP BY jsonb_array_elements_text(business_categories), technical_category
 ORDER BY business_category, technical_category;
 
 CREATE OR REPLACE VIEW datasets_by_interface AS

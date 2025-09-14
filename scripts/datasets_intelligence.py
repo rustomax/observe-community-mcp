@@ -1076,8 +1076,24 @@ class DatasetsIntelligenceAnalyzer:
                     score += 1
             business_scores[category] = score
 
-        # Get business category with highest score
-        business_category = max(business_scores, key=business_scores.get) if max(business_scores.values()) > 0 else "Infrastructure"
+        # Get business categories - include multiple if they have significant scores
+        business_categories = []
+        max_score = max(business_scores.values()) if business_scores.values() else 0
+
+        if max_score > 0:
+            # Include primary category (highest score)
+            primary_category = max(business_scores, key=business_scores.get)
+            business_categories.append(primary_category)
+
+            # Include additional categories if they score >= 50% of max score
+            threshold = max_score * 0.5
+            for category, score in business_scores.items():
+                if category != primary_category and score >= threshold:
+                    business_categories.append(category)
+
+        # Default to Infrastructure if no matches
+        if not business_categories:
+            business_categories = ["Infrastructure"]
 
         # Enhanced technical category matching
         technical_patterns = {
@@ -1143,7 +1159,12 @@ class DatasetsIntelligenceAnalyzer:
         else:
             technical_category = max(technical_scores, key=technical_scores.get)
 
-        return business_category, technical_category
+        # Special case: Kubernetes and similar platform logs are hybrid Infrastructure+Application
+        if any(keyword in name_lower for keyword in ['kubernetes', 'k8s', 'cloudwatch', 'azure.*log', 'gcp.*log']) and 'Logs' in technical_category:
+            if "Infrastructure" in business_categories and "Application" not in business_categories:
+                business_categories.append("Application")
+
+        return business_categories, technical_category
 
     async def generate_dataset_analysis(self, name: str, dataset_type: str, interfaces: List[str]) -> Dict[str, Any]:
         """Generate enhanced rule-based analysis with better keyword matching."""
@@ -1153,7 +1174,7 @@ class DatasetsIntelligenceAnalyzer:
         expanded_keywords = self.expand_keywords(name_lower)
 
         # Enhanced categorization
-        business_category, technical_category = self.categorize_with_enhanced_matching(
+        business_categories, technical_category = self.categorize_with_enhanced_matching(
             name_lower, expanded_keywords, interfaces, dataset_type
         )
         
@@ -1171,8 +1192,9 @@ class DatasetsIntelligenceAnalyzer:
             purpose = f"Contains resource information for {name.split('/')[0] if '/' in name else name}"
             usage = "Inventory management, resource utilization analysis, capacity planning, configuration tracking"
         else:
-            purpose = f"Contains {technical_category.lower()} data for {business_category.lower()} monitoring"
-            usage = f"Investigate {business_category.lower()} issues, analyze {technical_category.lower()} patterns, troubleshoot system problems"
+            primary_category = business_categories[0].lower() if business_categories else "infrastructure"
+            purpose = f"Contains {technical_category.lower()} data for {primary_category} monitoring"
+            usage = f"Investigate {primary_category} issues, analyze {technical_category.lower()} patterns, troubleshoot system problems"
         
         # Generate common use cases based on category
         common_use_cases = []
@@ -1198,8 +1220,9 @@ class DatasetsIntelligenceAnalyzer:
                 "Performance optimization"
             ]
         else:
+            primary_category = business_categories[0] if business_categories else "Infrastructure"
             common_use_cases = [
-                f"{business_category} monitoring",
+                f"{primary_category} monitoring",
                 "Issue investigation",
                 "Trend analysis",
                 "System health checks"
@@ -1208,7 +1231,7 @@ class DatasetsIntelligenceAnalyzer:
         return {
             "inferred_purpose": purpose,
             "typical_usage": usage,
-            "business_category": business_category,
+            "business_categories": business_categories,
             "technical_category": technical_category,
             "common_use_cases": common_use_cases,
             "data_frequency": "medium"  # Default, could be enhanced with actual data analysis
@@ -1220,7 +1243,7 @@ class DatasetsIntelligenceAnalyzer:
             await conn.execute("""
                 INSERT INTO datasets_intelligence (
                     dataset_id, dataset_name, dataset_type, workspace_id, interface_types,
-                    business_category, technical_category, inferred_purpose, typical_usage,
+                    business_categories, technical_category, inferred_purpose, typical_usage,
                     key_fields, sample_data_summary, query_patterns, nested_field_paths, nested_field_analysis,
                     common_use_cases, data_frequency, first_seen, last_seen,
                     excluded, exclusion_reason, confidence_score, last_analyzed
@@ -1231,7 +1254,7 @@ class DatasetsIntelligenceAnalyzer:
                     dataset_type = EXCLUDED.dataset_type,
                     workspace_id = EXCLUDED.workspace_id,
                     interface_types = EXCLUDED.interface_types,
-                    business_category = EXCLUDED.business_category,
+                    business_categories = EXCLUDED.business_categories,
                     technical_category = EXCLUDED.technical_category,
                     inferred_purpose = EXCLUDED.inferred_purpose,
                     typical_usage = EXCLUDED.typical_usage,
@@ -1254,7 +1277,7 @@ class DatasetsIntelligenceAnalyzer:
                 dataset_data['dataset_type'],
                 dataset_data['workspace_id'],
                 dataset_data['interface_types'],
-                dataset_data['business_category'],
+                json.dumps(dataset_data['business_categories']),
                 dataset_data['technical_category'],
                 dataset_data['inferred_purpose'],
                 dataset_data['typical_usage'],
@@ -1312,7 +1335,7 @@ class DatasetsIntelligenceAnalyzer:
                     'dataset_type': dataset_type,
                     'workspace_id': workspace_id,
                     'interface_types': interface_types,
-                    'business_category': '',
+                    'business_categories': [],
                     'technical_category': '',
                     'inferred_purpose': '',
                     'typical_usage': '',
@@ -1363,7 +1386,7 @@ class DatasetsIntelligenceAnalyzer:
                 'dataset_type': dataset_type,
                 'workspace_id': workspace_id,
                 'interface_types': interface_types,
-                'business_category': analysis['business_category'],
+                'business_categories': analysis['business_categories'],
                 'technical_category': analysis['technical_category'],
                 'inferred_purpose': analysis['inferred_purpose'],
                 'typical_usage': analysis['typical_usage'],

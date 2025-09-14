@@ -39,7 +39,7 @@ CREATE TABLE metrics_intelligence (
     -- LLM-generated intelligence
     inferred_purpose TEXT,             -- What this metric measures (LLM analysis)
     typical_usage TEXT,                -- Investigation scenarios for this specific metric
-    business_category TEXT,            -- Infrastructure, Application, Security, etc.
+    business_categories JSONB NOT NULL DEFAULT '[]'::jsonb, -- Multiple categories: ["Infrastructure", "Application"], etc.
     technical_category TEXT,           -- Performance, Error, Resource, Business, etc.
     
     -- Query assistance (enhanced with nested field support)
@@ -68,7 +68,7 @@ CREATE TABLE metrics_intelligence (
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_dataset ON metrics_intelligence(dataset_id);
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_name ON metrics_intelligence(metric_name);
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_type ON metrics_intelligence(metric_type);
-CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_category ON metrics_intelligence(business_category);
+CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_category ON metrics_intelligence USING GIN(business_categories);
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_excluded ON metrics_intelligence(excluded) WHERE excluded = FALSE;
 CREATE INDEX IF NOT EXISTS idx_metrics_intelligence_last_seen ON metrics_intelligence(last_seen DESC);
 
@@ -89,7 +89,7 @@ BEGIN
         setweight(to_tsvector('english', COALESCE(NEW.description, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(NEW.inferred_purpose, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(NEW.typical_usage, '')), 'C') ||
-        setweight(to_tsvector('english', COALESCE(NEW.business_category, '')), 'C') ||
+        setweight(to_tsvector('english', COALESCE(array_to_string(ARRAY(SELECT jsonb_array_elements_text(NEW.business_categories)), ' '), '')), 'C') ||
         setweight(to_tsvector('english', COALESCE(NEW.technical_category, '')), 'C') ||
         setweight(to_tsvector('english', COALESCE(
             (SELECT string_agg(key, ' ') FROM jsonb_object_keys(NEW.common_dimensions) AS key), '')), 'D');
@@ -112,22 +112,27 @@ SELECT
     COUNT(*) as metric_count,
     COUNT(*) FILTER (WHERE excluded = FALSE) as active_metric_count,
     ARRAY_AGG(DISTINCT metric_type) FILTER (WHERE metric_type IS NOT NULL) as metric_types,
-    ARRAY_AGG(DISTINCT business_category) FILTER (WHERE business_category IS NOT NULL) as categories
-FROM metrics_intelligence 
+    ARRAY_AGG(DISTINCT cat) FILTER (WHERE cat IS NOT NULL) as categories
+FROM metrics_intelligence,
+     LATERAL jsonb_array_elements_text(business_categories) AS cat
 GROUP BY dataset_id, dataset_name;
 
 -- Summary view for quick overview
 CREATE OR REPLACE VIEW metrics_summary AS
-SELECT 
-    business_category,
+SELECT
+    jsonb_array_elements_text(business_categories) as business_category,
     technical_category,
     COUNT(*) as metric_count,
     COUNT(DISTINCT dataset_id) as dataset_count,
     AVG(confidence_score) as avg_confidence
-FROM metrics_intelligence 
+FROM metrics_intelligence
 WHERE excluded = FALSE
-GROUP BY business_category, technical_category
+GROUP BY jsonb_array_elements_text(business_categories), technical_category
 ORDER BY metric_count DESC;
+
+-- Drop existing functions to avoid return type conflicts
+DROP FUNCTION IF EXISTS search_metrics(text,integer);
+DROP FUNCTION IF EXISTS search_metrics_enhanced(text,integer,text,text,real);
 
 -- Search function for metrics using full-text search
 CREATE OR REPLACE FUNCTION search_metrics(search_query TEXT, max_results INT DEFAULT 20)
@@ -136,7 +141,7 @@ RETURNS TABLE (
     dataset_name TEXT,
     description TEXT,
     inferred_purpose TEXT,
-    business_category TEXT,
+    business_categories JSONB,
     technical_category TEXT,
     rank REAL
 ) AS $$
@@ -147,7 +152,7 @@ BEGIN
         m.dataset_name,
         m.description,
         m.inferred_purpose,
-        m.business_category,
+        m.business_categories,
         m.technical_category,
         ts_rank(m.search_vector, plainto_tsquery('english', search_query)) AS rank
     FROM metrics_intelligence m
@@ -175,7 +180,7 @@ RETURNS TABLE (
     dataset_name TEXT,
     inferred_purpose TEXT,
     typical_usage TEXT,
-    business_category TEXT,
+    business_categories JSONB,
     technical_category TEXT,
     metric_type TEXT,
     common_fields TEXT[],
@@ -201,7 +206,7 @@ BEGIN
             m.dataset_name,
             m.inferred_purpose,
             m.typical_usage,
-            m.business_category,
+            m.business_categories,
             m.technical_category,
             m.metric_type,
             m.common_fields,
@@ -217,7 +222,7 @@ BEGIN
         WHERE
             excluded = FALSE
             AND m.search_vector @@ plainto_tsquery('english', search_query)
-            AND (category_filter IS NULL OR m.business_category = category_filter)
+            AND (category_filter IS NULL OR m.business_categories ? category_filter)
             AND (technical_filter IS NULL OR m.technical_category = technical_filter)
     ),
     similarity_results AS (
@@ -226,7 +231,7 @@ BEGIN
             m.dataset_name,
             m.inferred_purpose,
             m.typical_usage,
-            m.business_category,
+            m.business_categories,
             m.technical_category,
             m.metric_type,
             m.common_fields,
@@ -245,7 +250,7 @@ BEGIN
         FROM metrics_intelligence m
         WHERE
             excluded = FALSE
-            AND (category_filter IS NULL OR m.business_category = category_filter)
+            AND (category_filter IS NULL OR m.business_categories ? category_filter)
             AND (technical_filter IS NULL OR m.technical_category = technical_filter)
             AND (
                 similarity(unaccent(lower(m.metric_name)), cleaned_query) > similarity_threshold
@@ -263,10 +268,12 @@ BEGIN
         cr.dataset_name,
         cr.inferred_purpose,
         cr.typical_usage,
-        cr.business_category,
+        cr.business_categories,
         cr.technical_category,
         cr.metric_type,
         cr.common_fields,
+        cr.nested_field_paths,
+        cr.nested_field_analysis,
         cr.common_dimensions,
         cr.value_range,
         cr.data_frequency,
