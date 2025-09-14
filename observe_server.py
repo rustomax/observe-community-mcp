@@ -344,58 +344,75 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         conn = await asyncpg.connect(DATABASE_URL)
         
         try:
-            # Working query with proper asyncpg parameters
+            # Enhanced manual query with better search capabilities
+            # Split complex queries into individual terms for better matching
+            search_terms = query.lower().split()
+
+            # Create individual search conditions for better matching
+            search_conditions = []
+            params = []
+            param_idx = 1
+
+            for term in search_terms:
+                search_conditions.append(f"di.search_vector @@ plainto_tsquery('english', ${param_idx})")
+                params.append(term)
+                param_idx += 1
+
+            # If no individual terms match, fall back to full query
+            if not search_conditions:
+                search_conditions = [f"di.search_vector @@ plainto_tsquery('english', ${param_idx})"]
+                params.append(query)
+                param_idx += 1
+
+            # Combine search conditions with OR for better matching
+            where_clause = f"({' OR '.join(search_conditions)})"
+
+            # Add filters
             if business_category_filter:
-                results = await conn.fetch("""
-                    SELECT
-                        di.dataset_id::TEXT,
-                        di.dataset_name::TEXT,
-                        di.inferred_purpose,
-                        di.typical_usage,
-                        di.business_categories,
-                        di.technical_category,
-                        di.interface_types,
-                        di.key_fields,
-                        di.query_patterns,
-                        di.nested_field_paths,
-                        di.nested_field_analysis,
-                        di.common_use_cases,
-                        di.data_frequency,
-                        FALSE as excluded,
-                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
-                        0.0::REAL as similarity_score
-                    FROM datasets_intelligence di
-                    WHERE di.excluded = FALSE
-                      AND di.search_vector @@ plainto_tsquery('english', $1)
-                      AND di.business_categories ? $2
-                    ORDER BY rank DESC
-                    LIMIT $3
-                """, query, business_category_filter, max_results)
-            else:
-                results = await conn.fetch("""
-                    SELECT
-                        di.dataset_id::TEXT,
-                        di.dataset_name::TEXT,
-                        di.inferred_purpose,
-                        di.typical_usage,
-                        di.business_categories,
-                        di.technical_category,
-                        di.interface_types,
-                        di.key_fields,
-                        di.query_patterns,
-                        di.nested_field_paths,
-                        di.nested_field_analysis,
-                        di.common_use_cases,
-                        di.data_frequency,
-                        FALSE as excluded,
-                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
-                        0.0::REAL as similarity_score
-                    FROM datasets_intelligence di
-                    WHERE di.excluded = FALSE
-                      AND di.search_vector @@ plainto_tsquery('english', $1)
-                    ORDER BY rank DESC
-                    LIMIT $2
-                """, query, max_results)
+                where_clause += f" AND di.business_categories ? ${param_idx}"
+                params.append(business_category_filter)
+                param_idx += 1
+
+            if technical_category_filter:
+                where_clause += f" AND di.technical_category = ${param_idx}"
+                params.append(technical_category_filter)
+                param_idx += 1
+
+            if interface_filter:
+                where_clause += f" AND ${param_idx} = ANY(di.interface_types)"
+                params.append(interface_filter)
+                param_idx += 1
+
+            # Add limit parameter
+            params.append(max_results)
+            limit_param = param_idx
+
+            query_sql = f"""
+                SELECT
+                    di.dataset_id::TEXT,
+                    di.dataset_name::TEXT,
+                    di.inferred_purpose,
+                    di.typical_usage,
+                    di.business_categories,
+                    di.technical_category,
+                    di.interface_types,
+                    di.key_fields,
+                    di.query_patterns,
+                    di.nested_field_paths,
+                    di.nested_field_analysis,
+                    di.common_use_cases,
+                    di.data_frequency,
+                    FALSE as excluded,
+                    ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
+                    0.0::REAL as similarity_score
+                FROM datasets_intelligence di
+                WHERE di.excluded = FALSE
+                  AND {where_clause}
+                ORDER BY rank DESC
+                LIMIT ${limit_param}
+            """
+
+            results = await conn.fetch(query_sql, *params)
             
             if not results:
                 return f"""# 🔍 Dataset Discovery Results
