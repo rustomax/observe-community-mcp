@@ -17,7 +17,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 - **Metrics Intelligence**: Discover and understand metrics with automated categorization and usage guidance
 - **Documentation Search**: Fast BM25-powered search through Observe documentation and OPAL reference
 - **OPAL Query Execution**: Run queries against any Observe dataset with multi-dataset join support
-- **Zero External Dependencies**: Self-contained with PostgreSQL BM25 search (no Pinecone/OpenAI required)
+- **Zero External Dependencies**: Self-contained with PostgreSQL BM25 search
 
 > **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
 
@@ -36,7 +36,7 @@ The server provides **5 intelligent tools** for Observe platform interaction:
 
 ### 🔍 Discovery & Search
 - **`discover_datasets`**: Find datasets using natural language queries with intelligent categorization and usage examples
-- **`discover_metrics`**: Search through 500+ analyzed metrics with business/technical categorization and relevance scoring
+- **`discover_metrics`**: Search through analyzed metrics with business/technical categorization and relevance scoring
 - **`get_relevant_docs`**: Search Observe documentation and OPAL language reference using fast PostgreSQL BM25 search
 
 ### ⚡ Query Execution
@@ -96,17 +96,20 @@ docker-compose up --build
 
 ### 4. Initialize Intelligence Systems
 
-Run these commands to populate the intelligence databases:
+Run these commands locally to populate the intelligence databases:
 
 ```bash
+# Activate virtual environment
+source .venv/bin/activate
+
 # Populate documentation search index
-docker exec observe-mcp-server python scripts/setup_bm25_docs.py
+python scripts/setup_bm25_docs.py
 
-# Build dataset intelligence (analyzes all datasets in your Observe instance)
-docker exec observe-mcp-server python scripts/datasets_intelligence.py
+# Build dataset intelligence (analyzes datasets in your Observe instance)
+python scripts/datasets_intelligence.py
 
-# Build metrics intelligence (analyzes 500+ metrics with categorization)
-docker exec observe-mcp-server python scripts/metrics_intelligence.py
+# Build metrics intelligence (analyzes metrics with categorization)
+python scripts/metrics_intelligence.py
 ```
 
 ### 5. Connect with Claude Desktop
@@ -142,7 +145,7 @@ graph TB
     Server --> ObserveAPI[Observe Platform<br/>OPAL Queries]
 
     Discovery --> DatasetDB[(datasets_intelligence<br/>Dataset Metadata)]
-    Discovery --> MetricsDB[(metrics_intelligence<br/>500+ Metrics)]
+    Discovery --> MetricsDB[(metrics_intelligence<br/>Discovered Metrics)]
     Discovery --> DocsDB[(documentation_chunks<br/>BM25 Search)]
 
     ObserveAPI --> Results[Structured Results]
@@ -178,7 +181,7 @@ graph TB
 
 **Key Tables:**
 - `datasets_intelligence` - Analyzed dataset metadata with categories and usage patterns
-- `metrics_intelligence` - 500+ metrics with business/technical categorization
+- `metrics_intelligence` - Analyzed metrics with business/technical categorization
 - `documentation_chunks` - Searchable documentation content with BM25 indexing
 
 ## Intelligence Systems
@@ -196,7 +199,7 @@ Automatically categorizes and analyzes all Observe datasets to enable natural la
 
 ### Metrics Intelligence
 
-Analyzes 500+ metrics from Observe with comprehensive metadata:
+Analyzes metrics from Observe with comprehensive metadata:
 
 **Analysis Includes:**
 - **Categorization**: Business domain (Infrastructure/Application/Database) + Technical type (Error/Latency/Performance)
@@ -245,14 +248,17 @@ cat public_key.pem  # Copy to PUBLIC_KEY_PEM
 ### Update Intelligence Data
 
 ```bash
+# Activate virtual environment
+source .venv/bin/activate
+
 # Refresh dataset intelligence (when new datasets are added)
-docker exec observe-mcp-server python scripts/datasets_intelligence.py
+python scripts/datasets_intelligence.py
 
 # Update metrics intelligence (daily recommended)
-docker exec observe-mcp-server python scripts/metrics_intelligence.py
+python scripts/metrics_intelligence.py
 
 # Rebuild documentation index (when docs change)
-docker exec observe-mcp-server python scripts/setup_bm25_docs.py
+python scripts/setup_bm25_docs.py
 ```
 
 ### Monitor Performance
@@ -281,7 +287,7 @@ docker logs observe-mcp-server | grep "docs search"
 
 The system is designed for fast response times:
 - Dataset discovery: < 2 seconds
-- Metrics search: < 1 second
+- Metrics discovery: < 1 second
 - Documentation search: < 500ms
 - Intelligence updates: Run when data changes
 
@@ -297,14 +303,16 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Start PostgreSQL (separate terminal)
-docker run --name observe-postgres -p 5432:5432 \
-  -e POSTGRES_PASSWORD=yourpassword paradedb/paradedb:latest
+# Start containers
+docker-compose build
+docker-compose up -d
 
-# Initialize and run server
+# Initialize intelligence systems
 python scripts/setup_bm25_docs.py
 python scripts/datasets_intelligence.py
 python scripts/metrics_intelligence.py
+
+# Run server
 python observe_server.py
 ```
 
