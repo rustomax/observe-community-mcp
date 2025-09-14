@@ -119,6 +119,11 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         )
     """
     import json
+
+    # Log the OPAL query operation with sanitized query (truncated for security)
+    query_preview = query[:100] + "..." if len(query) > 100 else query
+    dataset_info = primary_dataset_id or dataset_id
+    opal_logger.info(f"query execution | dataset:{dataset_info} | query:'{query_preview}' | time_range:{time_range} | rows:{row_count}")
     
     # Parse JSON string parameters if provided
     parsed_secondary_dataset_ids = None
@@ -160,7 +165,10 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         # Import required modules
         import os
         from collections import defaultdict
-        
+
+        # Log the documentation search operation
+        semantic_logger.info(f"docs search | query:'{query}' | n_results:{n_results}")
+
         chunk_results = search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
         
         if not chunk_results:
@@ -215,7 +223,10 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
                 response += f"Note: Could not read the full document file. Showing available chunks.\\n\\n"
                 response += f"{chunks_text}\\n\\n\\n"
                 response += "----------------------------------------\\n\\n"
-        
+
+        # Log successful documentation search
+        semantic_logger.info(f"docs search complete | found:{len(sorted_docs)} documents | chunks:{len(chunk_results)}")
+
         return response
     except Exception as e:
         return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the vector database by running populate_docs_index.py."
@@ -340,7 +351,10 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         import asyncpg
         import json
         from typing import List, Dict, Any
-        
+
+        # Log the semantic search operation
+        semantic_logger.info(f"dataset search | query:'{query}' | max_results:{max_results} | filters:{business_category_filter or technical_category_filter or interface_filter}")
+
         # Database connection using environment variables
         DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
         
@@ -505,6 +519,9 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
             
             category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
             
+            # Log successful results
+            semantic_logger.info(f"dataset search complete | found:{len(results)} datasets | total_available:{total_datasets}")
+
             return f"""# 🎯 Dataset Discovery Results
 
 **Query**: "{query}"
@@ -580,7 +597,10 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         import asyncpg
         import json
         from typing import List, Dict, Any
-        
+
+        # Log the semantic search operation
+        semantic_logger.info(f"metrics search | query:'{query}' | max_results:{max_results} | filters:{category_filter or technical_filter}")
+
         # Database connection using environment variables
         DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
         
@@ -707,7 +727,10 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
             """)
             
             category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
-            
+
+            # Log successful results
+            semantic_logger.info(f"metrics search complete | found:{len(results)} metrics | total_available:{total_metrics}")
+
             return f"""# 🎯 Metrics Discovery Results
 
 **Query**: "{query}"

@@ -8,7 +8,7 @@ with flexible time parameter support.
 import sys
 import json
 from typing import Dict, Any, Optional, List
-from src.logging import get_logger
+from src.logging import get_logger, opal_logger
 
 logger = get_logger('QUERY')
 
@@ -296,11 +296,15 @@ def _process_query_response(response: Dict[str, Any]) -> str:
     # For successful responses, return the data
     if isinstance(response, dict) and "data" in response:
         data = response["data"]
+        # Log successful query execution with result metrics
+        lines = data.count('\n') if data else 0
+        data_size = len(data) if data else 0
+        opal_logger.info(f"query successful | rows:{lines} | data_size:{data_size} bytes")
+
         # If the data is very large, provide a summary
         if len(data) > 10000:  # Arbitrary threshold
-            lines = data.count('\\n')
-            first_lines = '\\n'.join(data.split('\\n')[:50])
-            return f"Query returned {lines} rows of data. First 50 lines:\\n\\n{first_lines}"
+            first_lines = '\n'.join(data.split('\n')[:50])
+            return f"Query returned {lines} rows of data. First 50 lines:\n\n{first_lines}"
         return data
     
     # Handle unexpected response format
