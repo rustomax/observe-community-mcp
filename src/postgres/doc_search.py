@@ -11,11 +11,26 @@ import asyncpg
 from typing import List, Dict, Any, Optional
 from src.logging import semantic_logger
 
+# Import telemetry decorators
+try:
+    from src.telemetry.decorators import trace_database_operation
+    from src.telemetry.utils import add_database_context
+except ImportError:
+    # Fallback decorators if telemetry is not available
+    def trace_database_operation(operation=None, table=None):
+        def decorator(func):
+            return func
+        return decorator
+
+    def add_database_context(span, **kwargs):
+        pass
+
 # Database connection configuration
 # Supports both Docker (port 5433) and local PostgreSQL (port 5432)
 DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
 
 
+@trace_database_operation(operation="bm25_search", table="documentation_chunks")
 async def search_docs_bm25(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
     """
     Perform BM25-based document search using PostgreSQL
@@ -76,6 +91,7 @@ async def search_docs_bm25(query: str, n_results: int = 5) -> List[Dict[str, Any
         }]
 
 
+@trace_database_operation(operation="bm25_query", table="documentation_chunks")
 async def _search_with_bm25(conn: asyncpg.Connection, query: str, n_results: int) -> List[Dict[str, Any]]:
     """Search using ParadeDB BM25 with @@@ operator"""
     try:
@@ -120,6 +136,7 @@ async def _search_with_bm25(conn: asyncpg.Connection, query: str, n_results: int
             raise
 
 
+@trace_database_operation(operation="fulltext_search", table="documentation_chunks")
 async def _search_with_fulltext(conn: asyncpg.Connection, query: str, n_results: int) -> List[Dict[str, Any]]:
     """Fallback search using PostgreSQL full-text search"""
     try:
@@ -146,6 +163,7 @@ async def _search_with_fulltext(conn: asyncpg.Connection, query: str, n_results:
         raise
 
 
+@trace_database_operation(operation="stats_query", table="documentation_chunks")
 async def get_documentation_stats() -> Dict[str, Any]:
     """Get statistics about the documentation corpus"""
     try:

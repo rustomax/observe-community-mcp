@@ -27,6 +27,21 @@ except Exception as e:
     pass
     raise
 
+# Load environment variables from .env file first
+load_dotenv()
+
+# Initialize OpenTelemetry instrumentation early
+from src.telemetry import initialize_telemetry, initialize_metrics
+from src.telemetry.decorators import trace_mcp_tool, trace_observe_api_call, trace_database_operation
+from src.telemetry.utils import add_mcp_context, add_observe_context, add_database_context
+telemetry_enabled = initialize_telemetry()
+
+# Initialize metrics if telemetry is enabled
+if telemetry_enabled:
+    metrics_enabled = initialize_metrics()
+else:
+    metrics_enabled = False
+
 # Import BM25 document search
 try:
     from src.postgres.doc_search import search_docs_bm25 as search_docs
@@ -39,9 +54,6 @@ except ImportError as e:
             "title": "BM25 Search Not Available",
             "score": 1.0
         }]
-
-# Load environment variables from .env file
-load_dotenv()
 
 # Import organized Observe API modules
 from src.observe import (
@@ -75,9 +87,17 @@ mcp = create_authenticated_mcp(server_name="observe-community")
 auth_provider = setup_auth_provider()
 initialize_auth_middleware(auth_provider)
 
+# Configure FastAPI instrumentation if telemetry is enabled
+if telemetry_enabled:
+    from src.telemetry.config import instrument_fastapi_app
+    # Note: FastMCP wraps FastAPI, so we'll instrument the underlying app
+    if hasattr(mcp, 'app'):
+        instrument_fastapi_app(mcp.app)
+
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
+@trace_mcp_tool(tool_name="execute_opal_query", record_args=True, record_result=False)
 async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
     """
     Execute an OPAL query on single or multiple datasets.
@@ -146,6 +166,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
+@trace_mcp_tool(tool_name="get_relevant_docs", record_args=True, record_result=False)
 async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str:
     """Get relevant documentation for a query using PostgreSQL BM25 search"""
     try:
@@ -221,6 +242,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
+@trace_mcp_tool(tool_name="get_system_prompt", record_args=False, record_result=False)
 async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse]:
     """
     IMPORTANT: This should be the FIRST tool called by any LLM when connecting to this MCP server.
@@ -303,6 +325,7 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
+@trace_mcp_tool(tool_name="discover_datasets", record_args=True, record_result=False)
 async def discover_datasets(ctx: Context, query: str, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
     """
     Discover datasets using fast full-text search on our dataset intelligence database.
@@ -557,6 +580,7 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
+@trace_mcp_tool(tool_name="discover_metrics", record_args=True, record_result=False)
 async def discover_metrics(ctx: Context, query: str, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
     """
     Discover observability metrics using fast full-text search on our metrics intelligence database.
@@ -763,4 +787,20 @@ pip install asyncpg
 """
 
 
-mcp.run(transport="sse", host="0.0.0.0", port=8000)
+if __name__ == "__main__":
+    import signal
+    import atexit
+
+    # Register shutdown handler for telemetry
+    def shutdown_handler():
+        if telemetry_enabled:
+            from src.telemetry.config import shutdown_telemetry
+            shutdown_telemetry()
+
+    # Register shutdown on exit and signal
+    atexit.register(shutdown_handler)
+    signal.signal(signal.SIGTERM, lambda signum, frame: shutdown_handler())
+    signal.signal(signal.SIGINT, lambda signum, frame: shutdown_handler())
+
+    # Run the MCP server
+    mcp.run(transport="sse", host="0.0.0.0", port=8000)

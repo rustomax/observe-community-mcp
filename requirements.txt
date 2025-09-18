@@ -23,6 +23,15 @@ langchain-openai>=0.2.0
 # OpenAI Agents SDK for investigator agent
 openai-agents>=0.1.0
 
+# OpenTelemetry instrumentation
+opentelemetry-api>=1.21.0
+opentelemetry-sdk>=1.21.0
+opentelemetry-exporter-otlp>=1.21.0
+opentelemetry-instrumentation>=0.42b0
+opentelemetry-instrumentation-httpx>=0.42b0
+opentelemetry-instrumentation-asyncpg>=0.42b0
+opentelemetry-instrumentation-fastapi>=0.42b0
+
 # Visualization dependencies
 matplotlib>=3.7.0
 pandas>=2.0.0

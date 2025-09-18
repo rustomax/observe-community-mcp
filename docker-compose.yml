@@ -14,6 +14,7 @@ services:
       - "5678:5678"  # Debug port for development
     depends_on:
       - postgres
+      - otel-collector
     environment:
       # === Core Configuration ===
       - OBSERVE_CUSTOMER_ID=${OBSERVE_CUSTOMER_ID}
@@ -44,6 +45,12 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - LOG_COLORS=${LOG_COLORS:-true}
 
+      # === OpenTelemetry Configuration ===
+      - OTEL_TELEMETRY_ENABLED=${OTEL_TELEMETRY_ENABLED:-true}
+      - OTEL_SERVICE_NAME=${OTEL_SERVICE_NAME:-observe-community-mcp}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT:-development}
+
     volumes:
       # Documentation (always read-only)
       - ./observe-docs:/app/observe-docs:ro
@@ -68,6 +75,7 @@ services:
       # Use environment variables from .env for authentication
       - OBSERVE_OTEL_TOKEN=${OBSERVE_OTEL_TOKEN}
       - OBSERVE_OTEL_CUSTOMER_ID=${OBSERVE_OTEL_CUSTOMER_ID}
+      - OBSERVE_OTEL_DOMAIN=${OBSERVE_OTEL_DOMAIN}
     volumes:
       # Mount the collector configuration file
       - ./otel-collector-config.yaml:/etc/otelcol-contrib/otel-collector-config.yaml:ro

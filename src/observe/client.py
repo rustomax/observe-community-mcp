@@ -15,11 +15,26 @@ import httpx
 
 from .config import OBSERVE_BASE_URL, get_observe_headers
 
+# Import telemetry decorators
+try:
+    from src.telemetry.decorators import trace_observe_api_call
+    from src.telemetry.utils import add_observe_context
+except ImportError:
+    # Fallback decorators if telemetry is not available
+    def trace_observe_api_call(operation=None):
+        def decorator(func):
+            return func
+        return decorator
 
+    def add_observe_context(span, **kwargs):
+        pass
+
+
+@trace_observe_api_call(operation="http_request")
 async def make_observe_request(
-    method: str, 
-    endpoint: str, 
-    params: Optional[Dict[str, Any]] = None, 
+    method: str,
+    endpoint: str,
+    params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: float = 30.0
@@ -49,7 +64,29 @@ async def make_observe_request(
     
     # Log request details
     logger.debug(f"{method} {url} | params:{params} | data_size:{len(json.dumps(json_data)) if json_data else 0}")
-        
+
+    # Add detailed telemetry context
+    try:
+        from opentelemetry import trace
+        span = trace.get_current_span()
+        if span and span.is_recording():
+            add_observe_context(span,
+                              query_type=endpoint.split('/')[-1] if endpoint else None,
+                              time_range=params.get('interval') if params else None)
+            span.set_attribute("http.method", method)
+            span.set_attribute("http.url", url)
+            span.set_attribute("observe.endpoint", endpoint)
+            if params:
+                span.set_attribute("observe.params.count", len(params))
+            if json_data:
+                span.set_attribute("observe.request.size", len(json.dumps(json_data)))
+                if 'query' in json_data:
+                    query_info = json_data['query']
+                    if isinstance(query_info, dict) and 'stages' in query_info:
+                        span.set_attribute("observe.query.stages", len(query_info['stages']))
+    except Exception:
+        pass  # Don't fail the request if telemetry fails
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.request(
@@ -65,7 +102,31 @@ async def make_observe_request(
                 logger.warning(f"response {response.status_code} | size:{len(response.text)}")
             else:
                 logger.debug(f"response {response.status_code} | size:{len(response.text)}")
-            
+
+            # Add response telemetry
+            try:
+                from opentelemetry import trace
+                span = trace.get_current_span()
+                if span and span.is_recording():
+                    span.set_attribute("http.status_code", response.status_code)
+                    span.set_attribute("observe.response.size", len(response.text))
+                    if response.headers.get("Content-Type"):
+                        span.set_attribute("observe.response.content_type", response.headers.get("Content-Type"))
+
+                    # Check for specific response patterns
+                    if "csv" in response.headers.get("Content-Type", ""):
+                        lines = response.text.count('\n')
+                        span.set_attribute("observe.response.rows", lines)
+                    elif "json" in response.headers.get("Content-Type", ""):
+                        try:
+                            json_data = response.json()
+                            if isinstance(json_data, dict):
+                                span.set_attribute("observe.response.fields", len(json_data))
+                        except:
+                            pass
+            except Exception:
+                pass  # Don't fail the request if telemetry fails
+
             return _process_response(response)
             
         except httpx.HTTPError as e:
@@ -154,10 +215,11 @@ class ObserveAPIError(Exception):
         self.response_data = response_data
 
 
+@trace_observe_api_call(operation="http_request_strict")
 async def make_observe_request_strict(
-    method: str, 
-    endpoint: str, 
-    params: Optional[Dict[str, Any]] = None, 
+    method: str,
+    endpoint: str,
+    params: Optional[Dict[str, Any]] = None,
     json_data: Optional[Dict[str, Any]] = None,
     headers: Optional[Dict[str, str]] = None,
     timeout: float = 30.0

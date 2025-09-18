@@ -13,6 +13,20 @@ from src.logging import get_logger
 
 logger = get_logger('DISCOVERY')
 
+# Import telemetry decorators
+try:
+    from src.telemetry.decorators import trace_database_operation
+    from src.telemetry.utils import add_span_attributes
+except ImportError:
+    # Fallback decorators if telemetry is not available
+    def trace_database_operation(operation=None, table=None):
+        def decorator(func):
+            return func
+        return decorator
+
+    def add_span_attributes(span, attributes):
+        pass
+
 
 @dataclass
 class DatasetRelationship:
@@ -118,6 +132,7 @@ def analyze_dataset_schema(schema_info: str) -> Dict[str, Any]:
     return schema_analysis
 
 
+@trace_database_operation(operation="dataset_discovery", table="dataset_relationships")
 async def discover_related_datasets(
     primary_dataset_id: str,
     primary_schema: str,
