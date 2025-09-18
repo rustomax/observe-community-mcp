@@ -80,10 +80,27 @@ async def make_observe_request(
                 span.set_attribute("observe.params.count", len(params))
             if json_data:
                 span.set_attribute("observe.request.size", len(json.dumps(json_data)))
+                # Record OPAL query details for debugging
                 if 'query' in json_data:
                     query_info = json_data['query']
                     if isinstance(query_info, dict) and 'stages' in query_info:
                         span.set_attribute("observe.query.stages", len(query_info['stages']))
+                        # Record the actual OPAL query for error analysis
+                        try:
+                            query_str = json.dumps(query_info, separators=(',', ':'))
+                            if len(query_str) <= 2000:  # Limit query size in spans
+                                span.set_attribute("observe.query.opal", query_str)
+                            else:
+                                span.set_attribute("observe.query.opal_size", len(query_str))
+                        except Exception:
+                            pass
+                elif 'query_string' in json_data:
+                    # Handle direct OPAL query strings
+                    query_str = str(json_data['query_string'])
+                    if len(query_str) <= 2000:
+                        span.set_attribute("observe.query.opal_string", query_str)
+                    else:
+                        span.set_attribute("observe.query.opal_string_size", len(query_str))
     except Exception:
         pass  # Don't fail the request if telemetry fails
 
@@ -97,25 +114,74 @@ async def make_observe_request(
                 headers=request_headers,
                 timeout=timeout
             )
-            
+
+            # Cache response text to avoid multiple reads
+            response_text = response.text
+            response_size = len(response_text)
+
             if response.status_code >= 400:
-                logger.warning(f"response {response.status_code} | size:{len(response.text)}")
+                logger.warning(f"response {response.status_code} | size:{response_size}")
             else:
-                logger.debug(f"response {response.status_code} | size:{len(response.text)}")
+                logger.debug(f"response {response.status_code} | size:{response_size}")
 
             # Add response telemetry
             try:
                 from opentelemetry import trace
                 span = trace.get_current_span()
+                logger.debug(f"span context | span:{span} | recording:{span.is_recording() if span else 'None'} | span_id:{getattr(span, 'get_span_context', lambda: None)()}")
                 if span and span.is_recording():
                     span.set_attribute("http.status_code", response.status_code)
-                    span.set_attribute("observe.response.size", len(response.text))
+                    span.set_attribute("observe.response.size", response_size)
                     if response.headers.get("Content-Type"):
                         span.set_attribute("observe.response.content_type", response.headers.get("Content-Type"))
 
                     # Check for specific response patterns
-                    if "csv" in response.headers.get("Content-Type", ""):
-                        lines = response.text.count('\n')
+                    if response.status_code >= 400:
+                        # Record error details using span events - more reliable than attributes
+                        try:
+                            error_text = response_text[:1000]  # Limit error text size
+                            logger.warning(f"recording API error event | status:{response.status_code} | size:{len(error_text)}")
+
+                            # Create a span event for the API error with full details
+                            event_attributes = {
+                                "observe.error.status_code": response.status_code,
+                                "observe.error.response_size": len(response_text),
+                                "observe.error.content_type": response.headers.get("Content-Type", "unknown"),
+                                "observe.error.raw_response": error_text
+                            }
+
+                            # Try to parse error as JSON for structured error info
+                            if "json" in response.headers.get("Content-Type", ""):
+                                try:
+                                    error_json = response.json()
+                                    if isinstance(error_json, dict):
+                                        if 'message' in error_json:
+                                            event_attributes["observe.error.message"] = str(error_json['message'])[:500]
+                                        if 'ok' in error_json:
+                                            event_attributes["observe.error.ok"] = str(error_json['ok'])
+                                        if 'code' in error_json:
+                                            event_attributes["observe.error.code"] = str(error_json['code'])
+                                        event_attributes["observe.error.parsed_json"] = "true"
+                                except Exception as parse_error:
+                                    event_attributes["observe.error.parse_error"] = str(parse_error)[:200]
+
+                            # Add the span event - this should always work regardless of span context issues
+                            logger.warning(f"adding span event | span:{span} | event_name:observe_api_error | attributes:{len(event_attributes)}")
+                            span.add_event(
+                                name="observe_api_error",
+                                attributes=event_attributes
+                            )
+                            logger.warning(f"span event added successfully | span_id:{getattr(span, 'get_span_context', lambda: None)()}")
+
+                            # Keep the basic attribute for backwards compatibility
+                            span.set_attribute("observe.api.has_error", True)
+
+                        except Exception as capture_error:
+                            logger.error(f"error event capture failed | error:{capture_error}")
+                            # Fallback - at least record that an error occurred
+                            span.add_event("observe_api_error_capture_failed", {"error": str(capture_error)[:200]})
+                    elif "csv" in response.headers.get("Content-Type", ""):
+                        lines = response_text.count('\n')
                         span.set_attribute("observe.response.rows", lines)
                     elif "json" in response.headers.get("Content-Type", ""):
                         try:

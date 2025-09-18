@@ -90,13 +90,59 @@ def trace_mcp_tool(tool_name: Optional[str] = None,
                         return result
 
                     except Exception as e:
-                        # Record the exception
+                        # Record the exception with enhanced error details
                         success = False
                         from opentelemetry import trace
                         span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
                         span.record_exception(e)
                         span.set_attribute("mcp.tool.error", True)
                         span.set_attribute("mcp.tool.error_type", type(e).__name__)
+
+                        # Capture error message details
+                        error_message = str(e)
+                        if len(error_message) <= 1000:
+                            span.set_attribute("mcp.tool.error_message", error_message)
+                        else:
+                            span.set_attribute("mcp.tool.error_message_size", len(error_message))
+
+                        # For OPAL query errors, try to extract more specific details
+                        if func.__name__ == "execute_opal_query" and "query" in kwargs:
+                            query = kwargs.get("query", "")
+                            if len(str(query)) <= 500:
+                                span.set_attribute("mcp.opal.failed_query", str(query))
+                            else:
+                                span.set_attribute("mcp.opal.failed_query_size", len(str(query)))
+
+                        # Check if this is an Observe API error with structured details
+                        if "Error from Observe API:" in error_message:
+                            try:
+                                # Extract status code from error message
+                                if " 400 " in error_message:
+                                    span.set_attribute("mcp.api.error_status", 400)
+                                elif " 401 " in error_message:
+                                    span.set_attribute("mcp.api.error_status", 401)
+                                elif " 403 " in error_message:
+                                    span.set_attribute("mcp.api.error_status", 403)
+                                elif " 404 " in error_message:
+                                    span.set_attribute("mcp.api.error_status", 404)
+                                elif " 500 " in error_message:
+                                    span.set_attribute("mcp.api.error_status", 500)
+
+                                # Try to extract JSON error details
+                                import json
+                                import re
+                                json_match = re.search(r'\{.*\}', error_message)
+                                if json_match:
+                                    try:
+                                        error_json = json.loads(json_match.group())
+                                        if isinstance(error_json, dict) and 'message' in error_json:
+                                            api_error_msg = str(error_json['message'])[:500]
+                                            span.set_attribute("mcp.api.error_detail", api_error_msg)
+                                    except (json.JSONDecodeError, ValueError):
+                                        pass
+                            except Exception:
+                                pass
+
                         raise
 
             except Exception as e:
@@ -173,6 +219,45 @@ def trace_observe_api_call(operation: Optional[str] = None):
                             span.set_attribute("observe.api.status_code", result['status_code'])
                         if 'error' in result:
                             span.set_attribute("observe.api.has_error", result['error'])
+
+                            # Create span event for API errors with detailed error information
+                            if result['error'] and 'message' in result:
+                                try:
+                                    error_message = result['message']
+                                    event_attributes = {
+                                        "observe.error.status_code": result.get('status_code', 'unknown'),
+                                        "observe.error.full_message": error_message[:1000],
+                                    }
+
+                                    # Try to extract structured error info from the message
+                                    import re
+                                    import json
+                                    if "Error from Observe API:" in error_message:
+                                        # Extract JSON part from message like "Error from Observe API: 400 {...}"
+                                        json_match = re.search(r'\{.*\}', error_message)
+                                        if json_match:
+                                            try:
+                                                error_json = json.loads(json_match.group())
+                                                if isinstance(error_json, dict):
+                                                    if 'message' in error_json:
+                                                        event_attributes["observe.error.api_message"] = str(error_json['message'])[:500]
+                                                    if 'ok' in error_json:
+                                                        event_attributes["observe.error.ok"] = str(error_json['ok'])
+                                                    if 'code' in error_json:
+                                                        event_attributes["observe.error.code"] = str(error_json['code'])
+                                            except (json.JSONDecodeError, ValueError):
+                                                event_attributes["observe.error.parse_failed"] = "true"
+
+                                    # Create the span event with error details
+                                    span.add_event(
+                                        name="observe_api_error_response",
+                                        attributes=event_attributes
+                                    )
+                                    logger.debug(f"created API error span event | attributes:{len(event_attributes)}")
+
+                                except Exception as event_error:
+                                    logger.warning(f"failed to create error span event | error:{event_error}")
+                                    span.add_event("observe_api_error_event_failed", {"error": str(event_error)[:200]})
 
                     from opentelemetry import trace
                     span.set_status(trace.Status(trace.StatusCode.OK))
