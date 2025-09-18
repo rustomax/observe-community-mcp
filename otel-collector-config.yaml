@@ -1,0 +1,80 @@
+# OpenTelemetry Collector Configuration for Observe Platform
+# This collector receives OTLP data and forwards it to Observe using the correct endpoints
+
+receivers:
+  # OTLP receiver for applications to send telemetry data
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    limit_mib: 256
+    check_interval: 1s
+
+  # Batch processor for efficiency
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+
+  # Resource processor to add service information
+  resource:
+    attributes:
+      - key: "deployment.environment"
+        value: "development"
+        action: upsert
+      - key: "service.namespace"
+        value: "observe-mcp"
+        action: upsert
+      - key: "collector.version"
+        value: "standard-otel"
+        action: upsert
+
+exporters:
+  # Debug exporter for development visibility
+  debug:
+    verbosity: basic
+
+  # Primary OTLP HTTP exporter to Observe
+  otlphttp:
+    endpoint: "https://${OBSERVE_OTEL_CUSTOMER_ID}.collect.${OBSERVE_OTEL_DOMAIN}/v2/otel"
+    headers:
+      authorization: "Bearer ${OBSERVE_OTEL_TOKEN}"
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+
+service:
+  extensions: [health_check]
+
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp, debug]
+
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp, debug]
+
+    # Logs pipeline
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlphttp, debug]
+
+# Optional extensions
+extensions:
+  # Health check extension
+  health_check:
+    endpoint: 0.0.0.0:13133

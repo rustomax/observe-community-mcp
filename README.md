@@ -17,6 +17,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 - **Metrics Intelligence**: Discover and understand metrics with automated categorization and usage guidance
 - **Documentation Search**: Fast BM25-powered search through Observe documentation and OPAL reference
 - **OPAL Query Execution**: Run queries against any Observe dataset with multi-dataset join support
+- **OpenTelemetry Integration**: Built-in Observe agent for collecting application telemetry data
 - **Zero External Dependencies**: Self-contained with PostgreSQL BM25 search
 
 > **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
@@ -27,6 +28,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Intelligence Systems](#intelligence-systems)
+- [OpenTelemetry Integration](#opentelemetry-integration)
 - [Authentication](#authentication)
 - [Maintenance](#maintenance)
 
@@ -83,6 +85,11 @@ your_public_key_content_here
 
 # Database Security
 SEMANTIC_GRAPH_PASSWORD="your_secure_postgres_password"
+
+# OpenTelemetry Collection (optional)
+OBSERVE_OTEL_TOKEN="your_otel_token_here"
+OBSERVE_OTEL_CUSTOMER_ID="your_customer_id_here"
+OBSERVE_OTEL_DOMAIN="observeinc.com"
 ```
 
 ### 3. Start with Docker (Recommended)
@@ -143,6 +150,7 @@ graph TB
     Server --> Auth[JWT Authentication]
     Server --> Discovery[Intelligence Layer<br/>PostgreSQL + BM25]
     Server --> ObserveAPI[Observe Platform<br/>OPAL Queries]
+    Server -->|OTLP Telemetry| Collector[OpenTelemetry Collector<br/>OTLP Gateway]
 
     Discovery --> DatasetDB[(datasets_intelligence<br/>Dataset Metadata)]
     Discovery --> MetricsDB[(metrics_intelligence<br/>Discovered Metrics)]
@@ -150,6 +158,8 @@ graph TB
 
     ObserveAPI --> Results[Structured Results]
     Results --> Claude
+
+    Collector -->|OTLP HTTP| ObservePlatform[Observe Platform<br/>Telemetry Storage]
 
     subgraph "PostgreSQL Database"
         DatasetDB
@@ -160,6 +170,7 @@ graph TB
     subgraph "Docker Containers"
         Server
         Discovery
+        Collector
     end
 ```
 
@@ -171,6 +182,7 @@ graph TB
 | **Observe Integration** | Python asyncio + Observe API | Dataset queries and metadata access |
 | **Search Engine** | PostgreSQL + ParadeDB BM25 | Fast documentation and content search |
 | **Intelligence Systems** | PostgreSQL + Rule-based Analysis | Dataset and metrics discovery with categorization |
+| **OpenTelemetry Collector** | OTEL Collector Contrib | Application telemetry collection and forwarding |
 | **Authentication** | JWT + RSA signatures | Secure access control |
 
 ### Database Schema
@@ -220,6 +232,119 @@ Fast BM25 full-text search through:
 - Relevance scoring with BM25 algorithm
 - Context-aware chunk retrieval
 - No external API dependencies
+
+## OpenTelemetry Integration
+
+The MCP server includes built-in OpenTelemetry collection via a standard OpenTelemetry Collector, enabling comprehensive application monitoring and observability.
+
+### OpenTelemetry Collector
+
+The included OpenTelemetry Collector acts as a telemetry gateway that:
+- **Receives telemetry data** from instrumented applications via OTLP protocol
+- **Forwards data to Observe** using the standard OTLP HTTP exporter with proper authentication
+- **Adds resource attributes** for proper service identification and categorization
+- **Handles retries and buffering** for reliable data delivery
+- **Provides debug output** for development visibility
+
+### Available Endpoints
+
+When the server is running, applications can send telemetry data to:
+
+| Protocol | Endpoint | Usage |
+|----------|----------|--------|
+| **OTLP gRPC** | `http://otel-collector:4317` | Recommended for production (within Docker network) |
+| **OTLP HTTP** | `http://otel-collector:4318` | Alternative for HTTP-based integrations |
+| **Health Check** | `http://otel-collector:13133/` | Collector health monitoring |
+
+### Configuration
+
+The OpenTelemetry Collector is configured via `otel-collector-config.yaml` with:
+
+```yaml
+# OTLP receivers for application telemetry
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+# Processors for data enrichment and batching
+processors:
+  batch:
+    send_batch_size: 1024
+    timeout: 1s
+  resource:
+    attributes:
+      - key: "deployment.environment"
+        value: "development"
+        action: upsert
+
+# Exporters to send data to Observe
+exporters:
+  otlphttp:
+    endpoint: "https://${OBSERVE_OTEL_CUSTOMER_ID}.collect.${OBSERVE_OTEL_DOMAIN}/v2/otel"
+    headers:
+      authorization: "Bearer ${OBSERVE_OTEL_TOKEN}"
+  debug:
+    verbosity: basic
+
+# Service pipelines for traces, metrics, and logs
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp, debug]
+    logs:
+      receivers: [otlp]
+      processors: [resource, batch]
+      exporters: [otlphttp, debug]
+```
+
+### Instrumentation Example
+
+To instrument your Python code with OpenTelemetry:
+
+```python
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+# Configure OTLP exporter to send to OpenTelemetry Collector
+otlp_exporter = OTLPSpanExporter(
+    endpoint="http://otel-collector:4317",  # Within Docker network
+    insecure=True
+)
+
+# Set up tracing
+trace.set_tracer_provider(TracerProvider())
+trace.get_tracer_provider().add_span_processor(
+    BatchSpanProcessor(otlp_exporter)
+)
+
+# Create spans
+tracer = trace.get_tracer(__name__)
+with tracer.start_as_current_span("operation"):
+    # Your application code here
+    pass
+```
+
+### Data Flow
+
+1. **Application Code** → Generates traces, metrics, logs via OTEL SDK
+2. **OpenTelemetry Collector** → Receives OTLP data on ports 4317/4318
+3. **Collector Processing** → Adds resource attributes, batches data, provides debug output
+4. **OTLP HTTP Export** → Sends data to Observe platform with proper authentication
+5. **Observe Platform** → Receives processed telemetry for analysis
+
+The collector automatically handles authentication, retry logic, and reliable data delivery to the Observe platform.
 
 ## Authentication
 

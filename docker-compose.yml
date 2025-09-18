@@ -55,6 +55,31 @@ services:
       retries: 3
       start_period: 40s
 
+  # OpenTelemetry Collector for OTEL collection
+  # Receives telemetry data from instrumented applications and forwards to Observe
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    ports:
+      - "4317:4317"  # OTLP gRPC
+      - "4318:4318"  # OTLP HTTP
+      - "13133:13133"  # Health check
+    environment:
+      # Use environment variables from .env for authentication
+      - OBSERVE_OTEL_TOKEN=${OBSERVE_OTEL_TOKEN}
+      - OBSERVE_OTEL_CUSTOMER_ID=${OBSERVE_OTEL_CUSTOMER_ID}
+    volumes:
+      # Mount the collector configuration file
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/otel-collector-config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/otel-collector-config.yaml"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   # PostgreSQL with pgvector + BM25 extensions
   # Required for semantic graph intelligence (query_semantic_graph) + BM25 docs search
   postgres:
