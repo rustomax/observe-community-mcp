@@ -62,7 +62,10 @@ def trace_mcp_tool(tool_name: Optional[str] = None,
                 # Determine span name
                 span_name = tool_name or f"mcp_tool.{func.__name__}"
 
-                with tracer.start_as_current_span(span_name) as span:
+                # Import span kind for proper Service Explorer detection
+                from opentelemetry.trace import SpanKind
+
+                with tracer.start_as_current_span(span_name, kind=SpanKind.SERVER) as span:
                     try:
                         # Add basic span attributes
                         span.set_attribute("mcp.tool.name", func.__name__)
@@ -194,7 +197,10 @@ def trace_observe_api_call(operation: Optional[str] = None):
 
             span_name = f"observe_api.{operation or func.__name__}"
 
-            with tracer.start_as_current_span(span_name) as span:
+            # Import span kind for proper APM classification
+            from opentelemetry.trace import SpanKind
+
+            with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
                 try:
                     # Add API-specific attributes
                     span.set_attribute("observe.operation.type", "api_call")
@@ -297,7 +303,10 @@ def trace_database_operation(operation: Optional[str] = None,
 
             span_name = f"db.{operation or func.__name__}"
 
-            with tracer.start_as_current_span(span_name) as span:
+            # Import span kind for proper APM classification
+            from opentelemetry.trace import SpanKind
+
+            with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
                 try:
                     # Add database-specific attributes
                     span.set_attribute("db.system", "postgresql")
