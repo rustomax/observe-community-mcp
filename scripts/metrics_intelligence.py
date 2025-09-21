@@ -1649,9 +1649,23 @@ class MetricsIntelligenceAnalyzer:
     async def clear_database(self) -> None:
         """Clear all data from metrics_intelligence table for fresh start."""
         async with self.db_pool.acquire() as conn:
+            # Clear the main table
             result = await conn.execute("DELETE FROM metrics_intelligence")
             count = result.split()[-1] if result else "0"
-            logger.info(f"🧹 Cleared {count} existing metrics records from database")
+            logger.info(f"🧹 Cleared {count} existing records from metrics_intelligence table")
+
+            # Force refresh of materialized views and indexes to clear any cached data
+            # This ensures search functions return fresh results
+            try:
+                await conn.execute("VACUUM ANALYZE metrics_intelligence")
+                await conn.execute("REINDEX TABLE metrics_intelligence")
+                logger.info("🧹 Refreshed indexes and statistics")
+            except Exception as e:
+                logger.warning(f"Failed to refresh indexes: {e} (non-critical)")
+
+            # Clear any potential connection-level query cache
+            await conn.execute("DISCARD ALL")
+            logger.info("🧹 Cleared connection cache")
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
