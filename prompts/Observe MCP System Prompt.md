@@ -96,6 +96,41 @@ Do NOT use list_datasets() - it provides raw lists without intelligence.
 
 ---
 
+## ⏱️ OBSERVE DURATION FIELDS - CRITICAL UNITS INFO
+
+**CRITICAL**: Observe uses different time units than most systems. Always check field naming patterns:
+
+### Default Units (NO SUFFIX)
+- **Native Observe fields = NANOSECONDS**: `elapsedTime`, `duration`, `responseTime`, `TIMESTAMP`
+- **Example**: `elapsedTime: "916440506"` = 916,440,506 nanoseconds = ~916 milliseconds
+- **Conversion to milliseconds**: `elapsedTime / 1000000`
+- **Conversion to seconds**: `elapsedTime / 1000000000`
+
+### Explicitly Annotated Fields (WITH SUFFIX)
+- **Millisecond fields**: `time_elapsed_ms`, `duration_ms`, `latency_ms`
+- **Second fields**: `duration_s`, `timeout_s`, `interval_s`
+- **Example**: `logAttributes.timestamp: "1758543367916"` = milliseconds (13-digit epoch)
+
+### Common Duration Patterns in OPAL
+```opal
+# Convert nanosecond fields to milliseconds for readability
+make_col elapsed_ms: elapsedTime / 1000000
+
+# Time-based filtering with nanosecond precision
+filter TIMESTAMP > @"1 hour ago"
+
+# Group by time buckets (built-in functions handle conversions)
+statsby avg_duration_ns: avg(elapsedTime), group_by(bin(TIMESTAMP, 5m))
+```
+
+### Warning Signs - Double-Check Units
+- 🚨 If duration values seem too large (>1 billion), likely nanoseconds
+- 🚨 If timestamp has 19 digits, it's nanosecond epoch
+- 🚨 If timestamp has 13 digits, it's millisecond epoch
+- 🚨 Always verify sample values from discovery results
+
+---
+
 ## 🛠️ VERIFIED OPAL SYNTAX REFERENCE
 
 ### Query Result Control
@@ -270,6 +305,7 @@ filter metric ~ "utilization"
 ### Error Prevention
 - **CRITICAL**: Always use discovery tools before querying to get exact schema
 - **NEVER assume field names** - use only fields from discovery results
+- **VERIFY duration field units** - check sample values and field names for nanosecond vs millisecond
 - **Check dataset interface type** (log/metric/trace) before query construction
 - Use verified OPAL syntax patterns only
 - Test query patterns work with actual data structure from discovery

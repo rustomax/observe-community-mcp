@@ -522,24 +522,61 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
                 if row['interface_types']:
                     interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
 
-                # Format key fields
-                key_fields_str = ""
-                if row.get('key_fields'):
-                    key_fields = row['key_fields'][:4]  # Show top 4
-                    key_fields_str = f"**Key Fields**: {', '.join(key_fields)}"
-                    if len(row['key_fields']) > 4:
-                        key_fields_str += f" (+{len(row['key_fields'])-4} more)"
-                    key_fields_str += "\n"
+                # Format ALL available fields with complete schema information
+                schema_info_str = ""
 
-                # Format nested field information
-                nested_info_str = ""
+                # Combine all fields from key_fields and nested_field_paths
+                all_fields_info = {}
+
+                # Add top-level fields from key_fields
+                if row.get('key_fields'):
+                    for field in row['key_fields']:
+                        all_fields_info[field] = {"type": "unknown", "sample_values": []}
+
+                # Add detailed nested field information
                 if nested_field_paths:
-                    important_fields = nested_field_analysis.get('important_fields', []) if nested_field_analysis else []
-                    if important_fields:
-                        nested_text = ', '.join(important_fields[:3])
-                        if len(important_fields) > 3:
-                            nested_text += f" (+{len(important_fields)-3} more)"
-                        nested_info_str = f"**Nested Fields**: {nested_text}\n"
+                    for field_path, field_info in nested_field_paths.items():
+                        if isinstance(field_info, dict):
+                            all_fields_info[field_path] = {
+                                "type": field_info.get("type", "unknown"),
+                                "sample_values": field_info.get("sample_values", [])[:3]  # Show 3 samples max
+                            }
+                        else:
+                            all_fields_info[field_path] = {"type": "unknown", "sample_values": []}
+
+                if all_fields_info:
+                    schema_info_str = "🚨 **COMPLETE SCHEMA - USE EXACT FIELD NAMES & TYPES**:\n"
+
+                    # Sort fields: top-level first, then nested
+                    top_level_fields = [f for f in all_fields_info.keys() if '.' not in f]
+                    nested_fields = [f for f in all_fields_info.keys() if '.' in f]
+
+                    for field_list, header in [(top_level_fields, "📋 **Top-Level Fields**"), (nested_fields, "📍 **Nested Fields**")]:
+                        if field_list:
+                            schema_info_str += f"\n{header}:\n"
+                            for field in sorted(field_list)[:15]:  # Limit to 15 per section to manage size
+                                field_info = all_fields_info[field]
+                                type_info = f"({field_info['type']})" if field_info['type'] != 'unknown' else ""
+
+                                # Show sample values with type hints for duration fields
+                                samples_str = ""
+                                if field_info['sample_values']:
+                                    samples = field_info['sample_values'][:2]  # Show 2 samples max
+                                    samples_str = f" → {samples}"
+
+                                    # Add duration unit hints
+                                    if any(keyword in field.lower() for keyword in ['time', 'elapsed', 'duration', 'timestamp']):
+                                        if any(len(str(s)) >= 15 for s in samples if str(s).isdigit()):
+                                            samples_str += " (⏱️ likely nanoseconds)"
+                                        elif any(len(str(s)) == 13 for s in samples if str(s).isdigit()):
+                                            samples_str += " (⏱️ likely milliseconds)"
+
+                                schema_info_str += f"  • `{field}` {type_info}{samples_str}\n"
+
+                            if len(field_list) > 15:
+                                schema_info_str += f"  • ... (+{len(field_list)-15} more {header.lower()} fields)\n"
+
+                    schema_info_str += "\n"
 
                 # Format query guidance
                 query_guidance_str = ""
@@ -567,7 +604,7 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 **Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
 {interfaces_str}**Purpose**: {row['inferred_purpose']}
 **Usage**: {row.get('typical_usage', 'Not specified')}
-{key_fields_str}{nested_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
+{schema_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
 **Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
                 formatted_results.append(result_text)
@@ -744,20 +781,20 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
                         if isinstance(primary_pattern, dict) and primary_pattern.get('use_case'):
                             query_guidance += f"**Use Case**: {primary_pattern['use_case']}\n"
 
-                # Add nested field information
+                # Add nested field information with visual prominence
                 if nested_field_paths:
                     important_fields = nested_field_analysis.get('important_fields', []) if nested_field_analysis else []
                     if important_fields:
-                        nested_text = ', '.join(important_fields[:3])
-                        if len(important_fields) > 3:
-                            nested_text += f" (+{len(important_fields)-3} more)"
-                        query_guidance += f"**Key Nested Fields**: {nested_text}\n"
+                        nested_text = ', '.join(important_fields[:4])  # Show 4 instead of 3
+                        if len(important_fields) > 4:
+                            nested_text += f" (+{len(important_fields)-4} more)"
+                        query_guidance += f"📍 **Key Nested Fields (EXACT PATHS)**: {nested_text}\n"
 
                 if common_fields:
-                    field_list = ', '.join(common_fields[:3])
-                    if len(common_fields) > 3:
-                        field_list += f" (+{len(common_fields)-3} more)"
-                    query_guidance += f"**Common Fields**: {field_list}\n"
+                    field_list = ', '.join(common_fields[:4])  # Show 4 instead of 3
+                    if len(common_fields) > 4:
+                        field_list += f" (+{len(common_fields)-4} more)"
+                    query_guidance += f"🚨 **Common Fields (USE EXACT NAMES)**: {field_list}\n"
                 
                 # Calculate combined relevance score
                 combined_score = max(row['rank'], row.get('similarity_score', 0))
