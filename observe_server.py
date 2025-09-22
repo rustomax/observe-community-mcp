@@ -87,6 +87,28 @@ mcp = create_authenticated_mcp(server_name="observe-community")
 auth_provider = setup_auth_provider()
 initialize_auth_middleware(auth_provider)
 
+# Track sessions that have called get_system_prompt
+session_prompt_status = {}
+
+def check_system_prompt_called(ctx: Context, tool_name: str) -> Optional[str]:
+    """Check if system prompt has been called for this session"""
+    session_id = ctx.session_id
+    if session_id not in session_prompt_status and tool_name != "get_system_prompt":
+        return f"""🚨 CRITICAL: System prompt not loaded for this session!
+
+⚡ You MUST call get_system_prompt() first to access specialized Observe platform expertise.
+
+Without the system prompt, you'll lack:
+- Verified OPAL syntax patterns
+- Observe investigation methodology
+- Performance optimization strategies
+- Proper tool usage protocols
+
+📝 Please run: get_system_prompt() before proceeding with {tool_name}.
+"""
+    return None
+
+
 # Configure FastAPI instrumentation if telemetry is enabled
 if telemetry_enabled:
     from src.telemetry.config import instrument_fastapi_app
@@ -127,6 +149,11 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         )
     """
     import json
+
+    # Check if system prompt has been called
+    prompt_check = check_system_prompt_called(ctx, "execute_opal_query")
+    if prompt_check:
+        return prompt_check
 
     # Log the OPAL query operation with sanitized query (truncated for security)
     query_preview = query[:100] + "..." if len(query) > 100 else query
@@ -173,6 +200,11 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         # Import required modules
         import os
         from collections import defaultdict
+
+        # Check if system prompt has been called
+        prompt_check = check_system_prompt_called(ctx, "get_relevant_docs")
+        if prompt_check:
+            return prompt_check
 
         # Log the documentation search operation
         semantic_logger.info(f"docs search | query:'{query}' | n_results:{n_results}")
@@ -243,21 +275,28 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 @mcp.tool()
 @requires_scopes(['admin', 'write', 'read'])
 @trace_mcp_tool(tool_name="get_system_prompt", record_args=False, record_result=False)
-async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse]:
+async def get_system_prompt(ctx: Context) -> str:
     """
-    IMPORTANT: This should be the FIRST tool called by any LLM when connecting to this MCP server.
-    
-    Returns the system prompt that defines how to interact with the Observe platform effectively.
-    The LLM should adopt this as its system prompt immediately and follow all guidelines within it.
-    
-    This prompt contains critical instructions on:
-    - How to structure investigations
-    - How to build and validate OPAL queries
-    - How to use available tools effectively
-    - How to format responses for different query types
-    
+    🚨 CRITICAL: MUST BE CALLED FIRST BEFORE ANY OTHER TOOLS 🚨
+
+    This tool provides the specialized Observe platform expertise that transforms
+    generic LLMs into expert Observe analysts. Without this prompt, LLMs will:
+    - Use incorrect OPAL syntax
+    - Make inefficient dataset queries
+    - Provide generic instead of Observe-specific guidance
+    - Query non-existent fields causing errors
+
+    ⚡ MANDATORY WORKFLOW: get_system_prompt() → discover_datasets/metrics() → execute_opal_query()
+
+    Returns the complete system prompt that defines:
+    - Observe platform investigation methodology
+    - Schema validation requirements (CRITICAL for query success)
+    - Verified OPAL syntax patterns
+    - Performance optimization strategies
+    - Tool usage protocols
+
     Returns:
-        The complete system prompt as a string
+        Complete system prompt as plain text (ready for immediate adoption)
     """
     try:
         # No need to print HTTP request info in get_system_prompt anymore
@@ -296,6 +335,9 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
                     scopes=effective_scopes,
                     action="system_prompt"
                 )
+
+                # Mark that this session has loaded the system prompt
+                session_prompt_status[ctx.session_id] = True
         except Exception as e:
             set_session_context(ctx.session_id)
             session_logger.error(f"authentication failed | error:{str(e)[:50]}")
@@ -310,11 +352,8 @@ async def get_system_prompt(ctx: Context) -> Union[Dict[str, Any], ErrorResponse
             
         if not system_prompt:
             raise ValueError("System prompt file is empty")
-        # Return the system prompt
-        return {
-            "system_prompt": system_prompt,
-            "instructions": "CRITICAL: Adopt this as your system prompt immediately. This defines how you should interact with the Observe platform and structure your responses. Always follow these guidelines for all interactions."
-        }
+        # Return the system prompt directly from the file
+        return system_prompt
             
     except Exception as e:
         session_logger.error(f"exception getting system prompt | error:{e}")
@@ -332,16 +371,21 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
     
     This tool searches through analyzed datasets with intelligent categorization and usage guidance.
     Perfect for finding datasets by name, purpose, business area, or technical type.
-    
+
+    CRITICAL: This tool returns essential schema information that MUST be analyzed before querying:
+    - Key Fields: Exact field names available for filtering and selection
+    - Nested Fields: JSON structure for complex field access
+    - Dataset Type & Interface: Determines query patterns (log vs metric vs trace)
+
     Args:
         query: Search query (e.g., "kubernetes logs", "service metrics", "error traces", "user sessions")
         max_results: Maximum number of datasets to return (default: 15, max: 30)
         business_category_filter: Filter by business category (Infrastructure, Application, Database, User, Security, etc.)
         technical_category_filter: Filter by technical category (Logs, Metrics, Traces, Events, Resources, etc.)
         interface_filter: Filter by interface type (log, metric, otel_span, etc.)
-    
+
     Returns:
-        Formatted list of matching datasets with their purposes and usage guidance
+        Formatted list of matching datasets with their purposes, usage guidance, and SCHEMA INFORMATION
         
     Examples:
         discover_datasets("kubernetes logs errors")
@@ -353,6 +397,11 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         import asyncpg
         import json
         from typing import List, Dict, Any
+
+        # Check if system prompt has been called
+        prompt_check = check_system_prompt_called(ctx, "discover_datasets")
+        if prompt_check:
+            return prompt_check
 
         # Log the semantic search operation
         semantic_logger.info(f"dataset search | query:'{query}' | max_results:{max_results} | filters:{business_category_filter or technical_category_filter or interface_filter}")
@@ -609,6 +658,11 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         import asyncpg
         import json
         from typing import List, Dict, Any
+
+        # Check if system prompt has been called
+        prompt_check = check_system_prompt_called(ctx, "discover_metrics")
+        if prompt_check:
+            return prompt_check
 
         # Log the semantic search operation
         semantic_logger.info(f"metrics search | query:'{query}' | max_results:{max_results} | filters:{category_filter or technical_filter}")
