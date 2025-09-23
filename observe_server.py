@@ -894,4 +894,4 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, lambda signum, frame: shutdown_handler())
 
     # Run the MCP server
-    mcp.run(transport="sse", host="0.0.0.0", port=8000)
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8000)
