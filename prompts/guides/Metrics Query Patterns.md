@@ -10,8 +10,8 @@ This guide provides tested OPAL query patterns for analyzing metrics data in Obs
 - `align` → `aggregate` pattern for time-series analysis
 
 **Dataset Information:**
-- **Primary metrics dataset**: Kubernetes Explorer/Prometheus Metrics (ID: `42161691`)
-- **TDigest metrics dataset**: ServiceExplorer/Service Inspector Metrics (ID: `42161008`)
+- **Primary metrics dataset**: Kubernetes Explorer/Prometheus Metrics
+- **TDigest metrics dataset**: ServiceExplorer/Service Inspector Metrics
 
 ## 1. Basic Metric Filtering
 
@@ -246,8 +246,8 @@ filter metric = "system_memory_utilization_ratio"
 ## Dataset Reference
 
 ### Available Datasets
-- **Kubernetes Explorer/Prometheus Metrics** (`42161691`): Counter, gauge, and histogram metrics
-- **ServiceExplorer/Service Inspector Metrics** (`42161008`): TDigest latency metrics
+- **Kubernetes Explorer/Prometheus Metrics**: Counter, gauge, and histogram metrics
+- **ServiceExplorer/Service Inspector Metrics**: TDigest latency metrics
 
 ### Common Metric Types
 - **Counters**: `calls_total`, `app_recommendations_counter_total`, `kafka_request_count_total`

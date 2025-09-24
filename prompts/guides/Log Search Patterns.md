@@ -2,13 +2,8 @@
 
 This guide provides practical OPAL query patterns for log analysis using Observe's log datasets. All queries have been tested against live data and demonstrate real-world log search scenarios.
 
-> **Note**: Dataset names shown here are examples. Your environment may have different dataset names, but the OPAL patterns remain the same.
+> **Note**: Syntax shown here are examples. Your environment may have different datasets, with different schemas, so you need to adjust your approach accordingly.
 
-## Available Log Datasets
-
-Based on discovery analysis, common log datasets include:
-- **Kubernetes Explorer/OpenTelemetry Logs** - Application and infrastructure logs from OpenTelemetry sources
-- **Kubernetes Explorer/Kubernetes Logs** - Native Kubernetes container and pod logs
 
 ## Core Log Search Syntax
 

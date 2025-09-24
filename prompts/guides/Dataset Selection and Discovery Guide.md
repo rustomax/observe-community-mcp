@@ -32,7 +32,7 @@ Kubernetes Explorer/* - Container orchestration data
 ├── OpenTelemetry Logs - OTel logs from K8s
 └── Prometheus Metrics - Container/node metrics
 
-Raw Event Streams - Original ingested data (MOST FLEXIBLE)
+Additional Event Streams - Original ingested data (MOST FLEXIBLE)
 ├── Application logs
 ├── Infrastructure metrics
 └── Custom telemetry
@@ -50,7 +50,7 @@ Raw Event Streams - Original ingested data (MOST FLEXIBLE)
 
 ## Common Dataset Types
 
-### ServiceExplorer/Service Metrics (ID: 42160988)
+### ServiceExplorer/Service Metrics
 **Best for**: Service performance analysis, SLA monitoring, dashboard metrics
 
 **Key Fields**:
@@ -77,7 +77,7 @@ align 5m, duration_combined: tdigest_combine(m_tdigest("span_duration_5m"))
 | aggregate avg_p95: avg(p95_ms), group_by(service_name)
 ```
 
-### OpenTelemetry/Span (ID: 42160967)
+### OpenTelemetry/Span
 **Best for**: Request tracing, detailed error analysis, custom attribute investigation
 
 **Key Fields**:
@@ -100,7 +100,7 @@ filter service_name = "frontend" and error = true
     group_by(service_name, span_name)
 ```
 
-### Kubernetes Explorer/Kubernetes Logs (ID: 42161740)
+### Kubernetes Explorer/Kubernetes Logs
 **Best for**: Container log analysis, error investigation, troubleshooting
 
 **Key Fields**:
@@ -123,7 +123,7 @@ filter contains(body, "ERROR") or contains(body, "error")
     group_by(cluster, namespace, container)
 ```
 
-### Kubernetes Explorer/Prometheus Metrics (ID: 42161691)
+### Kubernetes Explorer/Prometheus Metrics
 **Best for**: Container metrics, resource utilization, K8s cluster monitoring
 
 **Key Fields**:
