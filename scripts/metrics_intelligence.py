@@ -233,10 +233,10 @@ class MetricsIntelligenceAnalyzer:
         """
 
         try:
-            result = await self.execute_opal_query(dataset_id, validation_query, "15m")
+            result = await self.execute_opal_query(dataset_id, validation_query, "60m")
 
             if not result:
-                logger.debug(f"No metric data found in dataset {dataset_id} in last 15m")
+                logger.debug(f"No metric data found in dataset {dataset_id} in last 60m")
                 return {}
 
             metrics_with_data = {}
@@ -255,7 +255,7 @@ class MetricsIntelligenceAnalyzer:
                         # If we can't parse but got result, include it
                         metrics_with_data[metric_name] = 1  # Default to 1 to include
 
-            logger.info(f"Found {len(metrics_with_data)} metrics with recent data (15m) in dataset {dataset_id}")
+            logger.info(f"Found {len(metrics_with_data)} metrics with recent data (60m) in dataset {dataset_id}")
             return metrics_with_data
 
         except Exception as e:
@@ -280,10 +280,10 @@ class MetricsIntelligenceAnalyzer:
         """
 
         try:
-            result = await self.execute_opal_query(dataset_id, validation_query, "15m")
+            result = await self.execute_opal_query(dataset_id, validation_query, "60m")
 
             if not result or len(result) == 0:
-                logger.debug(f"No data found for metric {metric_name} in last 15m")
+                logger.debug(f"No data found for metric {metric_name} in last 60m")
                 return False
 
             # Check if we got any count > 0
@@ -294,14 +294,14 @@ class MetricsIntelligenceAnalyzer:
                         # Convert to int in case it's returned as string
                         count_int = int(str(count_value))
                         if count_int > 0:
-                            logger.debug(f"Metric {metric_name} has {count_int} data points in last 15m")
+                            logger.debug(f"Metric {metric_name} has {count_int} data points in last 60m")
                             return True
                     except (ValueError, TypeError) as e:
                         logger.debug(f"Could not parse count value {count_value} for metric {metric_name}: {e}")
                         # If we can't parse the count but got a result, assume it has data
                         return True
 
-            logger.debug(f"Metric {metric_name} has no data points in last 15m")
+            logger.debug(f"Metric {metric_name} has no data points in last 60m")
             return False
 
         except Exception as e:
@@ -1404,11 +1404,11 @@ class MetricsIntelligenceAnalyzer:
                 if metric_name in metrics_with_data:
                     valid_metrics.append(metric_info)
                 elif metric_name:  # Metric discovered but has no recent data
-                    logger.info(f"Excluding metric {metric_name}: no data in last 15 minutes ({metrics_with_data.get(metric_name, 0)} data points)")
+                    logger.info(f"Excluding metric {metric_name}: no data in last 60 minutes ({metrics_with_data.get(metric_name, 0)} data points)")
                     self.stats['metrics_excluded'] += 1
                     # Store the exclusion in database
                     await self.store_excluded_metric(dataset_id, dataset_name, metric_name,
-                                                   "no recent data", "No data points in last 15 minutes")
+                                                   "no recent data", "No data points in last 60 minutes")
 
             if not valid_metrics:
                 logger.warning(f"No metrics with recent data found in {dataset_name}")
@@ -1429,7 +1429,7 @@ class MetricsIntelligenceAnalyzer:
             """
 
             logger.debug(f"Executing bulk dedup query to get sample data for all metrics")
-            all_metric_samples = await self.execute_opal_query(dataset_id, bulk_query, "15m")
+            all_metric_samples = await self.execute_opal_query(dataset_id, bulk_query, "60m")
 
             if not all_metric_samples:
                 logger.warning(f"No bulk data found for any metrics in {dataset_name}")
@@ -1474,7 +1474,7 @@ class MetricsIntelligenceAnalyzer:
                     batch_query = None
 
                 if batch_query:
-                    batch_detailed_data = await self.execute_opal_query(dataset_id, batch_query, "15m")
+                    batch_detailed_data = await self.execute_opal_query(dataset_id, batch_query, "60m")
 
                     # Group batch data by metric
                     batch_data_grouped = {}
