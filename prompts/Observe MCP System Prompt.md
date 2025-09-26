@@ -157,6 +157,30 @@ filter body ~ error
 | **Text Search** | `filter body ~ error` | `filter body like "%error%"` |
 | **JSON Fields** | `string(resource_attributes."k8s.namespace.name")` | `resource_attributes.k8s.namespace.name` |
 
+### 🔍 CRITICAL: Multi-Keyword Search Comparison
+
+**IMPORTANT**: Choose the right approach based on your search logic needs:
+
+| Approach | Logic | Case Sensitivity | Matching Type | Performance | Use When |
+|----------|-------|------------------|---------------|-------------|----------|
+| `field ~ <KEYWORD1 KEYWORD2>` | **AND** (all must match) | Case-insensitive | Token-based | Optimized | Need ALL keywords present |
+| `contains(field, "KEYWORD1") or contains(field, "KEYWORD2")` | **OR** (any can match) | Case-sensitive | Substring | Function overhead | Need ANY keyword present |
+
+**Examples:**
+```opal
+# AND logic - finds records containing BOTH "error" AND "exception"
+filter log_level ~ <error exception>
+
+# OR logic - finds records containing EITHER "error" OR "exception"
+filter contains(log_level, "error") or contains(log_level, "exception")
+
+# Case sensitivity difference
+filter log_level ~ <ERROR>           # Matches "error", "Error", "ERROR"
+filter contains(log_level, "ERROR")  # Only matches exact "ERROR"
+```
+
+**⚠️ Common Confusion**: `~ <KEYWORD1 KEYWORD2>` uses AND logic, not OR logic!
+
 ### Log Analysis Patterns (Tested)
 ```opal
 # Basic error search
