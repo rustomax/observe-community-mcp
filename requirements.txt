@@ -4,24 +4,11 @@ uvicorn>=0.21.1
 requests>=2.28.2
 python-dotenv>=1.0.0
 httpx>=0.24.0
-pinecone>=7.0.0
 tqdm>=4.65.0
 typing-extensions>=4.0.0
 
 # PostgreSQL for OPAL memory system
 asyncpg>=0.29.0
-
-# OpenAI embeddings for semantic search (lightweight)
-openai>=1.0.0
-
-# LangGraph dependencies for NLP query agent
-langchain-core>=0.3.0
-langgraph>=0.2.0
-langchain-anthropic>=0.2.0
-langchain-openai>=0.2.0
-
-# OpenAI Agents SDK for investigator agent
-openai-agents>=0.1.0
 
 # OpenTelemetry instrumentation
 opentelemetry-api>=1.21.0

@@ -178,7 +178,6 @@ auth_logger = get_logger('AUTH')
 query_logger = get_logger('QUERY') 
 semantic_logger = get_logger('SEMANTIC')
 opal_logger = get_logger('OPAL')
-pinecone_logger = get_logger('PINECONE')
 dataset_logger = get_logger('DATASET')
 http_logger = get_logger('HTTP')
 

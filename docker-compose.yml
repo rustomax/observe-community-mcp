@@ -34,8 +34,6 @@ services:
       - POSTGRES_USER=semantic_graph
       - POSTGRES_PASSWORD=${SEMANTIC_GRAPH_PASSWORD}
       
-      # === Optional: Enhanced Embeddings ===
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
       
       # === Content Directories ===
       - OBSERVE_DOCS_DIR=/app/observe-docs
@@ -82,9 +80,9 @@ services:
     command: ["--config=/etc/otelcol-contrib/otel-collector-config.yaml"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      test: ["CMD-SHELL", "/bin/echo > /dev/tcp/localhost/13133 2>/dev/null || exit 1"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
       start_period: 10s
 
