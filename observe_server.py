@@ -103,246 +103,131 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     """
     Execute OPAL (Observe Processing and Analytics Language) queries on datasets.
 
-    ⚠️ MANDATORY PREREQUISITE: ALWAYS call discover_datasets() or discover_metrics()
-    BEFORE using this tool to get exact field names and schema information.
+    MANDATORY 2-STEP WORKFLOW (Skipping Step 1 = "field not found" errors):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Step 1: discover_datasets("search term") → Get dataset_id + EXACT field names
+    Step 2: execute_opal_query(query, dataset_id) → Use ONLY fields from Step 1
 
-    🚨 CRITICAL WORKFLOW - DO NOT SKIP THESE STEPS
-    ═══════════════════════════════════════════════════════════════════════════════════
+    CRITICAL: METRICS REQUIRE SPECIAL SYNTAX
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Metric queries MUST use align verb - m() function ONLY works inside align!
 
-    Step 1: discover_datasets("your search term")
-            ↓
-            Get EXACT field names, types, and nested paths from schema
+    WILL ALWAYS FAIL:
+      filter m("metric_name") > 0              # m() outside align
+      statsby sum(m("metric_name"))            # m() without align
 
-    Step 2: execute_opal_query()
-            ↓
-            Use ONLY the field names from Step 1 (copy-paste them!)
+    REQUIRED PATTERN:
+      align 5m, value:sum(m("metric_name"))    # align + m()
+      | aggregate total:sum(value), group_by(service_name)
+      | filter total > 100                     # filter AFTER aggregate
 
-    ⚠️ Field names are DATASET-SPECIFIC and CASE-SENSITIVE
-    ⚠️ NEVER assume field names exist - queries WILL FAIL if fields don't match schema
-    ⚠️ Common failure: using 'timestamp' when dataset actually uses 'TIMESTAMP' or 'observed_timestamp'
+    TDIGEST METRICS (span_duration_5m, etc.):
+      align 5m, combined: tdigest_combine(m_tdigest("metric"))
+      | aggregate agg: tdigest_combine(combined), group_by(field)
+      | make_col p95: tdigest_quantile(agg, 0.95)
 
-    📋 PRE-FLIGHT CHECKLIST (Check ALL before writing your query):
-    ─────────────────────────────────────────────────────────────────────────────────
-    [ ] Did you call discover_datasets() or discover_metrics() first?
-    [ ] Do you have the exact dataset_id from the discovery response?
-    [ ] Are you using EXACT field names from the schema (copy-paste, don't retype)?
-    [ ] Did you check if fields are nested and need string(field."nested.path") syntax?
-    [ ] Did you verify time field units from sample values (nanoseconds vs milliseconds)?
-    [ ] Have you reviewed the query pattern examples from discovery results?
+      WARNING: Must use m_tdigest() not m(), must use tdigest_combine() before tdigest_quantile()
 
-    🛠️ VERIFIED OPAL SYNTAX REFERENCE
-    ═══════════════════════════════════
+    COMMON QUERY PATTERNS (90% of use cases):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    DATASETS (Logs/Spans): filter → [make_col] → statsby/timechart
+      # Error analysis by service
+      filter <BODY_FIELD> ~ error
+      | make_col service:string(resource_attributes."service.name")
+      | statsby error_count:count(), group_by(service)
+      | sort desc(error_count)
 
-    CORE PATTERNS (Tested & Verified)
-    ─────────────────────────────────
-    Pattern         | ✅ Correct Syntax                      | ❌ Wrong Syntax
-    ────────────────┼────────────────────────────────────────┼──────────────────────────
-    Conditions      | if(error = true, "error", "ok")        | case when error...
-    Columns         | make_col new_field: expression         | new_field = expression
-    Sorting         | sort desc(field)                       | sort -field
-    Limits          | limit 10                               | head 10
-    Text Search     | filter body ~ error                    | filter body like "%error%"
-    JSON Fields     | string(attrs."k8s.namespace.name")    | attrs.k8s.namespace.name
+      # Time-series analysis
+      filter <BODY_FIELD> ~ error
+      | timechart count(), group_by(string(resource_attributes."k8s.namespace.name"))
 
-    🔍 MULTI-KEYWORD SEARCH (CRITICAL LOGIC - READ CAREFULLY!)
-    ════════════════════════════════════════════════════════════
+    METRICS: align → aggregate → [filter]
+      # Metric aggregation
+      align 5m, errors:sum(m("<METRIC_NAME>"))
+      | aggregate total_errors:sum(errors), group_by(service_name)
 
-    ⚠️ MOST COMMON MISTAKE: Assuming ~ <K1 K2> means "K1 OR K2"
-    ✅ ACTUAL BEHAVIOR: ~ <K1 K2> means "K1 AND K2" (both must match)
+    FIELD QUOTING (Field names with dots):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    WRONG: resource_attributes.k8s.namespace.name
+       (OPAL interprets as: resource_attributes → k8s → namespace → name)
 
-    ┌─────────────────────────────────────────────────────────────────────────────┐
-    │ Syntax                          │ Logic │ Case      │ Performance │ Use When│
-    ├─────────────────────────────────┼───────┼───────────┼─────────────┼─────────┤
-    │ field ~ <KEY1 KEY2>             │ AND ⚠️│ Ignore    │ Optimized   │ALL match│
-    │ contains(f,"K1") or contains... │ OR    │ Sensitive │ Slower      │ANY match│
-    └─────────────────────────────────┴───────┴───────────┴─────────────┴─────────┘
+    CORRECT: resource_attributes."k8s.namespace.name"
+       (Single field name containing dots - MUST quote the field name)
 
-    💡 EXAMPLES WITH CLEAR INTENT:
-    ───────────────────────────────
-    "Find logs with errors"
-      ✅ filter body ~ error
+    Rule: If field name contains dots, wrap it in quotes: object."field.with.dots"
 
-    "Find logs mentioning BOTH deployment AND failure"
-      ✅ filter body ~ <deployment failure>
+    COMMON FAILURES - DON'T DO THIS:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    1. Forgetting field quoting → Quote field names with dots
+    2. SQL syntax (CASE/WHEN, -field) → Use if(), desc(field)
+    3. count_if() function → Use make_col + if() + sum() pattern
+    4. m() outside align verb → Metrics REQUIRE align + m() + aggregate
+    5. Missing parentheses → group_by(field), desc(field), if(cond,val,val)
 
-    "Find logs with EITHER error OR warning"
-      ❌ filter body ~ <error warning>  # WRONG - this means BOTH!
-      ✅ filter contains(body, "error") or contains(body, "warning")
+    CORE OPAL SYNTAX:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    filter: field ~ keyword, field = value, field > 100
+    make_col: new_field:expression, nested:object."field.name"
+    statsby: metric:count(), metric:sum(field), group_by(dimension)
+    sort: desc(field), asc(field)  [NOT sort -field]
+    limit: limit 10
+    Conditionals: if(condition, true_value, false_value)
+    Text Search: field ~ keyword (single token), field ~ <word1 word2> (multiple tokens, AND)
+    OR Search: contains(field,"w1") or contains(field,"w2")
 
-    🎯 DECISION RULE:
-    ─────────────────
-    Need ALL keywords present? → Use ~ <keyword1 keyword2>
-    Need ANY keyword present?   → Use contains() with OR
+    TIME UNITS (Check sample values in discover_datasets):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    No suffix (timestamp, duration) = NANOSECONDS → divide by 1M for ms
+    With suffix (_ms, _s) = as labeled
+      • 19 digits (1760201545280843522) = nanoseconds
+      • 13 digits (1758543367916) = milliseconds
 
-    ⚠️ Remember: ~ <K1 K2> uses AND logic, not OR!
+    DON'T EXIST IN OPAL:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    count_if() → Use: make_col flag:if(condition,1,0) | statsby sum(flag)
+    pick → Use: make_col to select fields, or reference directly
+    sort -field → Use: sort desc(field)
+    SQL CASE/WHEN → Use: if(condition, true_val, false_val)
 
-    LOG ANALYSIS PATTERNS
-    ────────────────────
-    # Basic error search
-    filter body ~ error | limit 10
+    EXAMPLES (Replace <FIELD> with actual names from discover_datasets):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Basic search
+    filter <BODY_FIELD> ~ error | limit 10
 
-    # Multiple keywords (AND logic)
-    filter body ~ <error exception failure>
+    # Nested fields with dots (QUOTE the field name)
+    filter resource_attributes."k8s.namespace.name" = "default" | limit 10
+    make_col ns:resource_attributes."k8s.namespace.name" | filter ns = "default"
 
-    # Extract Kubernetes context (nested JSON)
-    make_col
-        namespace:string(resource_attributes."k8s.namespace.name"),
-        pod:string(resource_attributes."k8s.pod.name"),
-        container:string(resource_attributes."k8s.container.name")
-    | filter body ~ error
-    | limit 50
-
-    # Time-based filtering
-    filter body ~ error
-    | filter timestamp > @"1 hour ago"
-    | limit 100
-
-    # Statistical analysis with conditional aggregation
-    filter body ~ error
-    | make_col is_error:if(error=true, 1, 0)
-    | statsby
-        error_count:sum(is_error),
-        total_count:count(),
-        group_by(string(resource_attributes."k8s.namespace.name"))
+    # Conditional counting (NO count_if!)
+    make_col is_error:if(contains(<BODY_FIELD>, "error"), 1, 0)
+    | statsby error_count:sum(is_error), total:count(), group_by(service)
     | sort desc(error_count)
 
-    METRICS ANALYSIS PATTERNS
-    ────────────────────────
-    # Simple aggregation
-    filter metric = "error_count"
-    | statsby total_errors:sum(value), group_by(service_name)
-    | sort desc(total_errors)
+    # Multi-keyword search
+    filter <BODY_FIELD> ~ <error exception>    # Both tokens present (AND)
+    filter contains(<BODY_FIELD>,"error") or contains(<BODY_FIELD>,"warn")  # Either (OR)
 
-    # Conditional counting (count_if does NOT exist!)
-    # WRONG: statsby error_count:count_if(error=true)
-    # RIGHT: Use make_col + sum() pattern
-    make_col is_error:if(error=true, 1, 0)
-    | statsby error_count:sum(is_error), group_by(service_name)
-
-    ⏱️ TIME UNIT CONVERSIONS (CRITICAL FOR DURATION QUERIES)
-    ═══════════════════════════════════════════════════════════
-
-    🚨 OBSERVE DEFAULT: Duration/time fields are in NANOSECONDS unless
-       the field name explicitly indicates otherwise (_ms, _s suffixes)
-
-    ┌────────────────────────────────────────────────────────────────────────────┐
-    │ Field Pattern          │ Unit          │ Conversion Needed               │
-    ├────────────────────────┼───────────────┼─────────────────────────────────┤
-    │ elapsedTime            │ nanoseconds   │ / 1000000 for ms                │
-    │ duration               │ nanoseconds   │ / 1000000000 for seconds        │
-    │ TIMESTAMP              │ nanoseconds   │ / 1000000 for ms                │
-    │ duration_ms            │ milliseconds  │ use as-is                       │
-    │ latency_s              │ seconds       │ use as-is                       │
-    └────────────────────────┴───────────────┴─────────────────────────────────┘
-
-    🔍 HOW TO VERIFY UNITS FROM discover_datasets() OUTPUT:
-    ───────────────────────────────────────────────────────
-    1. Check sample values in the schema output
-    2. 19 digits (e.g., 1760201545280843522) = nanoseconds
-    3. 13 digits (e.g., 1758543367916) = milliseconds
-    4. Look for unit suffixes in field names (_ms, _s, _ns)
-
-    💡 COMMON CONVERSION PATTERNS:
-    ──────────────────────────────
-    # Convert nanoseconds to milliseconds for readability
-    make_col elapsed_ms: elapsedTime / 1000000
-
-    # Convert nanoseconds to seconds
-    make_col elapsed_s: elapsedTime / 1000000000
-
-    # Filter for slow requests (when field is in nanoseconds)
-    filter elapsedTime > 500000000  # 500ms in nanoseconds
-
-    # Filter for slow requests (when field already has _ms suffix)
-    filter elapsed_ms > 500  # 500ms directly
-
-    # Time-based filtering (built-in functions)
-    filter TIMESTAMP > @"1 hour ago"
-    filter TIMESTAMP between @"2024-01-01T00:00:00Z" and @"2024-01-02T00:00:00Z"
-
-    QUERY RESULT CONTROL
-    ───────────────────
-    filter body ~ error | limit 10        # Small sample
-    filter body ~ error | limit 100       # Larger dataset
-    filter body ~ error                    # Default: up to 1000 rows
-
-    🚨 COMMON ERRORS & SOLUTIONS
-    ════════════════════════════
-    ❌ "field not found" → Check schema from discover_datasets() first
-    ❌ Empty JSON extraction → Use string(field."nested.key") syntax
-    ❌ "invalid syntax" → Check verified patterns table above
-    ❌ Wrong time units → Check sample values, convert if needed (nanoseconds!)
-    ❌ Slow query → Add filters, use limit, check time range
-
-    🚫 FUNCTIONS THAT DON'T EXIST (Common Mistakes)
-    ════════════════════════════════════════════════
-    ❌ count_if(condition) → Use: make_col flag:if(condition,1,0) | statsby sum(flag)
-    ❌ bin(field, interval) → Time bucketing syntax may differ, check docs with get_relevant_docs()
-
-    ⚠️ CRITICAL: NEVER ASSUME FIELD NAMES!
-    ═══════════════════════════════════════
-    Field names vary by dataset. Some datasets use 'timestamp', others use 'start_time',
-    'end_time', 'TIMESTAMP', 'observed_timestamp', etc.
-
-    ALWAYS run discover_datasets() or discover_metrics() FIRST to get the EXACT field names
-    from the schema before writing queries. Field names are case-sensitive and dataset-specific.
+    # Time-based with nanosecond conversion
+    filter <TIME_FIELD> > @"1 hour ago"
+    | make_col duration_ms:<NANO_FIELD> / 1000000
+    | filter duration_ms > 500 | limit 100
 
     Args:
-        query: OPAL query string (use verified syntax above)
-        dataset_id: DEPRECATED - use primary_dataset_id instead
-        primary_dataset_id: Main dataset ID from discover_datasets() or discover_metrics()
-        secondary_dataset_ids: JSON array string for joins (e.g., '["44508111"]')
-        dataset_aliases: JSON object string for joins (e.g., '{"volumes": "44508111"}')
-        time_range: Relative time window (e.g., "1h", "24h", "7d", "30d")
-        start_time: Absolute start time in ISO format (e.g., "2024-01-20T16:20:00Z")
-        end_time: Absolute end time in ISO format (e.g., "2024-01-20T17:20:00Z")
-        format: Output format - "csv" (default, human-readable) or "ndjson" (programmatic)
-        timeout: Query timeout in seconds (default: 30s, increase for complex queries)
+        query: OPAL query (use syntax reference above)
+        dataset_id: DEPRECATED - use primary_dataset_id
+        primary_dataset_id: Dataset ID from discover_datasets() or discover_metrics()
+        secondary_dataset_ids: JSON array for joins: '["44508111"]'
+        dataset_aliases: JSON object for joins: '{"volumes": "44508111"}'
+        time_range: "1h", "24h", "7d", "30d"
+        start_time: ISO format "2024-01-20T16:20:00Z"
+        end_time: ISO format "2024-01-20T17:20:00Z"
+        format: "csv" (default) or "ndjson"
+        timeout: Seconds (default: 30s)
 
     Returns:
-        Query results in requested format. CSV returns first 1000 rows by default
-        unless limited by OPAL query's limit clause.
+        Query results (CSV: first 1000 rows, or limited by query)
 
-    Examples:
-        # WORKFLOW: Always discover schema first!
-        # Step 1: Get schema and field names
-        discover_datasets("kubernetes logs")
-        # Step 2: Use EXACT field names from schema
-        execute_opal_query(
-            query="filter body ~ error | limit 10",
-            primary_dataset_id="42161740",
-            time_range="1h"
-        )
-
-        # Conditional aggregation (NO count_if!)
-        execute_opal_query(
-            query='''
-                make_col
-                    service:string(resource_attributes."service.name"),
-                    is_error:if(error=true, 1, 0)
-                | statsby
-                    total:count(),
-                    errors:sum(is_error),
-                    group_by(service)
-                | make_col error_rate:100.0*errors/total
-            ''',
-            primary_dataset_id="42160967",
-            time_range="1h"
-        )
-
-        # Multi-dataset join with aliases
-        execute_opal_query(
-            query="join on(instanceId=@volumes.instanceId), volume_size:@volumes.size",
-            primary_dataset_id="44508123",
-            secondary_dataset_ids='["44508111"]',
-            dataset_aliases='{"volumes": "44508111"}'
-        )
-
-    Performance:
-        - Log queries (1000+ entries): 1-3 seconds
-        - Metrics queries (100+ points): 500ms-2s
-        - Use filters and limits for better performance
-        - Increase timeout for complex aggregations
+    Need help with unknown syntax errors? Call get_relevant_docs("opal <keyword>")
     """
     import json
 
@@ -392,24 +277,24 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
     This tool searches through official Observe documentation to find relevant information
     about OPAL syntax, functions, features, and best practices.
 
-    🚨 WHEN YOU MUST USE THIS TOOL
+    WHEN YOU MUST USE THIS TOOL
     ═══════════════════════════════════════════════════════════════════════════════════
 
-    ✅ MANDATORY: Call this tool if you receive ANY of these errors from execute_opal_query:
+    MANDATORY: Call this tool if you receive ANY of these errors from execute_opal_query:
        • "field not found" → Search for field access syntax
        • "invalid syntax" → Search for the OPAL construct you're trying to use
        • "unknown function" → Search for function name and proper usage
        • "parse error" → Search for syntax of the operation that failed
        • Any other query execution failure → Search for error keywords
 
-    ✅ RECOMMENDED: Call BEFORE attempting these complex operations:
+    RECOMMENDED: Call BEFORE attempting these complex operations:
        • Multi-dataset joins
        • Time bucketing or window functions
        • Advanced aggregations beyond statsby
        • Regex or pattern matching
        • Custom operators or functions you haven't used before
 
-    🔄 ERROR RECOVERY WORKFLOW
+    ERROR RECOVERY WORKFLOW
     ─────────────────────────────────────────────────────────────────────────────────
     execute_opal_query() fails
             ↓
@@ -419,7 +304,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
             ↓
     Retry execute_opal_query() with corrected syntax
 
-    💡 SEARCH TIPS:
+    SEARCH TIPS:
     ───────────────
     • Use specific error keywords: "statsby syntax", "join datasets"
     • Include OPAL in your search: "OPAL filter operators"
@@ -536,77 +421,24 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 @trace_mcp_tool(tool_name="discover_datasets", record_args=True, record_result=False)
 async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[str] = None, dataset_name: Optional[str] = None, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
     """
-    Discover datasets using intelligent search and get complete schema information for querying.
+    Discover datasets and get complete schema information for OPAL queries.
 
-    This tool searches through analyzed datasets with intelligent categorization and returns
-    COMPLETE SCHEMA INFORMATION that is essential for constructing correct OPAL queries.
+    Returns dataset ID + EXACT field names needed for execute_opal_query().
 
-    🎯 HOW TO USE THE DISCOVERY RESULTS
-    ═══════════════════════════════════════════════════════════════════════════════════
+    WHAT YOU GET:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    • Dataset ID (required for execute_opal_query)
+    • Top-level fields → Use directly: filter body ~ error
+    • Nested fields with dots → MUST quote: resource_attributes."k8s.namespace.name"
+    • Sample values → Check time field units (19 digits = nanoseconds, 13 = milliseconds)
+    • Query examples → Copy structure, replace field names
 
-    The response contains a "COMPLETE SCHEMA" section with critical information:
-
-    📋 Top-Level Fields: Can be accessed directly in OPAL queries
-       Example: Field `body` → Use as `filter body ~ error`
-
-    📍 Nested Fields: Require string() function and exact dotted path
-       Example: `resource_attributes."k8s.namespace.name"`
-       → Must use: `string(resource_attributes."k8s.namespace.name")`
-       ⚠️ Copy-paste the exact path from schema - don't retype it!
-
-    ⏱️ Time Fields: Check sample values to determine units
-       • 19 digits (1760201545280843522) = nanoseconds → divide by 1000000 for ms
-       • 13 digits (1758543367916) = milliseconds → use directly
-       • Look for _ms or _s suffixes in field names
-
-    🔍 Query Pattern Examples: Pre-built queries you can adapt
-       Copy the syntax structure but replace field names as needed
-
-    ⚠️ INFORMATION EXTRACTION CHECKLIST (Do this BEFORE calling execute_opal_query):
-    ─────────────────────────────────────────────────────────────────────────────────
-    [ ] Extract and save the dataset_id (you'll need this for execute_opal_query)
-    [ ] List ALL field names you plan to use in your query (case-sensitive!)
-    [ ] For nested fields, copy-paste the exact dotted paths with quotes
-    [ ] Check sample values for time fields to determine if conversion is needed
-    [ ] Review the query pattern examples for syntax guidance
-    [ ] Verify the interface type (log/metric/otel_span) matches your query intent
-
-    🚨 CRITICAL SCHEMA VALIDATION REQUIREMENTS
-    ═══════════════════════════════════════════
-    This tool returns schema information that MUST be analyzed before querying:
-
-    📋 KEY FIELDS - Available field names for filtering/selection
-       - Use ONLY fields shown in the schema
-       - Field names are case-sensitive
-       - Never assume field names exist without checking
-
-    📍 NESTED FIELDS - JSON structure for complex field access
-       - Correct syntax: string(resource_attributes."k8s.namespace.name")
-       - Wrong syntax: resource_attributes.k8s.namespace.name (will fail!)
-       - Always use string() function for nested JSON paths
-       - Check sample values to understand data structure
-
-    ⏱️ TIME UNITS - CRITICAL: Observe uses NANOSECONDS by default!
-       - Fields WITHOUT suffix (elapsedTime, duration, TIMESTAMP) = NANOSECONDS
-       - Fields WITH suffix (_ms, _s) = as labeled (milliseconds, seconds)
-       - Sample value indicators:
-         • 19 digits = nanoseconds (e.g., 1760201545280843522)
-         • 13 digits = milliseconds (e.g., 1758543367916)
-       - Conversions:
-         • To milliseconds: field / 1000000
-         • To seconds: field / 1000000000
-
-    🔍 DATASET INTERFACE TYPES
-       - log: Use text search (~), filter by body/message fields
-       - metric: Use metric name filters, aggregate with statsby
-       - otel_span: Trace data with parent/child span relationships
-
-    COMMON ERRORS PREVENTED BY SCHEMA ANALYSIS
-    ───────────────────────────────────────────
-    ❌ "Field not found" → Always check "Key Fields" section first
-    ❌ Empty JSON extraction → Use string() with exact nested path from schema
-    ❌ Wrong time units → Check sample values and field naming (no suffix = nanoseconds)
-    ❌ Wrong query pattern → Match interface type (log vs metric vs trace)
+    BEFORE CALLING execute_opal_query:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    1. Save dataset_id from results
+    2. Copy-paste exact field names (case-sensitive, don't retype!)
+    3. CRITICAL: Quote field names with dots: resource_attributes."k8s.namespace.name"
+    4. Check sample values for time units (no suffix = nanoseconds)
 
     Args:
         query: Search query (e.g., "kubernetes logs", "error traces"). Optional if dataset_id/dataset_name provided.
@@ -698,7 +530,7 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
                 """, dataset_id)
 
                 if not results:
-                    return f"""# 🔍 Dataset Lookup by ID
+                    return f"""# Dataset Lookup by ID
 
 **Dataset ID**: `{dataset_id}`
 **Result**: Not found
@@ -737,7 +569,7 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
                 """, dataset_name)
 
                 if not results:
-                    return f"""# 🔍 Dataset Lookup by Name
+                    return f"""# Dataset Lookup by Name
 
 **Dataset Name**: `{dataset_name}`
 **Result**: Not found
@@ -751,7 +583,7 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
 
             elif not query:
                 # No search criteria provided
-                return """# ⚠️ Dataset Discovery Error
+                return """# Dataset Discovery Error
 
 **Issue**: No search criteria provided
 
@@ -839,7 +671,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                 results = await conn.fetch(query_sql, *params)
             
             if not results:
-                return f"""# 🔍 Dataset Discovery Results
+                return f"""# Dataset Discovery Results
 
 **Query**: "{query}"
 **Found**: 0 datasets
@@ -897,13 +729,13 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                             all_fields_info[field_path] = {"type": "unknown", "sample_values": []}
 
                 if all_fields_info:
-                    schema_info_str = "🚨 **COMPLETE SCHEMA - USE EXACT FIELD NAMES & TYPES**:\n"
+                    schema_info_str = "**COMPLETE SCHEMA - USE EXACT FIELD NAMES & TYPES**:\n"
 
                     # Sort fields: top-level first, then nested
                     top_level_fields = [f for f in all_fields_info.keys() if '.' not in f]
                     nested_fields = [f for f in all_fields_info.keys() if '.' in f]
 
-                    for field_list, header in [(top_level_fields, "📋 **Top-Level Fields**"), (nested_fields, "📍 **Nested Fields**")]:
+                    for field_list, header in [(top_level_fields, "**Top-Level Fields**"), (nested_fields, "**Nested Fields**")]:
                         if field_list:
                             schema_info_str += f"\n{header}:\n"
                             for field in sorted(field_list)[:15]:  # Limit to 15 per section to manage size
@@ -919,9 +751,9 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                                     # Add duration unit hints
                                     if any(keyword in field.lower() for keyword in ['time', 'elapsed', 'duration', 'timestamp']):
                                         if any(len(str(s)) >= 15 for s in samples if str(s).isdigit()):
-                                            samples_str += " (⏱️ likely nanoseconds)"
+                                            samples_str += " (likely nanoseconds)"
                                         elif any(len(str(s)) == 13 for s in samples if str(s).isdigit()):
-                                            samples_str += " (⏱️ likely milliseconds)"
+                                            samples_str += " (likely milliseconds)"
 
                                 schema_info_str += f"  • `{field}` {type_info}{samples_str}\n"
 
@@ -979,7 +811,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
             # Log successful results
             semantic_logger.info(f"dataset search complete | found:{len(results)} datasets | total_available:{total_datasets}")
 
-            return f"""# 🎯 Dataset Discovery Results
+            return f"""# Dataset Discovery Results
 
 **Query**: "{query}"
 **Found**: {len(results)} datasets (showing top {max_results})
@@ -988,7 +820,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 {chr(10).join(formatted_results)}
 
 ---
-💡 **Next Steps**:
+**Next Steps**:
 - Use `execute_opal_query()` with the dataset ID to query the data
 - Use `discover_metrics()` to find related metrics for analysis
 """
@@ -997,14 +829,14 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
             await conn.close()
             
     except ImportError as e:
-        return f"""# ❌ Dataset Discovery Error
+        return f"""# Dataset Discovery Error
 **Issue**: Required database library not available
 **Error**: {str(e)}
 **Solution**: The dataset intelligence system requires asyncpg. Please install it with: pip install asyncpg"""
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
-        return f"""# ❌ Dataset Discovery Error
+        return f"""# Dataset Discovery Error
 **Issue**: Database query failed
 **Error**: {str(e)}
 **Type**: {type(e).__name__}
@@ -1026,7 +858,12 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
     This tool searches through 491+ analyzed metrics and returns comprehensive information
     including dataset IDs, dimensions, value ranges, and query patterns.
 
-    📊 METRICS-SPECIFIC GUIDANCE
+    METRICS QUERY REQUIREMENT:
+    ═════════════════════════════
+    ALL metric queries MUST use: align + m() + aggregate
+    You CANNOT filter or aggregate metrics directly - see execute_opal_query() for pattern.
+
+    METRICS-SPECIFIC GUIDANCE
     ═════════════════════════════
 
     WHAT METRICS PROVIDE:
@@ -1038,23 +875,23 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
     - Actual error messages or stack traces → Use discover_datasets() for logs
     - Detailed request context → Use discover_datasets() for trace/span data
 
-    📈 METRIC TYPES
+    METRIC TYPES
        - Counter: Cumulative values that only increase (error_count, request_total)
        - Gauge: Point-in-time values that can go up/down (cpu_usage, memory_bytes, queue_depth)
        - Histogram: Distribution data with buckets (latency_bucket, response_time_bucket)
 
-    📍 COMMON DIMENSIONS (Group-By Fields)
+    COMMON DIMENSIONS (Group-By Fields)
        - Service identifiers: service_name, endpoint, method
        - Infrastructure: namespace, pod, container, node, zone
        - Status indicators: status_code, error_type, severity
        - Check "Dimensions" section in results for available groupings
 
-    ⏱️ TIME UNITS (Same as datasets!)
+    TIME UNITS (Same as datasets!)
        - Fields without suffix (duration, elapsed) = NANOSECONDS
        - Fields with suffix (duration_ms, latency_s) = as labeled
        - Always check sample values and convert if needed
 
-    🔍 VALUE RANGES - Use for filtering and anomaly detection
+    VALUE RANGES - Use for filtering and anomaly detection
        - "Range: 0-100" indicates percentage metrics
        - "Range: 0-1000000000" indicates nanosecond duration metrics
        - Check ranges to understand metric scale and units
@@ -1147,8 +984,8 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
             """, query, max_results, category_filter, technical_filter, 0.2)
             
             if not results:
-                return f"""# 🔍 Metrics Discovery Results
-                
+                return f"""# Metrics Discovery Results
+
 **Query**: "{query}"
 **Results**: No metrics found
 
@@ -1215,13 +1052,13 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
                         nested_text = ', '.join(important_fields[:4])  # Show 4 instead of 3
                         if len(important_fields) > 4:
                             nested_text += f" (+{len(important_fields)-4} more)"
-                        query_guidance += f"📍 **Key Nested Fields (EXACT PATHS)**: {nested_text}\n"
+                        query_guidance += f"**Key Nested Fields (EXACT PATHS)**: {nested_text}\n"
 
                 if common_fields:
                     field_list = ', '.join(common_fields[:4])  # Show 4 instead of 3
                     if len(common_fields) > 4:
                         field_list += f" (+{len(common_fields)-4} more)"
-                    query_guidance += f"🚨 **Common Fields (USE EXACT NAMES)**: {field_list}\n"
+                    query_guidance += f"**Common Fields (USE EXACT NAMES)**: {field_list}\n"
                 
                 # Calculate combined relevance score
                 combined_score = max(row['rank'], row.get('similarity_score', 0))
@@ -1262,7 +1099,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
             # Log successful results
             semantic_logger.info(f"metrics search complete | found:{len(results)} metrics | total_available:{total_metrics}")
 
-            return f"""# 🎯 Metrics Discovery Results
+            return f"""# Metrics Discovery Results
 
 **Query**: "{query}"
 **Found**: {len(results)} metrics (showing top {max_results})
@@ -1271,7 +1108,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 {chr(10).join(formatted_results)}
 
 ---
-💡 **Next Steps**:
+**Next Steps**:
 - Use `execute_opal_query()` with the dataset ID to query specific metrics
 - Use `discover_datasets()` to find related datasets for comprehensive analysis
 """
@@ -1280,7 +1117,7 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
             await conn.close()
             
     except ImportError as e:
-        return f"""# ❌ Metrics Discovery Error
+        return f"""# Metrics Discovery Error
 
 **Issue**: Required database library not available
 **Error**: {str(e)}
@@ -1289,9 +1126,9 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
 pip install asyncpg
 ```
 """
-    
+
     except Exception as e:
-        return f"""# ❌ Metrics Discovery Error
+        return f"""# Metrics Discovery Error
 
 **Query**: "{query}"
 **Error**: {str(e)}
