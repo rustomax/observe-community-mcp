@@ -25,9 +25,20 @@ except ImportError:
     def add_database_context(span, **kwargs):
         pass
 
-# Database connection configuration
-# Supports both Docker (port 5433) and local PostgreSQL (port 5432)
-DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+# Database connection configuration using individual parameters (avoids SSL/TLS DNS issues)
+def get_db_config():
+    """Get database configuration with validation"""
+    db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
+    if not db_password:
+        raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
+
+    return {
+        'host': os.getenv('POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('POSTGRES_PORT', '5432')),
+        'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+        'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+        'password': db_password
+    }
 
 
 @trace_database_operation(operation="bm25_search", table="documentation_chunks")
@@ -45,8 +56,9 @@ async def search_docs_bm25(query: str, n_results: int = 5) -> List[Dict[str, Any
     try:
         semantic_logger.debug(f"BM25 docs search | query:{query[:100]} | results:{n_results}")
 
-        # Connect to database
-        conn = await asyncpg.connect(DATABASE_URL)
+        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
+        db_config = get_db_config()
+        conn = await asyncpg.connect(**db_config)
 
         try:
             # Check if ParadeDB search extension is available
@@ -167,7 +179,8 @@ async def _search_with_fulltext(conn: asyncpg.Connection, query: str, n_results:
 async def get_documentation_stats() -> Dict[str, Any]:
     """Get statistics about the documentation corpus"""
     try:
-        conn = await asyncpg.connect(DATABASE_URL)
+        db_config = get_db_config()
+        conn = await asyncpg.connect(**db_config)
 
         try:
             stats = await conn.fetchrow("""

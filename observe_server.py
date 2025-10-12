@@ -406,14 +406,24 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
         # Log the semantic search operation
         semantic_logger.info(f"dataset search | query:'{query}' | max_results:{max_results} | filters:{business_category_filter or technical_category_filter or interface_filter}")
 
-        # Database connection using environment variables
-        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
-        
+        # Database connection using individual parameters (same as working scripts)
+        db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
+        if not db_password:
+            raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
+
+        db_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': db_password
+        }
+
         # Validate parameters
         max_results = min(max(1, max_results), 30)  # Clamp between 1 and 30
-        
-        # Connect to database and search
-        conn = await asyncpg.connect(DATABASE_URL)
+
+        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
+        conn = await asyncpg.connect(**db_config)
         
         try:
             # Enhanced manual query with better search capabilities
@@ -704,14 +714,24 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         # Log the semantic search operation
         semantic_logger.info(f"metrics search | query:'{query}' | max_results:{max_results} | filters:{category_filter or technical_filter}")
 
-        # Database connection using environment variables
-        DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
-        
+        # Database connection using individual parameters (same as working scripts)
+        db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
+        if not db_password:
+            raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
+
+        db_config = {
+            'host': os.getenv('POSTGRES_HOST', 'localhost'),
+            'port': int(os.getenv('POSTGRES_PORT', '5432')),
+            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+            'password': db_password
+        }
+
         # Validate parameters
         max_results = min(max(1, max_results), 50)  # Clamp between 1 and 50
-        
-        # Connect to database and search
-        conn = await asyncpg.connect(DATABASE_URL)
+
+        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
+        conn = await asyncpg.connect(**db_config)
         
         try:
             # Use the enhanced search function with trigram similarity

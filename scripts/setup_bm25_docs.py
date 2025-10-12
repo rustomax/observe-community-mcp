@@ -33,7 +33,21 @@ logger = get_logger('BM25_SETUP')
 
 # Configuration
 DOCS_DIR = os.getenv("OBSERVE_DOCS_DIR", "observe-docs")
-DATABASE_URL = f"postgresql://{os.getenv('POSTGRES_USER', 'semantic_graph')}:{os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'semantic_graph')}"
+
+# Database configuration using individual parameters (avoids SSL/TLS DNS issues)
+def get_db_config():
+    """Get database configuration with validation"""
+    db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
+    if not db_password:
+        raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
+
+    return {
+        'host': os.getenv('POSTGRES_HOST', 'localhost'),
+        'port': int(os.getenv('POSTGRES_PORT', '5432')),
+        'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
+        'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
+        'password': db_password
+    }
 
 
 async def setup_database_schema(conn: asyncpg.Connection) -> bool:
@@ -313,9 +327,10 @@ async def main():
     print("")
 
     try:
-        # Connect to database
+        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
         logger.info("connecting to PostgreSQL")
-        conn = await asyncpg.connect(DATABASE_URL)
+        db_config = get_db_config()
+        conn = await asyncpg.connect(**db_config)
 
         try:
             # Step 1: Create database schema

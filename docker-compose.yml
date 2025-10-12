@@ -33,6 +33,7 @@ services:
       - POSTGRES_DB=semantic_graph
       - POSTGRES_USER=semantic_graph
       - POSTGRES_PASSWORD=${SEMANTIC_GRAPH_PASSWORD}
+      - SEMANTIC_GRAPH_PASSWORD=${SEMANTIC_GRAPH_PASSWORD}
       
       
       # === Content Directories ===

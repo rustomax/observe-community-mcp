@@ -354,6 +354,9 @@ The server uses JWT-based authentication to control access:
 
 ```bash
 # Generate RSA key pair
+mkdir _secure
+cd _secure
+# Make sure _secure is in your gitignore!
 openssl genrsa -out private_key.pem 2048
 openssl rsa -in private_key.pem -pubout -out public_key.pem
 
@@ -361,7 +364,14 @@ openssl rsa -in private_key.pem -pubout -out public_key.pem
 cat public_key.pem  # Copy to PUBLIC_KEY_PEM
 
 # Generate user tokens
-./scripts/generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
+cd ../scripts
+./generate_mcp_token.sh 'user@example.com' 'admin,read,write' '4H'
+```
+
+On MacOS, you may need to install `jwt-cli`
+
+```sh
+brew install jwt-cli
 ```
 
 ### Observe API Access

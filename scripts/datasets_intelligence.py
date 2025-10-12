@@ -175,12 +175,16 @@ class DatasetsIntelligenceAnalyzer:
     
     async def initialize_database(self) -> None:
         """Initialize database connection and ensure schema exists."""
+        db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
+        if not db_password:
+            raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
+
         db_config = {
             'host': os.getenv('POSTGRES_HOST', 'localhost'),
             'port': int(os.getenv('POSTGRES_PORT', '5432')),
             'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
             'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
-            'password': os.getenv('SEMANTIC_GRAPH_PASSWORD', 'g83hbeyB32792r3Gsjnfwe0ihf2')
+            'password': db_password
         }
         
         try:
