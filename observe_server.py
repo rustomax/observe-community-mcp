@@ -212,6 +212,42 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     | make_col duration_ms:<NANO_FIELD> / 1000000
     | filter duration_ms > 500 | limit 100
 
+    MULTI-DATASET JOINS (Joining two or more datasets):
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    CRITICAL: Join syntax does NOT include dataset reference as first argument!
+
+    CORRECT SYNTAX:
+      join on(field=@alias.field), new_col:@alias.column
+
+    WRONG SYNTAX (will fail):
+      join @alias, on(field=@alias.field), new_col:@alias.column  # Extra @alias argument!
+
+    # Example: Join spans with span events to get error details
+    # Dataset 1 (primary): Spans with OPAL queries in attributes
+    # Dataset 2 (secondary): Span Events with error messages
+
+    primary_dataset_id = "42160967"  # Spans
+    secondary_dataset_ids = '["42160966"]'  # Span Events
+    dataset_aliases = '{"events": "42160966"}'
+
+    query = '''
+    filter service_name = "my-service"
+    | filter span_name = "http_request"
+    | make_col request_span_id:span_id
+    | join on(request_span_id=@events.span_id),
+        event_type:@events.event_name,
+        error_msg:@events.attributes."error.message"
+    | filter event_type = "error_event"
+    | make_col error_message:string(error_msg)
+    | limit 10
+    '''
+
+    # Key points:
+    # 1. Use secondary_dataset_ids as JSON array: '["42160966"]'
+    # 2. Use dataset_aliases to name datasets: '{"events": "42160966"}'
+    # 3. Reference secondary dataset with @alias in join
+    # 4. No @alias before on() predicate!
+
     Args:
         query: OPAL query (use syntax reference above)
         dataset_id: DEPRECATED - use primary_dataset_id

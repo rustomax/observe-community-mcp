@@ -192,7 +192,7 @@ def _validate_query_parameters(
         },
         "rowCount": str(row_count or 1000)
     }
-    
+
     # Set up time parameters
     params = _build_time_parameters(time_range, start_time, end_time)
     
