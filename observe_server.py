@@ -87,27 +87,6 @@ mcp = create_authenticated_mcp(server_name="observe-community")
 auth_provider = setup_auth_provider()
 initialize_auth_middleware(auth_provider)
 
-# Track sessions that have called get_system_prompt
-session_prompt_status = {}
-
-def check_system_prompt_called(ctx: Context, tool_name: str) -> Optional[str]:
-    """Check if system prompt has been called for this session"""
-    session_id = ctx.session_id
-    if session_id not in session_prompt_status and tool_name != "get_system_prompt":
-        return f"""🚨 CRITICAL: System prompt not loaded for this session!
-
-⚡ You MUST call get_system_prompt() first to access specialized Observe platform expertise.
-
-Without the system prompt, you'll lack:
-- Verified OPAL syntax patterns
-- Observe investigation methodology
-- Performance optimization strategies
-- Proper tool usage protocols
-
-📝 Please run: get_system_prompt() before proceeding with {tool_name}.
-"""
-    return None
-
 
 # Configure FastAPI instrumentation if telemetry is enabled
 if telemetry_enabled:
@@ -122,38 +101,178 @@ if telemetry_enabled:
 @trace_mcp_tool(tool_name="execute_opal_query", record_args=True, record_result=False)
 async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
     """
-    Execute an OPAL query on single or multiple datasets.
-    
-    Args:
-        query: The OPAL query to execute
-        dataset_id: DEPRECATED: Use primary_dataset_id instead. Kept for backward compatibility.
-        primary_dataset_id: The ID of the primary dataset to query
-        secondary_dataset_ids: Optional JSON string list of secondary dataset IDs (e.g., '["44508111"]')
-        dataset_aliases: Optional JSON string mapping of aliases to dataset IDs (e.g., '{"volumes": "44508111"}')
-        time_range: Time range for the query (e.g., "1h", "1d", "7d"). Used if start_time and end_time are not provided.
-        start_time: Optional start time in ISO format (e.g., "2023-04-20T16:20:00Z")
-        end_time: Optional end time in ISO format (e.g., "2023-04-20T16:30:00Z")
-        format: Output format, either "csv" or "ndjson" (default: "csv")
-        timeout: Request timeout in seconds (default: uses client default of 30s)
-    
+    Execute OPAL (Observe Processing and Analytics Language) queries on datasets.
+
+    OPAL is Observe's query language for filtering, transforming, and aggregating data.
+    Always use discover_datasets() or discover_metrics() first to get schema information.
+
+    🛠️ VERIFIED OPAL SYNTAX REFERENCE
+    ═══════════════════════════════════
+
+    CORE PATTERNS (Tested & Verified)
+    ─────────────────────────────────
+    Pattern         | ✅ Correct Syntax                      | ❌ Wrong Syntax
+    ────────────────┼────────────────────────────────────────┼──────────────────────────
+    Conditions      | if(error = true, "error", "ok")        | case when error...
+    Columns         | make_col new_field: expression         | new_field = expression
+    Sorting         | sort desc(field)                       | sort -field
+    Limits          | limit 10                               | head 10
+    Text Search     | filter body ~ error                    | filter body like "%error%"
+    JSON Fields     | string(attrs."k8s.namespace.name")    | attrs.k8s.namespace.name
+
+    🔍 MULTI-KEYWORD SEARCH (CRITICAL LOGIC)
+    ─────────────────────────────────────────
+    Syntax                          | Logic  | Case      | Performance | Use When
+    ────────────────────────────────┼────────┼───────────┼─────────────┼──────────────
+    field ~ <KEY1 KEY2>             | AND ⚠️ | Ignore    | Optimized   | ALL match
+    contains(f,"K1") or contains... | OR     | Sensitive | Slower      | ANY match
+
     Examples:
-        # Single dataset query (backward compatible)
-        execute_opal_query(query="filter metric = 'CPUUtilization'", dataset_id="44508123")
-        
-        # Multi-dataset join query
+      filter body ~ <error exception>                           # BOTH "error" AND "exception"
+      filter contains(body, "error") or contains(body, "warn")  # EITHER "error" OR "warn"
+
+    ⚠️ COMMON CONFUSION: ~ <K1 K2> uses AND logic, not OR!
+
+    LOG ANALYSIS PATTERNS
+    ────────────────────
+    # Basic error search
+    filter body ~ error | limit 10
+
+    # Multiple keywords (AND logic)
+    filter body ~ <error exception failure>
+
+    # Extract Kubernetes context (nested JSON)
+    make_col
+        namespace:string(resource_attributes."k8s.namespace.name"),
+        pod:string(resource_attributes."k8s.pod.name"),
+        container:string(resource_attributes."k8s.container.name")
+    | filter body ~ error
+    | limit 50
+
+    # Time-based filtering
+    filter body ~ error
+    | filter timestamp > @"1 hour ago"
+    | limit 100
+
+    # Statistical analysis with conditional aggregation
+    filter body ~ error
+    | make_col is_error:if(error=true, 1, 0)
+    | statsby
+        error_count:sum(is_error),
+        total_count:count(),
+        group_by(string(resource_attributes."k8s.namespace.name"))
+    | sort desc(error_count)
+
+    METRICS ANALYSIS PATTERNS
+    ────────────────────────
+    # Simple aggregation
+    filter metric = "error_count"
+    | statsby total_errors:sum(value), group_by(service_name)
+    | sort desc(total_errors)
+
+    # Conditional counting (count_if does NOT exist!)
+    # WRONG: statsby error_count:count_if(error=true)
+    # RIGHT: Use make_col + sum() pattern
+    make_col is_error:if(error=true, 1, 0)
+    | statsby error_count:sum(is_error), group_by(service_name)
+
+    ⏱️ TIME UNIT CONVERSIONS
+    ────────────────────────
+    # Convert nanoseconds to milliseconds
+    make_col elapsed_ms: elapsedTime / 1000000
+
+    # Convert nanoseconds to seconds
+    make_col elapsed_s: elapsedTime / 1000000000
+
+    # Time-based filtering (built-in functions)
+    filter TIMESTAMP > @"1 hour ago"
+    filter TIMESTAMP between @"2024-01-01T00:00:00Z" and @"2024-01-02T00:00:00Z"
+
+    QUERY RESULT CONTROL
+    ───────────────────
+    filter body ~ error | limit 10        # Small sample
+    filter body ~ error | limit 100       # Larger dataset
+    filter body ~ error                    # Default: up to 1000 rows
+
+    🚨 COMMON ERRORS & SOLUTIONS
+    ════════════════════════════
+    ❌ "field not found" → Check schema from discover_datasets() first
+    ❌ Empty JSON extraction → Use string(field."nested.key") syntax
+    ❌ "invalid syntax" → Check verified patterns table above
+    ❌ Wrong time units → Check sample values, convert if needed (nanoseconds!)
+    ❌ Slow query → Add filters, use limit, check time range
+
+    🚫 FUNCTIONS THAT DON'T EXIST (Common Mistakes)
+    ════════════════════════════════════════════════
+    ❌ count_if(condition) → Use: make_col flag:if(condition,1,0) | statsby sum(flag)
+    ❌ bin(field, interval) → Time bucketing syntax may differ, check docs with get_relevant_docs()
+
+    ⚠️ CRITICAL: NEVER ASSUME FIELD NAMES!
+    ═══════════════════════════════════════
+    Field names vary by dataset. Some datasets use 'timestamp', others use 'start_time',
+    'end_time', 'TIMESTAMP', 'observed_timestamp', etc.
+
+    ALWAYS run discover_datasets() or discover_metrics() FIRST to get the EXACT field names
+    from the schema before writing queries. Field names are case-sensitive and dataset-specific.
+
+    Args:
+        query: OPAL query string (use verified syntax above)
+        dataset_id: DEPRECATED - use primary_dataset_id instead
+        primary_dataset_id: Main dataset ID from discover_datasets() or discover_metrics()
+        secondary_dataset_ids: JSON array string for joins (e.g., '["44508111"]')
+        dataset_aliases: JSON object string for joins (e.g., '{"volumes": "44508111"}')
+        time_range: Relative time window (e.g., "1h", "24h", "7d", "30d")
+        start_time: Absolute start time in ISO format (e.g., "2024-01-20T16:20:00Z")
+        end_time: Absolute end time in ISO format (e.g., "2024-01-20T17:20:00Z")
+        format: Output format - "csv" (default, human-readable) or "ndjson" (programmatic)
+        timeout: Query timeout in seconds (default: 30s, increase for complex queries)
+
+    Returns:
+        Query results in requested format. CSV returns first 1000 rows by default
+        unless limited by OPAL query's limit clause.
+
+    Examples:
+        # WORKFLOW: Always discover schema first!
+        # Step 1: Get schema and field names
+        discover_datasets("kubernetes logs")
+        # Step 2: Use EXACT field names from schema
+        execute_opal_query(
+            query="filter body ~ error | limit 10",
+            primary_dataset_id="42161740",
+            time_range="1h"
+        )
+
+        # Conditional aggregation (NO count_if!)
+        execute_opal_query(
+            query='''
+                make_col
+                    service:string(resource_attributes."service.name"),
+                    is_error:if(error=true, 1, 0)
+                | statsby
+                    total:count(),
+                    errors:sum(is_error),
+                    group_by(service)
+                | make_col error_rate:100.0*errors/total
+            ''',
+            primary_dataset_id="42160967",
+            time_range="1h"
+        )
+
+        # Multi-dataset join with aliases
         execute_opal_query(
             query="join on(instanceId=@volumes.instanceId), volume_size:@volumes.size",
-            primary_dataset_id="44508123",  # EC2 Instance Metrics
-            secondary_dataset_ids='["44508111"]',  # EBS Volumes (JSON string)
-            dataset_aliases='{"volumes": "44508111"}'  # Aliases (JSON string)
+            primary_dataset_id="44508123",
+            secondary_dataset_ids='["44508111"]',
+            dataset_aliases='{"volumes": "44508111"}'
         )
+
+    Performance:
+        - Log queries (1000+ entries): 1-3 seconds
+        - Metrics queries (100+ points): 500ms-2s
+        - Use filters and limits for better performance
+        - Increase timeout for complex aggregations
     """
     import json
-
-    # Check if system prompt has been called
-    prompt_check = check_system_prompt_called(ctx, "execute_opal_query")
-    if prompt_check:
-        return prompt_check
 
     # Log the OPAL query operation with sanitized query (truncated for security)
     query_preview = query[:100] + "..." if len(query) > 100 else query
@@ -195,16 +314,59 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 @requires_scopes(['admin', 'read'])
 @trace_mcp_tool(tool_name="get_relevant_docs", record_args=True, record_result=False)
 async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str:
-    """Get relevant documentation for a query using PostgreSQL BM25 search"""
+    """
+    Search Observe documentation using BM25 search for OPAL syntax and platform guidance.
+
+    This tool searches through official Observe documentation to find relevant information
+    about OPAL syntax, functions, features, and best practices.
+
+    WHEN TO USE THIS TOOL
+    ─────────────────────
+    - Unsure about OPAL syntax or available functions
+    - Need documentation on specific Observe features
+    - Want to verify query patterns against official docs
+    - Looking for advanced OPAL capabilities not covered in basic syntax
+    - Troubleshooting OPAL query errors or unexpected behavior
+
+    TYPICAL USE CASES
+    ────────────────
+    - "OPAL filter syntax" → Learn filtering operators and patterns
+    - "OPAL time functions" → Understand time manipulation functions
+    - "kubernetes resource attributes" → Find available K8s fields
+    - "statsby group_by" → Learn aggregation syntax
+    - "OPAL join syntax" → Multi-dataset join patterns
+
+    Args:
+        query: Documentation search query describing what you need to learn
+        n_results: Number of documents to return (default: 5, recommended: 3-10)
+
+    Returns:
+        Relevant documentation sections with:
+        - Full document content
+        - Source filename for reference
+        - Relevance score indicating match quality
+
+    Examples:
+        # Learn OPAL syntax
+        get_relevant_docs("OPAL filter syntax")
+        get_relevant_docs("time range functions")
+
+        # Find schema information
+        get_relevant_docs("kubernetes resource attributes")
+        get_relevant_docs("opentelemetry span fields")
+
+        # Advanced features
+        get_relevant_docs("OPAL join multiple datasets", n_results=3)
+        get_relevant_docs("aggregation functions statsby")
+
+    Performance:
+        - Search time: 200-500ms
+        - Returns full documents (may be lengthy)
+    """
     try:
         # Import required modules
         import os
         from collections import defaultdict
-
-        # Check if system prompt has been called
-        prompt_check = check_system_prompt_called(ctx, "get_relevant_docs")
-        if prompt_check:
-            return prompt_check
 
         # Log the documentation search operation
         semantic_logger.info(f"docs search | query:'{query}' | n_results:{n_results}")
@@ -273,139 +435,90 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
 
 @mcp.tool()
-@requires_scopes(['admin', 'write', 'read'])
-@trace_mcp_tool(tool_name="get_system_prompt", record_args=False, record_result=False)
-async def get_system_prompt(ctx: Context) -> str:
-    """
-    🚨 CRITICAL: MUST BE CALLED FIRST BEFORE ANY OTHER TOOLS 🚨
-
-    This tool provides the specialized Observe platform expertise that transforms
-    generic LLMs into expert Observe analysts. Without this prompt, LLMs will:
-    - Use incorrect OPAL syntax
-    - Make inefficient dataset queries
-    - Provide generic instead of Observe-specific guidance
-    - Query non-existent fields causing errors
-
-    ⚡ MANDATORY WORKFLOW: get_system_prompt() → discover_datasets/metrics() → execute_opal_query()
-
-    Returns the complete system prompt that defines:
-    - Observe platform investigation methodology
-    - Schema validation requirements (CRITICAL for query success)
-    - Verified OPAL syntax patterns
-    - Performance optimization strategies
-    - Tool usage protocols
-
-    Returns:
-        Complete system prompt as plain text (ready for immediate adoption)
-    """
-    try:
-        # No need to print HTTP request info in get_system_prompt anymore
-        
-        # Try to get the access token from the request for debugging purposes
-        try:
-            from fastmcp.server.dependencies import get_access_token, AccessToken
-            access_token: Optional[AccessToken] = get_access_token()
-            
-            if access_token is None:
-                session_logger.warning("no access token available in get_system_prompt")
-            else:
-                # Extract JWT payload if available
-                jwt_payload = None
-                if hasattr(access_token, 'token'):
-                    raw_token = access_token.token
-                    
-                    # Try to decode the token
-                    try:
-                        import base64
-                        import json
-                        parts = raw_token.split('.')
-                        if len(parts) == 3:
-                            # Decode payload
-                            padded = parts[1] + '=' * (4 - len(parts[1]) % 4) if len(parts[1]) % 4 else parts[1]
-                            decoded = base64.urlsafe_b64decode(padded)
-                            jwt_payload = json.loads(decoded)
-                    except Exception as e:
-                        pass
-                
-                # Log session context for correlation
-                effective_scopes = jwt_payload.get('scopes', []) if jwt_payload else access_token.scopes or []
-                log_session_context(
-                    user_id=access_token.client_id,
-                    session_id=ctx.session_id,
-                    scopes=effective_scopes,
-                    action="system_prompt"
-                )
-
-                # Mark that this session has loaded the system prompt
-                session_prompt_status[ctx.session_id] = True
-        except Exception as e:
-            set_session_context(ctx.session_id)
-            session_logger.error(f"authentication failed | error:{str(e)[:50]}")
-        # Get the directory where the script is located
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        # Construct the path to the prompt file
-        prompt_file = os.path.join(script_dir, "prompts", "Observe MCP System Prompt.md")
-        
-        # Read the prompt from file
-        with open(prompt_file, 'r', encoding='utf-8') as f:
-            system_prompt = f.read().strip()
-            
-        if not system_prompt:
-            raise ValueError("System prompt file is empty")
-        # Return the system prompt directly from the file
-        return system_prompt
-            
-    except Exception as e:
-        session_logger.error(f"exception getting system prompt | error:{e}")
-        import traceback
-        traceback.print_exc(file=sys.stderr)
-        return {"error": True, "message": f"Exception getting system prompt: {str(e)}"}
-
-
-@mcp.tool()
 @requires_scopes(['admin', 'read'])
 @trace_mcp_tool(tool_name="discover_datasets", record_args=True, record_result=False)
 async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[str] = None, dataset_name: Optional[str] = None, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
     """
-    Discover datasets using fast full-text search on our dataset intelligence database, or get exact dataset by ID/name.
+    Discover datasets using intelligent search and get complete schema information for querying.
 
-    This tool searches through analyzed datasets with intelligent categorization and usage guidance.
-    Perfect for finding datasets by name, purpose, business area, or technical type.
+    This tool searches through analyzed datasets with intelligent categorization and returns
+    COMPLETE SCHEMA INFORMATION that is essential for constructing correct OPAL queries.
 
-    CRITICAL: This tool returns essential schema information that MUST be analyzed before querying:
-    - Key Fields: Exact field names available for filtering and selection
-    - Nested Fields: JSON structure for complex field access
-    - Dataset Type & Interface: Determines query patterns (log vs metric vs trace)
+    🚨 CRITICAL SCHEMA VALIDATION REQUIREMENTS
+    ═══════════════════════════════════════════
+    This tool returns schema information that MUST be analyzed before querying:
+
+    📋 KEY FIELDS - Available field names for filtering/selection
+       - Use ONLY fields shown in the schema
+       - Field names are case-sensitive
+       - Never assume field names exist without checking
+
+    📍 NESTED FIELDS - JSON structure for complex field access
+       - Correct syntax: string(resource_attributes."k8s.namespace.name")
+       - Wrong syntax: resource_attributes.k8s.namespace.name (will fail!)
+       - Always use string() function for nested JSON paths
+       - Check sample values to understand data structure
+
+    ⏱️ TIME UNITS - CRITICAL: Observe uses NANOSECONDS by default!
+       - Fields WITHOUT suffix (elapsedTime, duration, TIMESTAMP) = NANOSECONDS
+       - Fields WITH suffix (_ms, _s) = as labeled (milliseconds, seconds)
+       - Sample value indicators:
+         • 19 digits = nanoseconds (e.g., 1760201545280843522)
+         • 13 digits = milliseconds (e.g., 1758543367916)
+       - Conversions:
+         • To milliseconds: field / 1000000
+         • To seconds: field / 1000000000
+
+    🔍 DATASET INTERFACE TYPES
+       - log: Use text search (~), filter by body/message fields
+       - metric: Use metric name filters, aggregate with statsby
+       - otel_span: Trace data with parent/child span relationships
+
+    COMMON ERRORS PREVENTED BY SCHEMA ANALYSIS
+    ───────────────────────────────────────────
+    ❌ "Field not found" → Always check "Key Fields" section first
+    ❌ Empty JSON extraction → Use string() with exact nested path from schema
+    ❌ Wrong time units → Check sample values and field naming (no suffix = nanoseconds)
+    ❌ Wrong query pattern → Match interface type (log vs metric vs trace)
 
     Args:
-        query: Search query (e.g., "kubernetes logs", "service metrics", "error traces", "user sessions"). Optional if dataset_id or dataset_name provided.
-        dataset_id: Exact dataset ID to lookup (e.g., "42161740"). When provided, returns only this dataset.
-        dataset_name: Exact dataset name to lookup (e.g., "Kubernetes Explorer/Kubernetes Logs"). When provided, returns only this dataset.
-        max_results: Maximum number of datasets to return for search queries (default: 15, max: 30). Ignored for exact lookups.
+        query: Search query (e.g., "kubernetes logs", "error traces"). Optional if dataset_id/dataset_name provided.
+        dataset_id: Exact dataset ID for fast lookup (e.g., "42161740"). Returns only this dataset.
+        dataset_name: Exact dataset name for lookup (e.g., "Kubernetes Explorer/Kubernetes Logs"). Case-sensitive.
+        max_results: Maximum datasets for search queries (1-30, default: 15). Ignored for exact ID/name lookups.
         business_category_filter: Filter by business category (Infrastructure, Application, Database, User, Security, etc.)
         technical_category_filter: Filter by technical category (Logs, Metrics, Traces, Events, Resources, etc.)
         interface_filter: Filter by interface type (log, metric, otel_span, etc.)
 
     Returns:
-        Formatted list of matching datasets with their purposes, usage guidance, and SCHEMA INFORMATION
+        Formatted dataset information with COMPLETE SCHEMA including:
+        - Dataset ID and name for use with execute_opal_query()
+        - Purpose and typical usage patterns
+        - Top-level fields with types and sample values
+        - Nested field paths with proper access syntax
+        - Query pattern examples
+        - Time unit indicators for duration fields
 
     Examples:
-        discover_datasets("kubernetes logs errors")
+        # Smart search
+        discover_datasets("kubernetes error logs")
+
+        # Fast exact lookups
         discover_datasets(dataset_id="42161740")
         discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
-        discover_datasets("service metrics performance", business_category_filter="Application")
-        discover_datasets("database traces", technical_category_filter="Traces", max_results=10)
-        discover_datasets("infrastructure logs", interface_filter="log")
+
+        # Filtered search
+        discover_datasets("performance", technical_category_filter="Metrics")
+        discover_datasets("application logs", business_category_filter="Application", max_results=5)
+
+    Performance:
+        - Search queries: 200-500ms
+        - Exact ID/name lookups: <100ms
     """
     try:
         import asyncpg
         import json
         from typing import List, Dict, Any
-
-        # Check if system prompt has been called
-        prompt_check = check_system_prompt_called(ctx, "discover_datasets")
-        if prompt_check:
-            return prompt_check
 
         # Log the semantic search operation
         semantic_logger.info(f"dataset search | query:'{query}' | max_results:{max_results} | filters:{business_category_filter or technical_category_filter or interface_filter}")
@@ -781,37 +894,102 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 @trace_mcp_tool(tool_name="discover_metrics", record_args=True, record_result=False)
 async def discover_metrics(ctx: Context, query: str, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
     """
-    Discover observability metrics using fast full-text search on our metrics intelligence database.
-    
-    This tool searches through 491+ analyzed metrics with intelligent categorization and usage guidance.
-    Perfect for finding metrics by name, purpose, dimensions, or use case.
-    
-    IMPORTANT: This tool provides error FREQUENCIES and performance metrics. For complete error analysis 
-    (actual error messages, stack traces), follow up with log dataset queries using discover_datasets().
-    
+    Discover observability metrics with intelligent categorization and complete usage guidance.
+
+    This tool searches through 491+ analyzed metrics and returns comprehensive information
+    including dataset IDs, dimensions, value ranges, and query patterns.
+
+    📊 METRICS-SPECIFIC GUIDANCE
+    ═════════════════════════════
+
+    WHAT METRICS PROVIDE:
+    - Error FREQUENCIES and counts (not actual error messages)
+    - Performance metrics (latency, throughput, resource utilization)
+    - System health indicators (availability, saturation, errors)
+
+    WHAT METRICS DON'T PROVIDE:
+    - Actual error messages or stack traces → Use discover_datasets() for logs
+    - Detailed request context → Use discover_datasets() for trace/span data
+
+    📈 METRIC TYPES
+       - Counter: Cumulative values that only increase (error_count, request_total)
+       - Gauge: Point-in-time values that can go up/down (cpu_usage, memory_bytes, queue_depth)
+       - Histogram: Distribution data with buckets (latency_bucket, response_time_bucket)
+
+    📍 COMMON DIMENSIONS (Group-By Fields)
+       - Service identifiers: service_name, endpoint, method
+       - Infrastructure: namespace, pod, container, node, zone
+       - Status indicators: status_code, error_type, severity
+       - Check "Dimensions" section in results for available groupings
+
+    ⏱️ TIME UNITS (Same as datasets!)
+       - Fields without suffix (duration, elapsed) = NANOSECONDS
+       - Fields with suffix (duration_ms, latency_s) = as labeled
+       - Always check sample values and convert if needed
+
+    🔍 VALUE RANGES - Use for filtering and anomaly detection
+       - "Range: 0-100" indicates percentage metrics
+       - "Range: 0-1000000000" indicates nanosecond duration metrics
+       - Check ranges to understand metric scale and units
+
+    TYPICAL WORKFLOWS
+    ─────────────────
+    1. ERROR INVESTIGATION
+       discover_metrics("error rate") → Get error frequencies by service
+       ↓
+       discover_datasets("error logs") → Get actual error messages
+       ↓
+       Correlate: Which services have highest error rates + what errors occur
+
+    2. PERFORMANCE ANALYSIS
+       discover_metrics("latency duration") → Get p95/p99 latency by endpoint
+       ↓
+       execute_opal_query() → Filter for slow requests above threshold
+       ↓
+       discover_datasets("traces") → Analyze slow request traces
+
+    3. RESOURCE MONITORING
+       discover_metrics("cpu memory") → Get resource utilization metrics
+       ↓
+       execute_opal_query() → Aggregate by service and time window
+       ↓
+       Identify: Services approaching resource limits
+
     Args:
         query: Search query (e.g., "error rate", "cpu usage", "database latency", "service performance")
-        max_results: Maximum number of metrics to return (default: 20, max: 50)
+        max_results: Maximum metrics to return (1-50, default: 20)
         category_filter: Filter by business category (Infrastructure, Application, Database, Storage, Network, Monitoring)
         technical_filter: Filter by technical category (Error, Latency, Count, Performance, Resource, Throughput, Availability)
-    
+
     Returns:
-        Formatted list of matching metrics with their datasets, purposes, and usage guidance
-        
+        Formatted metrics information including:
+        - Metric name and dataset ID for querying
+        - Purpose and typical usage patterns
+        - Common dimensions for group-by operations
+        - Value ranges for context and filtering
+        - Query pattern examples
+        - Last seen timestamp
+
     Examples:
-        discover_metrics("error rate service")  # Gets error counts - follow with logs for error details
+        # Error analysis (frequencies only)
+        discover_metrics("error rate service")
+
+        # Resource monitoring
         discover_metrics("cpu memory usage", category_filter="Infrastructure")
-        discover_metrics("latency duration", technical_filter="Latency", max_results=10)
+
+        # Performance investigation
+        discover_metrics("latency", technical_filter="Latency", max_results=10)
+
+        # Multi-category search
+        discover_metrics("database throughput")
+
+    Performance:
+        - Search queries: 200-500ms
     """
     try:
         import asyncpg
         import json
         from typing import List, Dict, Any
-
-        # Check if system prompt has been called
-        prompt_check = check_system_prompt_called(ctx, "discover_metrics")
-        if prompt_check:
-            return prompt_check
 
         # Log the semantic search operation
         semantic_logger.info(f"metrics search | query:'{query}' | max_results:{max_results} | filters:{category_filter or technical_filter}")
