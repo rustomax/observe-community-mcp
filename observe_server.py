@@ -251,14 +251,35 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
             parsed_dataset_aliases = json.loads(dataset_aliases)
         except (json.JSONDecodeError, TypeError) as e:
             return f"Error parsing dataset_aliases: {e}. Expected JSON object like {{\"volumes\": \"44508111\"}}"
-    
+
+    # Normalize time_range: accept bare numbers (assume hours) and convert days to hours
+    # Examples: "24" -> "24h", "7d" -> "168h", "1.5" -> "1.5h"
+    normalized_time_range = time_range
+    if time_range:
+        time_str = str(time_range).strip()
+        try:
+            # Handle days conversion: "7d" -> "168h" (7 * 24)
+            if time_str.endswith('d'):
+                days = float(time_str[:-1])
+                hours = days * 24
+                normalized_time_range = f"{hours}h"
+                opal_logger.info(f"time_range normalization | original:'{time_range}' | normalized:'{normalized_time_range}' | reason:days_to_hours")
+            # Handle bare numbers: "24" -> "24h"
+            elif time_str and not any(time_str.endswith(unit) for unit in ['h', 'm', 's', 'w']):
+                float(time_str)  # Validate it's numeric
+                normalized_time_range = f"{time_str}h"
+                opal_logger.info(f"time_range normalization | original:'{time_range}' | normalized:'{normalized_time_range}' | reason:bare_number")
+        except ValueError:
+            # Not a valid number, keep as-is (might be a valid format or will error downstream)
+            pass
+
     return await observe_execute_opal_query(
         query=query,
         dataset_id=dataset_id,
         primary_dataset_id=primary_dataset_id,
         secondary_dataset_ids=parsed_secondary_dataset_ids,
         dataset_aliases=parsed_dataset_aliases,
-        time_range=time_range,
+        time_range=normalized_time_range,
         start_time=start_time,
         end_time=end_time,
         format=format,
