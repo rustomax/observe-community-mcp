@@ -103,8 +103,32 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     """
     Execute OPAL (Observe Processing and Analytics Language) queries on datasets.
 
-    OPAL is Observe's query language for filtering, transforming, and aggregating data.
-    Always use discover_datasets() or discover_metrics() first to get schema information.
+    ⚠️ MANDATORY PREREQUISITE: ALWAYS call discover_datasets() or discover_metrics()
+    BEFORE using this tool to get exact field names and schema information.
+
+    🚨 CRITICAL WORKFLOW - DO NOT SKIP THESE STEPS
+    ═══════════════════════════════════════════════════════════════════════════════════
+
+    Step 1: discover_datasets("your search term")
+            ↓
+            Get EXACT field names, types, and nested paths from schema
+
+    Step 2: execute_opal_query()
+            ↓
+            Use ONLY the field names from Step 1 (copy-paste them!)
+
+    ⚠️ Field names are DATASET-SPECIFIC and CASE-SENSITIVE
+    ⚠️ NEVER assume field names exist - queries WILL FAIL if fields don't match schema
+    ⚠️ Common failure: using 'timestamp' when dataset actually uses 'TIMESTAMP' or 'observed_timestamp'
+
+    📋 PRE-FLIGHT CHECKLIST (Check ALL before writing your query):
+    ─────────────────────────────────────────────────────────────────────────────────
+    [ ] Did you call discover_datasets() or discover_metrics() first?
+    [ ] Do you have the exact dataset_id from the discovery response?
+    [ ] Are you using EXACT field names from the schema (copy-paste, don't retype)?
+    [ ] Did you check if fields are nested and need string(field."nested.path") syntax?
+    [ ] Did you verify time field units from sample values (nanoseconds vs milliseconds)?
+    [ ] Have you reviewed the query pattern examples from discovery results?
 
     🛠️ VERIFIED OPAL SYNTAX REFERENCE
     ═══════════════════════════════════
@@ -120,18 +144,37 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     Text Search     | filter body ~ error                    | filter body like "%error%"
     JSON Fields     | string(attrs."k8s.namespace.name")    | attrs.k8s.namespace.name
 
-    🔍 MULTI-KEYWORD SEARCH (CRITICAL LOGIC)
-    ─────────────────────────────────────────
-    Syntax                          | Logic  | Case      | Performance | Use When
-    ────────────────────────────────┼────────┼───────────┼─────────────┼──────────────
-    field ~ <KEY1 KEY2>             | AND ⚠️ | Ignore    | Optimized   | ALL match
-    contains(f,"K1") or contains... | OR     | Sensitive | Slower      | ANY match
+    🔍 MULTI-KEYWORD SEARCH (CRITICAL LOGIC - READ CAREFULLY!)
+    ════════════════════════════════════════════════════════════
 
-    Examples:
-      filter body ~ <error exception>                           # BOTH "error" AND "exception"
-      filter contains(body, "error") or contains(body, "warn")  # EITHER "error" OR "warn"
+    ⚠️ MOST COMMON MISTAKE: Assuming ~ <K1 K2> means "K1 OR K2"
+    ✅ ACTUAL BEHAVIOR: ~ <K1 K2> means "K1 AND K2" (both must match)
 
-    ⚠️ COMMON CONFUSION: ~ <K1 K2> uses AND logic, not OR!
+    ┌─────────────────────────────────────────────────────────────────────────────┐
+    │ Syntax                          │ Logic │ Case      │ Performance │ Use When│
+    ├─────────────────────────────────┼───────┼───────────┼─────────────┼─────────┤
+    │ field ~ <KEY1 KEY2>             │ AND ⚠️│ Ignore    │ Optimized   │ALL match│
+    │ contains(f,"K1") or contains... │ OR    │ Sensitive │ Slower      │ANY match│
+    └─────────────────────────────────┴───────┴───────────┴─────────────┴─────────┘
+
+    💡 EXAMPLES WITH CLEAR INTENT:
+    ───────────────────────────────
+    "Find logs with errors"
+      ✅ filter body ~ error
+
+    "Find logs mentioning BOTH deployment AND failure"
+      ✅ filter body ~ <deployment failure>
+
+    "Find logs with EITHER error OR warning"
+      ❌ filter body ~ <error warning>  # WRONG - this means BOTH!
+      ✅ filter contains(body, "error") or contains(body, "warning")
+
+    🎯 DECISION RULE:
+    ─────────────────
+    Need ALL keywords present? → Use ~ <keyword1 keyword2>
+    Need ANY keyword present?   → Use contains() with OR
+
+    ⚠️ Remember: ~ <K1 K2> uses AND logic, not OR!
 
     LOG ANALYSIS PATTERNS
     ────────────────────
@@ -176,13 +219,42 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     make_col is_error:if(error=true, 1, 0)
     | statsby error_count:sum(is_error), group_by(service_name)
 
-    ⏱️ TIME UNIT CONVERSIONS
-    ────────────────────────
-    # Convert nanoseconds to milliseconds
+    ⏱️ TIME UNIT CONVERSIONS (CRITICAL FOR DURATION QUERIES)
+    ═══════════════════════════════════════════════════════════
+
+    🚨 OBSERVE DEFAULT: Duration/time fields are in NANOSECONDS unless
+       the field name explicitly indicates otherwise (_ms, _s suffixes)
+
+    ┌────────────────────────────────────────────────────────────────────────────┐
+    │ Field Pattern          │ Unit          │ Conversion Needed               │
+    ├────────────────────────┼───────────────┼─────────────────────────────────┤
+    │ elapsedTime            │ nanoseconds   │ / 1000000 for ms                │
+    │ duration               │ nanoseconds   │ / 1000000000 for seconds        │
+    │ TIMESTAMP              │ nanoseconds   │ / 1000000 for ms                │
+    │ duration_ms            │ milliseconds  │ use as-is                       │
+    │ latency_s              │ seconds       │ use as-is                       │
+    └────────────────────────┴───────────────┴─────────────────────────────────┘
+
+    🔍 HOW TO VERIFY UNITS FROM discover_datasets() OUTPUT:
+    ───────────────────────────────────────────────────────
+    1. Check sample values in the schema output
+    2. 19 digits (e.g., 1760201545280843522) = nanoseconds
+    3. 13 digits (e.g., 1758543367916) = milliseconds
+    4. Look for unit suffixes in field names (_ms, _s, _ns)
+
+    💡 COMMON CONVERSION PATTERNS:
+    ──────────────────────────────
+    # Convert nanoseconds to milliseconds for readability
     make_col elapsed_ms: elapsedTime / 1000000
 
     # Convert nanoseconds to seconds
     make_col elapsed_s: elapsedTime / 1000000000
+
+    # Filter for slow requests (when field is in nanoseconds)
+    filter elapsedTime > 500000000  # 500ms in nanoseconds
+
+    # Filter for slow requests (when field already has _ms suffix)
+    filter elapsed_ms > 500  # 500ms directly
 
     # Time-based filtering (built-in functions)
     filter TIMESTAMP > @"1 hour ago"
@@ -320,13 +392,38 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
     This tool searches through official Observe documentation to find relevant information
     about OPAL syntax, functions, features, and best practices.
 
-    WHEN TO USE THIS TOOL
-    ─────────────────────
-    - Unsure about OPAL syntax or available functions
-    - Need documentation on specific Observe features
-    - Want to verify query patterns against official docs
-    - Looking for advanced OPAL capabilities not covered in basic syntax
-    - Troubleshooting OPAL query errors or unexpected behavior
+    🚨 WHEN YOU MUST USE THIS TOOL
+    ═══════════════════════════════════════════════════════════════════════════════════
+
+    ✅ MANDATORY: Call this tool if you receive ANY of these errors from execute_opal_query:
+       • "field not found" → Search for field access syntax
+       • "invalid syntax" → Search for the OPAL construct you're trying to use
+       • "unknown function" → Search for function name and proper usage
+       • "parse error" → Search for syntax of the operation that failed
+       • Any other query execution failure → Search for error keywords
+
+    ✅ RECOMMENDED: Call BEFORE attempting these complex operations:
+       • Multi-dataset joins
+       • Time bucketing or window functions
+       • Advanced aggregations beyond statsby
+       • Regex or pattern matching
+       • Custom operators or functions you haven't used before
+
+    🔄 ERROR RECOVERY WORKFLOW
+    ─────────────────────────────────────────────────────────────────────────────────
+    execute_opal_query() fails
+            ↓
+    get_relevant_docs("error message keywords" or "feature name")
+            ↓
+    Review official syntax from documentation
+            ↓
+    Retry execute_opal_query() with corrected syntax
+
+    💡 SEARCH TIPS:
+    ───────────────
+    • Use specific error keywords: "statsby syntax", "join datasets"
+    • Include OPAL in your search: "OPAL filter operators"
+    • Search for function names directly: "make_col examples"
 
     TYPICAL USE CASES
     ────────────────
@@ -443,6 +540,36 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
 
     This tool searches through analyzed datasets with intelligent categorization and returns
     COMPLETE SCHEMA INFORMATION that is essential for constructing correct OPAL queries.
+
+    🎯 HOW TO USE THE DISCOVERY RESULTS
+    ═══════════════════════════════════════════════════════════════════════════════════
+
+    The response contains a "COMPLETE SCHEMA" section with critical information:
+
+    📋 Top-Level Fields: Can be accessed directly in OPAL queries
+       Example: Field `body` → Use as `filter body ~ error`
+
+    📍 Nested Fields: Require string() function and exact dotted path
+       Example: `resource_attributes."k8s.namespace.name"`
+       → Must use: `string(resource_attributes."k8s.namespace.name")`
+       ⚠️ Copy-paste the exact path from schema - don't retype it!
+
+    ⏱️ Time Fields: Check sample values to determine units
+       • 19 digits (1760201545280843522) = nanoseconds → divide by 1000000 for ms
+       • 13 digits (1758543367916) = milliseconds → use directly
+       • Look for _ms or _s suffixes in field names
+
+    🔍 Query Pattern Examples: Pre-built queries you can adapt
+       Copy the syntax structure but replace field names as needed
+
+    ⚠️ INFORMATION EXTRACTION CHECKLIST (Do this BEFORE calling execute_opal_query):
+    ─────────────────────────────────────────────────────────────────────────────────
+    [ ] Extract and save the dataset_id (you'll need this for execute_opal_query)
+    [ ] List ALL field names you plan to use in your query (case-sensitive!)
+    [ ] For nested fields, copy-paste the exact dotted paths with quotes
+    [ ] Check sample values for time fields to determine if conversion is needed
+    [ ] Review the query pattern examples for syntax guidance
+    [ ] Verify the interface type (log/metric/otel_span) matches your query intent
 
     🚨 CRITICAL SCHEMA VALIDATION REQUIREMENTS
     ═══════════════════════════════════════════

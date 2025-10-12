@@ -34,7 +34,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 
 ## Available Tools
 
-The server provides **5 intelligent tools** for Observe platform interaction:
+The server provides **4 intelligent tools** for Observe platform interaction:
 
 ### 🔍 Discovery & Search
 - **`discover_datasets`**: Find datasets using natural language queries with intelligent categorization and usage examples
@@ -43,9 +43,6 @@ The server provides **5 intelligent tools** for Observe platform interaction:
 
 ### ⚡ Query Execution
 - **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
-
-### 🤖 System Integration
-- **`get_system_prompt`**: Retrieve the system prompt that configures LLMs as Observe platform experts
 
 Each tool includes authentication validation, error handling, and structured result formatting optimized for LLM consumption.
 
