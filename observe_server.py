@@ -365,10 +365,10 @@ async def get_system_prompt(ctx: Context) -> str:
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
 @trace_mcp_tool(tool_name="discover_datasets", record_args=True, record_result=False)
-async def discover_datasets(ctx: Context, query: str, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
+async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[str] = None, dataset_name: Optional[str] = None, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
     """
-    Discover datasets using fast full-text search on our dataset intelligence database.
-    
+    Discover datasets using fast full-text search on our dataset intelligence database, or get exact dataset by ID/name.
+
     This tool searches through analyzed datasets with intelligent categorization and usage guidance.
     Perfect for finding datasets by name, purpose, business area, or technical type.
 
@@ -378,17 +378,21 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
     - Dataset Type & Interface: Determines query patterns (log vs metric vs trace)
 
     Args:
-        query: Search query (e.g., "kubernetes logs", "service metrics", "error traces", "user sessions")
-        max_results: Maximum number of datasets to return (default: 15, max: 30)
+        query: Search query (e.g., "kubernetes logs", "service metrics", "error traces", "user sessions"). Optional if dataset_id or dataset_name provided.
+        dataset_id: Exact dataset ID to lookup (e.g., "42161740"). When provided, returns only this dataset.
+        dataset_name: Exact dataset name to lookup (e.g., "Kubernetes Explorer/Kubernetes Logs"). When provided, returns only this dataset.
+        max_results: Maximum number of datasets to return for search queries (default: 15, max: 30). Ignored for exact lookups.
         business_category_filter: Filter by business category (Infrastructure, Application, Database, User, Security, etc.)
         technical_category_filter: Filter by technical category (Logs, Metrics, Traces, Events, Resources, etc.)
         interface_filter: Filter by interface type (log, metric, otel_span, etc.)
 
     Returns:
         Formatted list of matching datasets with their purposes, usage guidance, and SCHEMA INFORMATION
-        
+
     Examples:
         discover_datasets("kubernetes logs errors")
+        discover_datasets(dataset_id="42161740")
+        discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
         discover_datasets("service metrics performance", business_category_filter="Application")
         discover_datasets("database traces", technical_category_filter="Traces", max_results=10)
         discover_datasets("infrastructure logs", interface_filter="log")
@@ -424,77 +428,175 @@ async def discover_datasets(ctx: Context, query: str, max_results: int = 15, bus
 
         # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
         conn = await asyncpg.connect(**db_config)
-        
+
         try:
-            # Enhanced manual query with better search capabilities
-            # Split complex queries into individual terms for better matching
-            search_terms = query.lower().split()
+            # Check for exact lookups by ID or name
+            if dataset_id is not None:
+                # Exact dataset ID lookup
+                semantic_logger.info(f"dataset lookup by ID | dataset_id:{dataset_id}")
 
-            # Create individual search conditions for better matching
-            search_conditions = []
-            params = []
-            param_idx = 1
+                results = await conn.fetch("""
+                    SELECT
+                        di.dataset_id::TEXT,
+                        di.dataset_name::TEXT,
+                        di.inferred_purpose,
+                        di.typical_usage,
+                        di.business_categories,
+                        di.technical_category,
+                        di.interface_types,
+                        di.key_fields,
+                        di.query_patterns,
+                        di.nested_field_paths,
+                        di.nested_field_analysis,
+                        di.common_use_cases,
+                        di.data_frequency,
+                        di.excluded,
+                        1.0::REAL as rank,
+                        1.0::REAL as similarity_score
+                    FROM datasets_intelligence di
+                    WHERE di.dataset_id::TEXT = $1 AND di.excluded = FALSE
+                """, dataset_id)
 
-            for term in search_terms:
-                search_conditions.append(f"di.search_vector @@ plainto_tsquery('english', ${param_idx})")
-                params.append(term)
-                param_idx += 1
+                if not results:
+                    return f"""# 🔍 Dataset Lookup by ID
 
-            # If no individual terms match, fall back to full query
-            if not search_conditions:
-                search_conditions = [f"di.search_vector @@ plainto_tsquery('english', ${param_idx})"]
-                params.append(query)
-                param_idx += 1
+**Dataset ID**: `{dataset_id}`
+**Result**: Not found
 
-            # Combine search conditions with OR for better matching
-            where_clause = f"({' OR '.join(search_conditions)})"
+**Possible reasons**:
+- Dataset ID does not exist
+- Dataset has been excluded from search
+- Incorrect dataset ID format
 
-            # Add filters
-            if business_category_filter:
-                where_clause += f" AND di.business_categories ? ${param_idx}"
-                params.append(business_category_filter)
-                param_idx += 1
+**Suggestion**: Try using `discover_datasets("search term")` to find available datasets."""
 
-            if technical_category_filter:
-                where_clause += f" AND di.technical_category = ${param_idx}"
-                params.append(technical_category_filter)
-                param_idx += 1
+            elif dataset_name is not None:
+                # Exact dataset name lookup
+                semantic_logger.info(f"dataset lookup by name | dataset_name:{dataset_name}")
 
-            if interface_filter:
-                where_clause += f" AND ${param_idx} = ANY(di.interface_types)"
-                params.append(interface_filter)
-                param_idx += 1
+                results = await conn.fetch("""
+                    SELECT
+                        di.dataset_id::TEXT,
+                        di.dataset_name::TEXT,
+                        di.inferred_purpose,
+                        di.typical_usage,
+                        di.business_categories,
+                        di.technical_category,
+                        di.interface_types,
+                        di.key_fields,
+                        di.query_patterns,
+                        di.nested_field_paths,
+                        di.nested_field_analysis,
+                        di.common_use_cases,
+                        di.data_frequency,
+                        di.excluded,
+                        1.0::REAL as rank,
+                        1.0::REAL as similarity_score
+                    FROM datasets_intelligence di
+                    WHERE di.dataset_name = $1 AND di.excluded = FALSE
+                """, dataset_name)
 
-            # Add limit parameter
-            params.append(max_results)
-            limit_param = param_idx
+                if not results:
+                    return f"""# 🔍 Dataset Lookup by Name
 
-            query_sql = f"""
-                SELECT
-                    di.dataset_id::TEXT,
-                    di.dataset_name::TEXT,
-                    di.inferred_purpose,
-                    di.typical_usage,
-                    di.business_categories,
-                    di.technical_category,
-                    di.interface_types,
-                    di.key_fields,
-                    di.query_patterns,
-                    di.nested_field_paths,
-                    di.nested_field_analysis,
-                    di.common_use_cases,
-                    di.data_frequency,
-                    FALSE as excluded,
-                    ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
-                    0.0::REAL as similarity_score
-                FROM datasets_intelligence di
-                WHERE di.excluded = FALSE
-                  AND {where_clause}
-                ORDER BY rank DESC
-                LIMIT ${limit_param}
-            """
+**Dataset Name**: `{dataset_name}`
+**Result**: Not found
 
-            results = await conn.fetch(query_sql, *params)
+**Possible reasons**:
+- Dataset name does not exist
+- Dataset has been excluded from search
+- Name does not match exactly (case-sensitive)
+
+**Suggestion**: Try using `discover_datasets("partial name")` to search for similar datasets."""
+
+            elif not query:
+                # No search criteria provided
+                return """# ⚠️ Dataset Discovery Error
+
+**Issue**: No search criteria provided
+
+**Required**: At least one of the following must be provided:
+- `query`: Search term for finding datasets
+- `dataset_id`: Exact dataset ID to lookup
+- `dataset_name`: Exact dataset name to lookup
+
+**Examples**:
+```python
+discover_datasets("kubernetes logs")
+discover_datasets(dataset_id="42161740")
+discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
+```"""
+            else:
+                # Perform full-text search (existing logic)
+                # Enhanced manual query with better search capabilities
+                # Split complex queries into individual terms for better matching
+                search_terms = query.lower().split()
+
+                # Create individual search conditions for better matching
+                search_conditions = []
+                params = []
+                param_idx = 1
+
+                for term in search_terms:
+                    search_conditions.append(f"di.search_vector @@ plainto_tsquery('english', ${param_idx})")
+                    params.append(term)
+                    param_idx += 1
+
+                # If no individual terms match, fall back to full query
+                if not search_conditions:
+                    search_conditions = [f"di.search_vector @@ plainto_tsquery('english', ${param_idx})"]
+                    params.append(query)
+                    param_idx += 1
+
+                # Combine search conditions with OR for better matching
+                where_clause = f"({' OR '.join(search_conditions)})"
+
+                # Add filters
+                if business_category_filter:
+                    where_clause += f" AND di.business_categories ? ${param_idx}"
+                    params.append(business_category_filter)
+                    param_idx += 1
+
+                if technical_category_filter:
+                    where_clause += f" AND di.technical_category = ${param_idx}"
+                    params.append(technical_category_filter)
+                    param_idx += 1
+
+                if interface_filter:
+                    where_clause += f" AND ${param_idx} = ANY(di.interface_types)"
+                    params.append(interface_filter)
+                    param_idx += 1
+
+                # Add limit parameter
+                params.append(max_results)
+                limit_param = param_idx
+
+                query_sql = f"""
+                    SELECT
+                        di.dataset_id::TEXT,
+                        di.dataset_name::TEXT,
+                        di.inferred_purpose,
+                        di.typical_usage,
+                        di.business_categories,
+                        di.technical_category,
+                        di.interface_types,
+                        di.key_fields,
+                        di.query_patterns,
+                        di.nested_field_paths,
+                        di.nested_field_analysis,
+                        di.common_use_cases,
+                        di.data_frequency,
+                        FALSE as excluded,
+                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
+                        0.0::REAL as similarity_score
+                    FROM datasets_intelligence di
+                    WHERE di.excluded = FALSE
+                      AND {where_clause}
+                    ORDER BY rank DESC
+                    LIMIT ${limit_param}
+                """
+
+                results = await conn.fetch(query_sql, *params)
             
             if not results:
                 return f"""# 🔍 Dataset Discovery Results
