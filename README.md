@@ -26,6 +26,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 
 - [Available Tools](#available-tools)
 - [Quick Start](#quick-start)
+- [Remote Deployment with Nginx](#remote-deployment-with-nginx)
 - [Architecture](#architecture)
 - [Intelligence Systems](#intelligence-systems)
 - [OpenTelemetry Integration](#opentelemetry-integration)
@@ -123,13 +124,51 @@ Add to your `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "observe-community": {
-      "command": "npx",
-      "args": [
-        "mcp-remote@latest",
-        "http://localhost:8000/sse",
-        "--header", "Authorization: Bearer your_mcp_token_here"
-      ]
+    "observe": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp",
+      "headers": {
+        "Authorization": "Bearer your_mcp_token_here"
+      }
+    }
+  }
+}
+```
+
+## Remote Deployment with Nginx
+
+For production deployments, you can deploy the MCP server behind an nginx reverse proxy with SSL/TLS:
+
+**See [NGINX-README.md](./NGINX-README.md) for complete deployment guide** including:
+- SSL certificate setup with Let's Encrypt
+- HTTP to HTTPS redirection
+- Security headers and best practices
+- Client configuration for remote access
+- Troubleshooting and maintenance
+
+**Quick deployment:**
+```bash
+# Stage 1: Get SSL certificates
+sudo cp nginx-mcp-bootstrap.conf /etc/nginx/sites-available/your-domain.example.com
+sudo ln -s /etc/nginx/sites-available/your-domain.example.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --nginx -d your-domain.example.com
+
+# Stage 2: Enable HTTPS
+sudo cp nginx-mcp-final.conf /etc/nginx/sites-available/your-domain.example.com
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+**Remote client configuration:**
+```json
+{
+  "mcpServers": {
+    "observe": {
+      "type": "http",
+      "url": "https://your-domain.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer YOUR_JWT_TOKEN"
+      }
     }
   }
 }
