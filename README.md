@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.95+-009688?style=flat-square&logo=fastapi&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-BM25-336791?style=flat-square&logo=postgresql&logoColor=white)
+![Gemini AI](https://img.shields.io/badge/Gemini-AI%20Search-4285F4?style=flat-square&logo=google&logoColor=white)
 ![Model Context Protocol](https://img.shields.io/badge/MCP-Compatible-6366F1?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHBhdGggZD0iTTEyIDJMMTMuMDkgOC4yNkwyMCA5TDEzLjA5IDE1Ljc0TDEyIDIyTDEwLjkxIDE1Ljc0TDQgOUwxMC45MSA4LjI2TDEyIDJaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K&logoColor=white)
 ![Observe](https://img.shields.io/badge/Observe-Platform-FF8C00?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KY2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4=&logoColor=white)
 
@@ -15,10 +15,10 @@ This MCP server transforms how LLMs interact with observability data by providin
 **Key Features:**
 - **Smart Dataset Discovery**: Find relevant datasets using natural language descriptions
 - **Metrics Intelligence**: Discover and understand metrics with automated categorization and usage guidance
-- **Documentation Search**: Fast BM25-powered search through Observe documentation and OPAL reference
+- **AI-Powered Documentation Search**: Gemini AI search with real-time access to docs.observeinc.com
 - **OPAL Query Execution**: Run queries against any Observe dataset with multi-dataset join support
 - **OpenTelemetry Integration**: Built-in Observe agent for collecting application telemetry data
-- **Zero External Dependencies**: Self-contained with PostgreSQL BM25 search
+- **Always Current**: Documentation search queries live web content, no local archives needed
 
 > **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
 
@@ -40,7 +40,7 @@ The server provides **4 intelligent tools** for Observe platform interaction:
 ### 🔍 Discovery & Search
 - **`discover_datasets`**: Find datasets using natural language queries with intelligent categorization and usage examples
 - **`discover_metrics`**: Search through analyzed metrics with business/technical categorization and relevance scoring
-- **`get_relevant_docs`**: Search Observe documentation and OPAL language reference using fast PostgreSQL BM25 search
+- **`get_relevant_docs`**: Search Observe documentation using Gemini AI with real-time web access to docs.observeinc.com
 
 ### ⚡ Query Execution
 - **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
@@ -84,6 +84,9 @@ your_public_key_content_here
 # Database Security
 SEMANTIC_GRAPH_PASSWORD="your_secure_postgres_password"
 
+# Gemini AI for Documentation Search
+GEMINI_API_KEY="your_gemini_api_key_here"
+
 # OpenTelemetry Collection (optional)
 OBSERVE_OTEL_TOKEN="your_otel_token_here"
 OBSERVE_OTEL_CUSTOMER_ID="your_customer_id_here"
@@ -107,15 +110,14 @@ Run these commands locally to populate the intelligence databases:
 # Activate virtual environment
 source .venv/bin/activate
 
-# Populate documentation search index
-python scripts/setup_bm25_docs.py
-
 # Build dataset intelligence (analyzes datasets in your Observe instance)
 python scripts/datasets_intelligence.py
 
 # Build metrics intelligence (analyzes metrics with categorization)
 python scripts/metrics_intelligence.py
 ```
+
+**Note**: Documentation search now uses Gemini AI and requires no local setup - it queries docs.observeinc.com in real-time.
 
 ### 5. Connect with Claude Desktop
 
@@ -184,13 +186,15 @@ The MCP server uses a modern, self-contained architecture built for performance 
 graph TB
     Claude[Claude/LLM] -->|MCP Protocol| Server[MCP Server<br/>FastAPI]
     Server --> Auth[JWT Authentication]
-    Server --> Discovery[Intelligence Layer<br/>PostgreSQL + BM25]
+    Server --> Discovery[Intelligence Layer<br/>PostgreSQL]
+    Server --> GeminiAI[Gemini AI<br/>Documentation Search]
     Server --> ObserveAPI[Observe Platform<br/>OPAL Queries]
     Server -->|OTLP Telemetry| Collector[OpenTelemetry Collector<br/>OTLP Gateway]
 
     Discovery --> DatasetDB[(datasets_intelligence<br/>Dataset Metadata)]
     Discovery --> MetricsDB[(metrics_intelligence<br/>Discovered Metrics)]
-    Discovery --> DocsDB[(documentation_chunks<br/>BM25 Search)]
+
+    GeminiAI -->|Search Grounding| DocsWeb[docs.observeinc.com<br/>Live Documentation]
 
     ObserveAPI --> Results[Structured Results]
     Results --> Claude
@@ -200,13 +204,17 @@ graph TB
     subgraph "PostgreSQL Database"
         DatasetDB
         MetricsDB
-        DocsDB
     end
 
     subgraph "Docker Containers"
         Server
         Discovery
         Collector
+    end
+
+    subgraph "External Services"
+        GeminiAI
+        DocsWeb
     end
 ```
 
@@ -216,21 +224,21 @@ graph TB
 |-----------|------------|---------|
 | **MCP Server** | FastAPI + MCP Protocol | Tool definitions and request handling |
 | **Observe Integration** | Python asyncio + Observe API | Dataset queries and metadata access |
-| **Search Engine** | PostgreSQL + ParadeDB BM25 | Fast documentation and content search |
+| **Documentation Search** | Gemini AI + Google Search | Real-time web search against docs.observeinc.com |
 | **Intelligence Systems** | PostgreSQL + Rule-based Analysis | Dataset and metrics discovery with categorization |
 | **OpenTelemetry Collector** | OTEL Collector Contrib | Application telemetry collection and forwarding |
 | **Authentication** | JWT + RSA signatures | Secure access control |
 
 ### Database Schema
 
-**PostgreSQL with Extensions:**
-- `pg_search` (ParadeDB BM25) - Fast full-text search
+**PostgreSQL:**
 - Standard PostgreSQL - Metadata storage and analysis
 
 **Key Tables:**
 - `datasets_intelligence` - Analyzed dataset metadata with categories and usage patterns
 - `metrics_intelligence` - Analyzed metrics with business/technical categorization
-- `documentation_chunks` - Searchable documentation content with BM25 indexing
+
+**Note**: Documentation search uses Gemini AI and does not require local database storage.
 
 ## Intelligence Systems
 
@@ -259,15 +267,17 @@ Analyzes metrics from Observe with comprehensive metadata:
 
 ### Documentation Search
 
-Fast BM25 full-text search through:
-- Complete OPAL language reference
-- Observe platform documentation
-- Query examples and troubleshooting guides
+Real-time AI-powered search using Gemini with Google Search grounding:
+- Always-current access to docs.observeinc.com
+- OPAL language reference and examples
+- Platform documentation and troubleshooting guides
+- Query examples with contextual explanations
 
 **Search Features:**
-- Relevance scoring with BM25 algorithm
-- Context-aware chunk retrieval
-- No external API dependencies
+- AI-curated results with source citations
+- Context-aware documentation retrieval
+- Automatic relevance ranking
+- Rate-limited to 400 requests/day (Tier 1)
 
 ## OpenTelemetry Integration
 
@@ -427,10 +437,9 @@ python scripts/datasets_intelligence.py
 
 # Update metrics intelligence (daily recommended)
 python scripts/metrics_intelligence.py
-
-# Rebuild documentation index (when docs change)
-python scripts/setup_bm25_docs.py
 ```
+
+**Note**: Documentation search uses Gemini AI and is always current - no manual updates needed.
 
 ### Monitor Performance
 
@@ -441,8 +450,8 @@ docker logs observe-mcp-server
 # Check database status
 docker exec observe-semantic-graph psql -U semantic_graph -d semantic_graph -c "\dt"
 
-# Check search performance
-docker logs observe-mcp-server | grep "docs search"
+# Check Gemini search usage
+docker logs observe-mcp-server | grep "gemini"
 ```
 
 ### Troubleshooting
@@ -459,7 +468,7 @@ docker logs observe-mcp-server | grep "docs search"
 The system is designed for fast response times:
 - Dataset discovery: < 2 seconds
 - Metrics discovery: < 1 second
-- Documentation search: < 500ms
+- Documentation search: 1-3 seconds (includes AI processing)
 - Intelligence updates: Run when data changes
 
 ---
@@ -479,7 +488,6 @@ docker-compose build
 docker-compose up -d
 
 # Initialize intelligence systems
-python scripts/setup_bm25_docs.py
 python scripts/datasets_intelligence.py
 python scripts/metrics_intelligence.py
 
@@ -491,7 +499,6 @@ python observe_server.py
 
 | Script | Purpose | Runtime |
 |--------|---------|---------|
-| `scripts/setup_bm25_docs.py` | Initialize documentation search index | ~30 seconds |
 | `scripts/datasets_intelligence.py` | Analyze and categorize all datasets | ~5-10 minutes |
 | `scripts/metrics_intelligence.py` | Analyze and categorize metrics | ~5-10 minutes |
 | `scripts/generate_mcp_token.sh` | Generate JWT tokens for authentication | Instant |

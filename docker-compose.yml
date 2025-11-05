@@ -23,10 +23,10 @@ services:
       
       # === MCP Authentication ===
       - PUBLIC_KEY_PEM=${PUBLIC_KEY_PEM}
-      
-      # === Document Search (BM25) ===
-      # Now using PostgreSQL BM25 search - no external dependencies needed
-      
+
+      # === Document Search (Gemini AI) ===
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+
       # === Database (Semantic Graph) ===
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
@@ -35,9 +35,6 @@ services:
       - POSTGRES_PASSWORD=${SEMANTIC_GRAPH_PASSWORD}
       - SEMANTIC_GRAPH_PASSWORD=${SEMANTIC_GRAPH_PASSWORD}
       
-      
-      # === Content Directories ===
-      - OBSERVE_DOCS_DIR=/app/observe-docs
       
       # === Runtime ===
       - PYTHONUNBUFFERED=1
@@ -50,9 +47,6 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
       - DEPLOYMENT_ENVIRONMENT=${DEPLOYMENT_ENVIRONMENT:-development}
 
-    volumes:
-      # Documentation (always read-only)
-      - ./observe-docs:/app/observe-docs:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM); sock.settimeout(5); result = sock.connect_ex(('localhost', 8000)); sock.close(); exit(0 if result == 0 else 1)"]
@@ -87,8 +81,8 @@ services:
       retries: 3
       start_period: 10s
 
-  # PostgreSQL with pgvector + BM25 extensions
-  # Required for semantic graph intelligence (query_semantic_graph) + BM25 docs search
+  # PostgreSQL with pgvector extension
+  # Required for dataset and metrics intelligence storage
   postgres:
     image: paradedb/paradedb:latest
     container_name: observe-semantic-graph

@@ -42,18 +42,8 @@ if telemetry_enabled:
 else:
     metrics_enabled = False
 
-# Import BM25 document search
-try:
-    from src.postgres.doc_search import search_docs_bm25 as search_docs
-except ImportError as e:
-    # Define fallback search function
-    def search_docs(query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        return [{
-            "text": f"Error: PostgreSQL BM25 search not available. The server cannot perform document search because the BM25 modules are not properly installed. Please ensure PostgreSQL is running and the documentation_chunks table exists. Your query was: {query}",
-            "source": "error",
-            "title": "BM25 Search Not Available",
-            "score": 1.0
-        }]
+# Import Gemini-powered document search
+from src.observe.gemini_search import search_docs_gemini as search_docs
 
 # Import organized Observe API modules
 from src.observe import (
@@ -329,10 +319,10 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 @trace_mcp_tool(tool_name="get_relevant_docs", record_args=True, record_result=False)
 async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str:
     """
-    Search Observe documentation using BM25 search for OPAL syntax and platform guidance.
+    Search Observe documentation using Gemini Search for OPAL syntax and platform guidance.
 
-    This tool searches through official Observe documentation to find relevant information
-    about OPAL syntax, functions, features, and best practices.
+    This tool uses Google's Gemini AI with search grounding to find relevant, up-to-date
+    documentation from docs.observeinc.com about OPAL syntax, functions, features, and best practices.
 
     WHEN YOU MUST USE THIS TOOL
     ═══════════════════════════════════════════════════════════════════════════════════
@@ -399,8 +389,9 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         get_relevant_docs("aggregation functions statsby")
 
     Performance:
-        - Search time: 200-500ms
-        - Returns full documents (may be lengthy)
+        - Search time: 1-3 seconds (includes web search + AI processing)
+        - Returns AI-curated documentation excerpts with citations
+        - Rate limited to 400 requests per day (Gemini Tier 1 limit)
     """
     try:
         # Import required modules
@@ -470,7 +461,7 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
         return response
     except Exception as e:
-        return f"Error retrieving relevant documents: {str(e)}. Make sure you've populated the BM25 index by running scripts/populate_docs_bm25.py."
+        return f"Error retrieving relevant documents: {str(e)}. Make sure GEMINI_API_KEY is set in your environment."
 
 
 @mcp.tool()

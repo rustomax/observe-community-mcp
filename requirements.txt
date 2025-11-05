@@ -7,8 +7,11 @@ httpx>=0.24.0
 tqdm>=4.65.0
 typing-extensions>=4.0.0
 
-# PostgreSQL for OPAL memory system
+# PostgreSQL for dataset/metrics intelligence
 asyncpg>=0.29.0
+
+# Gemini AI for documentation search
+google-genai>=0.1.0
 
 # OpenTelemetry instrumentation
 opentelemetry-api>=1.21.0
