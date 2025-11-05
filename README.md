@@ -199,7 +199,7 @@ graph TB
     ObserveAPI --> Results[Structured Results]
     Results --> Claude
 
-    Collector -->|OTLP HTTP| ObservePlatform[Observe Platform<br/>Telemetry Storage]
+    Collector -->|OTLP HTTP| ObservePlatform[Observe Platform]
 
     subgraph "PostgreSQL Database"
         DatasetDB
