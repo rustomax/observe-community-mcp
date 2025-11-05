@@ -353,43 +353,6 @@ service:
       exporters: [otlphttp, debug]
 ```
 
-### Instrumentation Example
-
-To instrument your Python code with OpenTelemetry:
-
-```python
-from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-
-# Configure OTLP exporter to send to OpenTelemetry Collector
-otlp_exporter = OTLPSpanExporter(
-    endpoint="http://otel-collector:4317",  # Within Docker network
-    insecure=True
-)
-
-# Set up tracing
-trace.set_tracer_provider(TracerProvider())
-trace.get_tracer_provider().add_span_processor(
-    BatchSpanProcessor(otlp_exporter)
-)
-
-# Create spans
-tracer = trace.get_tracer(__name__)
-with tracer.start_as_current_span("operation"):
-    # Your application code here
-    pass
-```
-
-### Data Flow
-
-1. **Application Code** → Generates traces, metrics, logs via OTEL SDK
-2. **OpenTelemetry Collector** → Receives OTLP data on ports 4317/4318
-3. **Collector Processing** → Adds resource attributes, batches data, provides debug output
-4. **OTLP HTTP Export** → Sends data to Observe platform with proper authentication
-5. **Observe Platform** → Receives processed telemetry for analysis
-
 The collector automatically handles authentication, retry logic, and reliable data delivery to the Observe platform.
 
 ## Authentication
@@ -481,7 +444,9 @@ The system is designed for fast response times:
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+
+# Install dependencies (use lock file for reproducible builds)
+pip install -r requirements-lock.txt
 
 # Start containers
 docker-compose build
@@ -494,6 +459,37 @@ python scripts/metrics_intelligence.py
 # Run server
 python observe_server.py
 ```
+
+**Dependency Management:**
+
+This project uses `requirements-lock.txt` for reproducible builds with pinned versions and cryptographic hashes.
+
+- **Installing dependencies**: Always use the lock file for consistent, secure builds:
+  ```bash
+  pip install -r requirements-lock.txt
+  ```
+
+- **Updating dependencies**: When you need to update to newer versions:
+  ```bash
+  # 1. Install latest compatible versions from requirements.txt
+  pip install -r requirements.txt --upgrade
+
+  # 2. Test that everything works
+  python observe_server.py  # or run your tests
+
+  # 3. Regenerate lock file with new versions
+  pip install pip-tools
+  pip-compile requirements.txt --output-file=requirements-lock.txt --generate-hashes --resolver=backtracking
+
+  # 4. Commit both files
+  git add requirements.txt requirements-lock.txt
+  git commit -m "chore: update dependencies"
+  ```
+
+- **Why use lock files?**
+  - **Security**: SHA256 hashes prevent package tampering
+  - **Reproducibility**: Same lock file = identical builds everywhere
+  - **Stability**: Prevents unexpected breaking changes from automatic updates
 
 ### Available Scripts
 

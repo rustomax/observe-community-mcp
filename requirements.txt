@@ -28,3 +28,7 @@ pandas>=2.0.0
 numpy>=1.24.0
 pillow>=10.0.0
 seaborn>=0.12.0
+
+# Fix for transitive dependencies
+backports.tarfile>=1.0.0  # Required by jaraco-context
+SecretStorage>=3.2  # Linux-only dependency for keyring

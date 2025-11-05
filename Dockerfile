@@ -1,5 +1,5 @@
-# Use Python 3.11 slim image for better security and smaller size
-FROM python:3.11-slim
+# Use Python 3.13 slim image for better security and smaller size
+FROM python:3.13-slim
 
 # Set working directory
 WORKDIR /app
@@ -11,11 +11,12 @@ RUN apt-get update && apt-get install -y \
     libpng-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first to leverage Docker layer caching
-COPY requirements.txt .
+# Copy requirements files first to leverage Docker layer caching
+# Copy both files: requirements.txt for documentation and requirements-lock.txt for reproducible builds
+COPY requirements.txt requirements-lock.txt ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies from lock file (pinned versions with hashes for security)
+RUN pip install --no-cache-dir -r requirements-lock.txt
 
 # Copy the application code
 COPY . .
