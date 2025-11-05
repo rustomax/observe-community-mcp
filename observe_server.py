@@ -134,6 +134,58 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
     Raises:
         ValueError: If query structure is invalid
     """
+    # Complete list of OPAL functions from https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALFunctions.html
+    # 286 functions across 11 categories (Aggregate, Boolean, Misc, Networking, Numeric, Regex, Semistructured, Special, String, Time, Window)
+    ALLOWED_FUNCTIONS = {
+        'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad', 'arcsin_deg', 'arcsin_rad',
+        'arctan_deg', 'arctan_rad', 'array', 'array_agg', 'array_agg_distinct', 'array_contains', 'array_distinct',
+        'array_length', 'array_max', 'array_min', 'array_null', 'array_to_string', 'array_union_agg', 'arrays_overlap',
+        'asc', 'avg', 'bin_end_time', 'bin_size', 'bin_start_time', 'bool', 'bool_null', 'case', 'ceil', 'check_json',
+        'coalesce', 'concat_arrays', 'concat_strings', 'contains', 'cos_deg', 'cos_rad', 'count', 'count_distinct',
+        'count_distinct_exact', 'count_regex_matches', 'decode_base64', 'decode_uri', 'decode_uri_component', 'degrees',
+        'delta', 'delta_monotonic', 'dense_rank', 'deriv', 'desc', 'detect_browser', 'drop_fields', 'duration',
+        'duration_hr', 'duration_min', 'duration_ms', 'duration_null', 'duration_sec', 'editdistance', 'embed_sql_params',
+        'encode_base64', 'encode_uri', 'encode_uri_component', 'ends_with', 'eq', 'ewma', 'exp', 'exponential_histogram_null',
+        'first', 'first_not_null', 'float64', 'float64_null', 'floor', 'format_time', 'frame', 'frame_exact',
+        'frame_following', 'frame_preceding', 'from_milliseconds', 'from_nanoseconds', 'from_seconds', 'get_field',
+        'get_item', 'get_jmespath', 'get_regex', 'get_regex_all', 'group_by', 'gt', 'gte', 'hash', 'hash_agg',
+        'hash_agg_distinct', 'haversine_distance_km', 'histogram_combine', 'histogram_fraction', 'histogram_null',
+        'histogram_quantile', 'if', 'if_null', 'in', 'index_of_item', 'insert_item', 'int64', 'int64_null',
+        'int64_to_ipv4', 'int_div', 'intersect_arrays', 'ipv4', 'ipv4_address_in_network', 'ipv4_network_int64',
+        'ipv4_to_int64', 'is_null', 'label', 'lag', 'lag_not_null', 'last', 'last_not_null', 'lead', 'lead_not_null',
+        'left', 'like', 'ln', 'log', 'lower', 'lpad', 'lt', 'lte', 'ltrim', 'm', 'm_exponential_histogram', 'm_histogram',
+        'm_object', 'm_tdigest', 'make_array', 'make_array_range', 'make_fields', 'make_object', 'match_regex', 'max',
+        'median', 'median_exact', 'merge_objects', 'metric', 'min', 'mod', 'ne', 'now', 'nullsfirst', 'nullslast',
+        'numeric_null', 'object', 'object_agg', 'object_keys', 'object_null', 'on', 'options', 'order_by',
+        'otel_exponential_histogram_quantile', 'otel_exponential_histogram_sum', 'otel_histogram_quantile',
+        'otel_histogram_sum', 'parse_csv', 'parse_duration', 'parse_hex', 'parse_ip', 'parse_isotime', 'parse_json',
+        'parse_kvs', 'parse_timestamp', 'parse_url', 'path_exists', 'percentile', 'percentile_cont', 'percentile_disc',
+        'pi', 'pick_fields', 'pivot_array', 'position', 'pow', 'prepend_item', 'primary_key', 'prom_quantile',
+        'query_end_time', 'query_start_time', 'radians', 'rank', 'rate', 'regex', 'replace', 'replace_regex', 'right',
+        'round', 'row_end_time', 'row_number', 'row_timestamp', 'rpad', 'rtrim', 'same', 'search', 'sha2', 'sin_deg',
+        'sin_rad', 'slice_array', 'sort_array', 'split', 'split_part', 'sqrt', 'starts_with', 'stddev', 'string',
+        'string_agg', 'string_agg_distinct', 'string_null', 'strlen', 'substring', 'sum', 'tags', 'tan_deg', 'tan_rad',
+        'tdigest', 'tdigest_agg', 'tdigest_combine', 'tdigest_null', 'tdigest_quantile', 'timestamp_null', 'to_days',
+        'to_hours', 'to_milliseconds', 'to_minutes', 'to_nanoseconds', 'to_seconds', 'to_weeks', 'tokenize',
+        'tokenize_part', 'topk_agg', 'trim', 'uniform', 'unpivot_array', 'upper', 'valid_for', 'variant_null',
+        'variant_type_name', 'width_bucket', 'window', 'zipf'
+    }
+
+    # Common SQL→OPAL translation hints for better error messages
+    SQL_FUNCTION_HINTS = {
+        'count_if': 'OPAL doesn\'t have count_if(). Use: make_col flag:if(condition,1,0) | statsby sum(flag)',
+        'len': 'OPAL doesn\'t have len(). Use: strlen(string) or array_length(array)',
+        'length': 'OPAL doesn\'t have length(). Use: strlen(string) or array_length(array)',
+        'isnull': 'OPAL doesn\'t have isnull(). Use: is_null(value)',
+        'ifnull': 'OPAL doesn\'t have ifnull(). Use: if_null(value, default) or coalesce(value, default)',
+        'nvl': 'OPAL doesn\'t have nvl(). Use: if_null(value, default) or coalesce(value, default)',
+        'concat': 'OPAL doesn\'t have concat(). Use: concat_strings(str1, str2, ...) or concat_arrays(arr1, arr2)',
+        'dateadd': 'OPAL doesn\'t have dateadd(). Use: timestamp + duration(amount, unit)',
+        'datediff': 'OPAL doesn\'t have datediff(). Use: timestamp subtraction or duration operations',
+        'getdate': 'OPAL doesn\'t have getdate(). Use: now() for current timestamp',
+        'current_date': 'OPAL doesn\'t have current_date(). Use: now() for current timestamp',
+    }
+
     # Complete list of OPAL verbs from https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html
     ALLOWED_VERBS = {
         # Aggregate verbs
@@ -213,6 +265,47 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
                 f"Unknown OPAL verb '{first_word}' at position {i}. "
                 f"Valid verbs: {', '.join(sorted(list(ALLOWED_VERBS)[:10]))}... "
                 f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html)"
+            )
+
+    # 6. Validate function calls (handles nested functions like window(count(1), group_by(x)))
+    import re
+
+    # Extract all function calls using regex: identifier followed by (
+    # This pattern handles nested functions and multiple functions in the same expression
+    function_pattern = r'\b([a-zA-Z_][a-zA-Z0-9_]*)\s*\('
+    function_matches = re.findall(function_pattern, query)
+
+    # Validate each function name
+    for func_name in set(function_matches):  # Use set to avoid duplicate error messages
+        if func_name not in ALLOWED_FUNCTIONS:
+            # Check if this is a common SQL function with a known OPAL alternative
+            if func_name in SQL_FUNCTION_HINTS:
+                return False, (
+                    f"Unknown function '{func_name}()'. "
+                    f"{SQL_FUNCTION_HINTS[func_name]} "
+                    f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALFunctions.html)"
+                )
+            else:
+                # Generic unknown function error
+                similar_funcs = [f for f in ALLOWED_FUNCTIONS if f.startswith(func_name[:3])][:5]
+                suggestion = f" Similar functions: {', '.join(similar_funcs)}" if similar_funcs else ""
+                return False, (
+                    f"Unknown function '{func_name}()'. "
+                    f"Valid OPAL functions: count, sum, avg, if, contains, string, parse_json, etc.{suggestion} "
+                    f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALFunctions.html)"
+                )
+
+    # 7. Check for common SQL-style sort syntax (sort -field instead of sort desc(field))
+    # Check each operation in the pipeline (avoids matching inside quoted strings)
+    for operation in operations:
+        # Check if this operation starts with "sort -" (after stripping whitespace)
+        stripped_op = operation.strip()
+        if re.match(r'^sort\s+-', stripped_op):
+            return False, (
+                "Invalid sort syntax. "
+                "OPAL uses 'sort desc(field)' not 'sort -field'. "
+                "Use: sort desc(field) for descending or sort asc(field) for ascending. "
+                "(see https://docs.observeinc.com/en/latest/content/query-language-reference/verbs/sort.html)"
             )
 
     return True, None
