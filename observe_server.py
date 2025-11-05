@@ -7,7 +7,7 @@ using organized modules for better maintainability and reusability.
 
 import os
 import sys
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Tuple
 
 try:
     from typing_extensions import TypedDict
@@ -84,6 +84,138 @@ if telemetry_enabled:
     # Note: FastMCP wraps FastAPI, so we'll instrument the underlying app
     if hasattr(mcp, 'app'):
         instrument_fastapi_app(mcp.app)
+
+
+# Input validation utility to prevent DoS via large payloads (H-INPUT-2)
+def validate_input_size(value: Optional[str], param_name: str, max_bytes: int) -> None:
+    """
+    Validate input parameter size to prevent DoS attacks.
+
+    Args:
+        value: Input string to validate
+        param_name: Parameter name for error messages
+        max_bytes: Maximum allowed size in bytes
+
+    Raises:
+        ValueError: If input exceeds maximum size
+    """
+    if value is None:
+        return
+
+    size_bytes = len(value.encode('utf-8'))
+    if size_bytes > max_bytes:
+        max_kb = max_bytes / 1024
+        actual_kb = size_bytes / 1024
+        raise ValueError(
+            f"{param_name} exceeds maximum size limit. "
+            f"Maximum: {max_kb:.1f}KB, Actual: {actual_kb:.1f}KB. "
+            f"Please reduce the size of your input."
+        )
+
+
+# OPAL query validation utility to prevent injection and catch errors early (H-INPUT-1)
+def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validate OPAL query structure for security and correctness.
+
+    This performs structural validation without full semantic parsing:
+    - Validates all verbs in piped sequences against whitelist
+    - Checks balanced delimiters (prevents malformed queries)
+    - Enforces complexity limits (prevents DoS)
+
+    The Observe API remains the authoritative validator for full semantics.
+
+    Args:
+        query: OPAL query string to validate
+
+    Returns:
+        Tuple of (is_valid, error_message)
+
+    Raises:
+        ValueError: If query structure is invalid
+    """
+    # Complete list of OPAL verbs from https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html
+    ALLOWED_VERBS = {
+        # Aggregate verbs
+        'aggregate', 'align', 'dedup', 'distinct', 'fill', 'histogram',
+        'make_reference', 'make_session', 'merge_events', 'pivot', 'rollup',
+        'statsby', 'timechart', 'bucketize', 'timestats', 'unpivot',
+
+        # Filter verbs
+        'always', 'bottomk', 'ever', 'filter', 'filter_last', 'limit',
+        'never', 'topk',
+
+        # Join verbs
+        'exists', 'follow', 'follow_not', 'fulljoin', 'join', 'leftjoin',
+        'lookup', 'lookup_ip_info', 'not_exists', 'surrounding', 'union',
+        'update_resource',
+
+        # Metadata verbs
+        'add_key', 'drop_interface', 'interface', 'make_event', 'make_interval',
+        'make_metric', 'make_resource', 'make_table', 'set_col_enum',
+        'set_col_immutable', 'set_col_searchable', 'set_col_visible', 'set_label',
+        'set_link', 'set_metric', 'set_metric_metadata', 'set_primary_key', 'set_pk',
+        'set_timestamp', 'set_valid_from', 'set_valid_to', 'sort', 'timeshift',
+        'unset_all_links', 'unset_keys', 'unset_link', 'unsort',
+
+        # Projection verbs
+        'drop_col', 'extract_regex', 'make_col', 'pick_col', 'rename_col',
+
+        # Semistructured verbs
+        'flatten', 'flatten_all', 'flatten_leaves', 'flatten_single'
+    }
+
+    # 1. Balanced delimiters (prevents malformed queries)
+    if query.count('(') != query.count(')'):
+        return False, "Unbalanced parentheses in OPAL query"
+    if query.count('[') != query.count(']'):
+        return False, "Unbalanced square brackets in OPAL query"
+    if query.count('{') != query.count('}'):
+        return False, "Unbalanced curly braces in OPAL query"
+
+    # 2. String quote balance (basic check for common mistakes)
+    # Note: This is a heuristic - escaped quotes complicate this
+    double_quotes = query.count('"')
+    if double_quotes % 2 != 0:
+        return False, "Unbalanced double quotes in OPAL query"
+
+    # 3. Query complexity limits (prevents DoS via complex queries)
+    operation_count = query.count('|') + 1
+    if operation_count > 20:  # Max 20 piped operations
+        return False, f"OPAL query too complex: {operation_count} operations (max 20 allowed)"
+
+    # 4. Nesting depth check (deeply nested parentheses can cause performance issues)
+    max_nesting = 0
+    current_nesting = 0
+    for char in query:
+        if char == '(':
+            current_nesting += 1
+            max_nesting = max(max_nesting, current_nesting)
+        elif char == ')':
+            current_nesting -= 1
+
+    if max_nesting > 10:  # Max nesting depth of 10
+        return False, f"OPAL query nesting too deep: {max_nesting} levels (max 10 allowed)"
+
+    # 5. Validate all verbs in the pipeline
+    # Split by pipe operator and check each verb
+    operations = query.split('|')
+    for i, operation in enumerate(operations, 1):
+        # Extract first word (the verb) after stripping whitespace
+        first_word = operation.strip().split()[0] if operation.strip().split() else ""
+
+        if not first_word:
+            return False, f"Empty operation at position {i} in pipeline"
+
+        # Check if verb is in whitelist
+        if first_word not in ALLOWED_VERBS:
+            return False, (
+                f"Unknown OPAL verb '{first_word}' at position {i}. "
+                f"Valid verbs: {', '.join(sorted(list(ALLOWED_VERBS)[:10]))}... "
+                f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html)"
+            )
+
+    return True, None
 
 
 @mcp.tool()
@@ -257,6 +389,18 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     """
     import json
 
+    # Validate input sizes to prevent DoS attacks (H-INPUT-2)
+    validate_input_size(query, "query", 10 * 1024)  # 10KB max for OPAL queries
+    validate_input_size(dataset_id, "dataset_id", 1024)  # 1KB max
+    validate_input_size(primary_dataset_id, "primary_dataset_id", 1024)  # 1KB max
+    validate_input_size(secondary_dataset_ids, "secondary_dataset_ids", 100 * 1024)  # 100KB max for JSON
+    validate_input_size(dataset_aliases, "dataset_aliases", 100 * 1024)  # 100KB max for JSON
+
+    # Validate OPAL query structure (H-INPUT-1)
+    is_valid, error_message = validate_opal_query_structure(query)
+    if not is_valid:
+        return f"OPAL Query Validation Error: {error_message}"
+
     # Log the OPAL query operation with sanitized query (truncated for security)
     query_preview = query[:100] + "..." if len(query) > 100 else query
     dataset_info = primary_dataset_id or dataset_id
@@ -393,6 +537,9 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
         - Returns AI-curated documentation excerpts with citations
         - Rate limited to 400 requests per day (Gemini Tier 1 limit)
     """
+    # Validate input sizes to prevent DoS attacks (H-INPUT-2)
+    validate_input_size(query, "query", 1024)  # 1KB max for search queries
+
     try:
         # Import required modules
         import os
@@ -522,6 +669,14 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
         - Search queries: 200-500ms
         - Exact ID/name lookups: <100ms
     """
+    # Validate input sizes to prevent DoS attacks (H-INPUT-2)
+    validate_input_size(query, "query", 1024)  # 1KB max for search queries
+    validate_input_size(dataset_id, "dataset_id", 1024)  # 1KB max
+    validate_input_size(dataset_name, "dataset_name", 1024)  # 1KB max
+    validate_input_size(business_category_filter, "business_category_filter", 1024)  # 1KB max
+    validate_input_size(technical_category_filter, "technical_category_filter", 1024)  # 1KB max
+    validate_input_size(interface_filter, "interface_filter", 1024)  # 1KB max
+
     try:
         import asyncpg
         import json
@@ -998,6 +1153,11 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
     Performance:
         - Search queries: 200-500ms
     """
+    # Validate input sizes to prevent DoS attacks (H-INPUT-2)
+    validate_input_size(query, "query", 1024)  # 1KB max for search queries
+    validate_input_size(category_filter, "category_filter", 1024)  # 1KB max
+    validate_input_size(technical_filter, "technical_filter", 1024)  # 1KB max
+
     try:
         import asyncpg
         import json
