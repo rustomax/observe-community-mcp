@@ -21,6 +21,9 @@ from .dataset_aliases import (
 )
 from .error_enhancement import enhance_api_error
 
+# Import OPAL query validation
+from .opal_validation import validate_opal_query_structure
+
 
 async def execute_opal_query(
     query: str, 
@@ -68,7 +71,13 @@ async def execute_opal_query(
     config_error = validate_observe_config()
     if config_error:
         return config_error
-    
+
+    # Validate OPAL query structure (H-INPUT-1)
+    is_valid, error_message = validate_opal_query_structure(query)
+    logger.info(f"Query validation result: is_valid={is_valid}, error_preview={str(error_message)[:50] if error_message else 'None'}")
+    if not is_valid:
+        return f"OPAL Query Validation Error: {error_message}"
+
     try:
         # Handle backward compatibility
         if dataset_id is not None and primary_dataset_id is None:
