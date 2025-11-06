@@ -1205,10 +1205,10 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
 
 **Available metrics**: {await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")} total metrics in the database.
 """
-            
-            # Format results
-            formatted_results = []
-            for i, row in enumerate(results, 1):
+
+            # Helper function for detailed metric information
+            def _format_metric_detail(row: Dict, index: int) -> str:
+                """Format complete metric details with full dimensions (minus link fields)."""
                 # Parse JSON fields safely
                 try:
                     dimensions = json.loads(row['common_dimensions']) if row['common_dimensions'] else {}
@@ -1222,25 +1222,23 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
                     query_patterns = []
                     nested_field_paths = {}
                     nested_field_analysis = {}
-                
-                # Format dimension keys
-                dim_keys = list(dimensions.keys()) if dimensions else []
-                dim_text = f"**Dimensions**: {', '.join(dim_keys[:5])}" if dim_keys else "**Dimensions**: None"
-                if len(dim_keys) > 5:
-                    dim_text += f" (+{len(dim_keys)-5} more)"
-                
+
+                # Format dimension keys (filter out link_ fields)
+                dim_keys = [k for k in dimensions.keys() if not k.startswith('link_')]
+                dim_text = f"**Dimensions**: {', '.join(dim_keys)}" if dim_keys else "**Dimensions**: None"
+
                 # Format value range
                 range_text = ""
                 if value_range and isinstance(value_range, dict):
                     if 'min' in value_range and 'max' in value_range:
-                        range_text = f"**Range**: {value_range.get('min', 'N/A')} - {value_range.get('max', 'N/A')}"
-                
+                        range_text = f"**Range**: {value_range.get('min', 'N/A')} - {value_range.get('max', 'N/A')}\n"
+
                 # Format last seen
                 last_seen = row['last_seen'].strftime('%Y-%m-%d %H:%M') if row['last_seen'] else 'Unknown'
-                
+
                 # Format metric type and query patterns
                 metric_type = row.get('metric_type', 'unknown')
-                common_fields = row.get('common_fields', [])
+                common_fields = [f for f in (row.get('common_fields', []) or []) if not f.startswith('link_')]
 
                 # Create enhanced query guidance section
                 query_guidance = ""
@@ -1254,21 +1252,18 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
                         if isinstance(primary_pattern, dict) and primary_pattern.get('use_case'):
                             query_guidance += f"**Use Case**: {primary_pattern['use_case']}\n"
 
-                # Add nested field information with visual prominence
+                # Add nested field information (filter link_ fields)
                 if nested_field_paths:
-                    important_fields = nested_field_analysis.get('important_fields', []) if nested_field_analysis else []
+                    important_fields = [f for f in (nested_field_analysis.get('important_fields', []) if nested_field_analysis else [])
+                                       if not f.startswith('link_')]
                     if important_fields:
-                        nested_text = ', '.join(important_fields[:4])  # Show 4 instead of 3
-                        if len(important_fields) > 4:
-                            nested_text += f" (+{len(important_fields)-4} more)"
+                        nested_text = ', '.join(important_fields)
                         query_guidance += f"**Key Nested Fields (EXACT PATHS)**: {nested_text}\n"
 
                 if common_fields:
-                    field_list = ', '.join(common_fields[:4])  # Show 4 instead of 3
-                    if len(common_fields) > 4:
-                        field_list += f" (+{len(common_fields)-4} more)"
+                    field_list = ', '.join(common_fields)
                     query_guidance += f"**Common Fields (USE EXACT NAMES)**: {field_list}\n"
-                
+
                 # Calculate combined relevance score
                 combined_score = max(row['rank'], row.get('similarity_score', 0))
                 score_details = []
@@ -1277,7 +1272,7 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
                 if row.get('similarity_score', 0) > 0:
                     score_details.append(f"similarity: {row['similarity_score']:.3f}")
 
-                result_text = f"""## {i}. {row['metric_name']}
+                return f"""## {index}. {row['metric_name']}
 **Dataset**: {row['dataset_name']}
 **Dataset ID**: `{row['dataset_id']}`
 **Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
@@ -1285,12 +1280,37 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
 **Purpose**: {row['inferred_purpose']}
 **Usage**: {row['typical_usage']}
 {dim_text}
-{query_guidance}{range_text}
-**Frequency**: {row['data_frequency']} | **Last Seen**: {last_seen}
+{query_guidance}{range_text}**Frequency**: {row['data_frequency']} | **Last Seen**: {last_seen}
 **Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
-                formatted_results.append(result_text)
-            
+
+            # Helper function for lightweight search results
+            def _format_metric_summary(row: Dict, index: int) -> str:
+                """Format lightweight metric summary for search/discovery."""
+                # Calculate combined relevance score
+                combined_score = max(row['rank'], row.get('similarity_score', 0))
+
+                return f"""## {index}. {row['metric_name']}
+**Dataset**: {row['dataset_name']}
+**Dataset ID**: `{row['dataset_id']}`
+**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
+**Purpose**: {row['inferred_purpose']}
+**Relevance**: {combined_score:.3f}
+"""
+
+            # Determine mode: lightweight search vs detailed lookup
+            is_detail_mode = (metric_name is not None)
+
+            # Format results based on mode
+            formatted_results = []
+            for i, row in enumerate(results, 1):
+                if is_detail_mode:
+                    # DETAIL MODE: Show complete metric details
+                    formatted_results.append(_format_metric_detail(row, i))
+                else:
+                    # SEARCH MODE: Show lightweight summary for discovery
+                    formatted_results.append(_format_metric_summary(row, i))
+
             # Get summary stats
             total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")
             category_counts = await conn.fetch("""
@@ -1308,18 +1328,41 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
             # Log successful results
             semantic_logger.info(f"metrics search complete | found:{len(results)} metrics | total_available:{total_metrics}")
 
+            # Build mode-specific next steps guidance
+            if is_detail_mode:
+                next_steps = """**Next Steps**:
+- Use `execute_opal_query(query="...", primary_dataset_id="dataset_id")` to query this metric
+- REQUIRED pattern: `align [interval], value:sum(m("metric_name"))` then aggregate/filter
+- Use `discover_datasets()` to find related datasets for correlation analysis
+- Remember: Metrics require align + m() + aggregate pattern (see execute_opal_query docs)"""
+            else:
+                next_steps = f"""**Next Steps**:
+- To see complete details with ALL dimensions, call: `discover_metrics(metric_name="metric_name")`
+- Then use `execute_opal_query()` with the metric's dataset ID
+- Use `discover_datasets()` to find related datasets for comprehensive analysis
+
+**Example**:
+```python
+# Step 1: Get full details for metric of interest
+discover_metrics(metric_name="http_request_duration_5m")
+
+# Step 2: Query the metric using REQUIRED align + m() + aggregate pattern
+execute_opal_query(
+    query="align 5m, value:avg(m(\\"http_request_duration_5m\\")) | aggregate avg_latency:avg(value), group_by(service_name)",
+    primary_dataset_id="42160967"
+)
+```"""
+
             return f"""# Metrics Discovery Results
 
-**Query**: "{query}"
-**Found**: {len(results)} metrics (showing top {max_results})
+**Query**: "{query if query else metric_name}"
+**Found**: {len(results)} metric{"s" if len(results) != 1 else ""} (showing top {max_results})
 **Search Scope**: {total_metrics} total metrics | Top categories: {category_summary}
 
 {chr(10).join(formatted_results)}
 
 ---
-**Next Steps**:
-- Use `execute_opal_query()` with the dataset ID to query specific metrics
-- Use `discover_datasets()` to find related datasets for comprehensive analysis
+{next_steps}
 """
             
         finally:
