@@ -56,20 +56,104 @@ ERROR_PATTERNS = [
 ]
 
 
-def enhance_field_error(match, query: str, dataset_id: str) -> str:
+def enhance_field_error(match, query: str, dataset_id: str, schema_info: Optional[str] = None) -> str:
     """Enhancement for non-existent field errors."""
     field_name = match.group(1)
-    available_fields = match.group(2)
+    available_fields_raw = match.group(2)
 
-    return (
+    # Parse and format the available fields for better readability
+    fields = [f.strip() for f in available_fields_raw.split(',')]
+
+    # Check if this is a metrics query context
+    is_metrics_query = 'align' in query.lower() or 'm(' in query or 'metric' in query.lower()
+    has_labels_field = 'labels' in fields
+
+    # Check if the missing field looks like a dimension (common metric dimension patterns)
+    dimension_patterns = ['_name', '_id', '_uid', 'namespace', 'cluster', 'pod', 'node', 'service', 'host', 'container']
+    looks_like_dimension = any(pattern in field_name.lower() for pattern in dimension_patterns)
+
+    # Detect if filtering after aggregation
+    query_lower = query.lower()
+    has_align = 'align' in query_lower
+    filter_after_align = False
+    if has_align:
+        # Simple check: if filter appears after align in the query
+        align_pos = query_lower.find('align')
+        filter_pos = query_lower.find('filter')
+        if filter_pos > align_pos >= 0:
+            filter_after_align = True
+
+    # Format fields in a more readable way (group them for easier scanning)
+    if len(fields) <= 10:
+        # Show all fields as a list
+        fields_formatted = '\n   '.join([f'• {field}' for field in fields])
+        fields_display = f"\n\n📋 Available Fields in Dataset:\n   {fields_formatted}"
+    else:
+        # Show first 10 and count
+        first_ten = '\n   '.join([f'• {field}' for field in fields[:10]])
+        fields_display = f"\n\n📋 Available Fields in Dataset ({len(fields)} total, showing first 10):\n   {first_ten}\n   ... and {len(fields) - 10} more"
+
+    help_text = (
         f"\n\n💡 Contextual Help:"
         f"\n• Field '{field_name}' doesn't exist in this dataset"
-        f"\n• Available fields: {available_fields}"
-        f"\n• Use discover_datasets(dataset_id=\"{dataset_id}\") to see complete schema with:"
-        f"\n  - Field types and descriptions"
-        f"\n  - Sample values"
-        f"\n  - Nested field access syntax (e.g., resource_attributes.\"k8s.namespace.name\")"
+        f"{fields_display}"
     )
+
+    # Provide context-specific guidance
+    if is_metrics_query and looks_like_dimension and filter_after_align and has_labels_field:
+        # This is likely the metrics aggregation dimension issue
+        help_text += (
+            f"\n\n🎯 Metrics Query Issue Detected:"
+            f"\n\n⚠️ You're trying to filter on dimension field '{field_name}' after aggregation."
+            f"\nAfter align/aggregate, dimension fields are no longer directly accessible."
+            f"\n\nTwo solutions:"
+            f"\n\n✅ Option 1: Filter BEFORE aggregation (recommended)"
+            f"\n   filter {field_name} ~ \"your-value\""
+            f"\n   | align 1m, value:avg(m(\"metric_name\"))"
+            f"\n"
+            f"\n✅ Option 2: Group by the dimension, then access via labels"
+            f"\n   align 1m, value:avg(m(\"metric_name\")), group_by({field_name})"
+            f"\n   | filter labels.{field_name} ~ \"your-value\""
+            f"\n"
+            f"\n📖 Learn more about metrics queries:"
+            f"\n   get_relevant_docs(\"OPAL metrics align aggregate pattern\")"
+        )
+    elif is_metrics_query and has_labels_field:
+        # Generic metrics guidance
+        help_text += (
+            f"\n\n🎯 Metrics Query Tip:"
+            f"\n• After align/aggregate, dimensions move to the 'labels' object"
+            f"\n• Use discover_metrics() to see available dimensions for this metric"
+            f"\n• Filter on dimensions BEFORE aggregation for best results"
+        )
+
+    # If schema info was provided, include it
+    if schema_info:
+        help_text += f"\n\n📋 Complete Schema Information:\n{schema_info}"
+    else:
+        # General discovery guidance
+        if is_metrics_query:
+            help_text += (
+                f"\n\n🔍 To see metric details (dimensions, value ranges, examples), run:"
+                f"\n   discover_metrics(\"{field_name}\")"
+            )
+        else:
+            help_text += (
+                f"\n\n🔍 To see complete field details (types, samples, nested paths), run:"
+                f"\n   discover_datasets(dataset_id=\"{dataset_id}\")"
+            )
+
+        # Common issues (only if not already covered by metrics-specific guidance)
+        if not (is_metrics_query and looks_like_dimension and filter_after_align):
+            help_text += (
+                f"\n\n💡 Common Issues:"
+                f"\n   • Nested fields need quotes: resource_attributes.\"k8s.pod.name\""
+                f"\n   • Logs use 'timestamp', spans use 'start_time'/'end_time'"
+            )
+            if not is_metrics_query:
+                help_text += f"\n   • After align/aggregate, dimensions move to 'labels' object"
+
+    return help_text
 
 
 def enhance_metric_error(match, query: str, dataset_id: str) -> str:
@@ -203,7 +287,7 @@ ENHANCEMENT_FUNCTIONS = {
 }
 
 
-def enhance_api_error(error_message: str, query: str, dataset_id: Optional[str] = None) -> str:
+def enhance_api_error(error_message: str, query: str, dataset_id: Optional[str] = None, schema_info: Optional[str] = None) -> str:
     """
     Enhance Observe API error messages with contextual help.
 
@@ -211,6 +295,7 @@ def enhance_api_error(error_message: str, query: str, dataset_id: Optional[str] 
         error_message: Original error message from Observe API
         query: The OPAL query that caused the error
         dataset_id: Dataset ID used in the query (optional)
+        schema_info: Pre-fetched schema information to include in error (optional)
 
     Returns:
         Enhanced error message with actionable suggestions
@@ -232,7 +317,11 @@ def enhance_api_error(error_message: str, query: str, dataset_id: Optional[str] 
         if match:
             enhancement_func = ENHANCEMENT_FUNCTIONS.get(pattern_info["name"])
             if enhancement_func:
-                suggestion = enhancement_func(match, query, dataset_id)
+                # Pass schema_info to enhancement function (only field error uses it)
+                if pattern_info["name"] == "non_existent_field":
+                    suggestion = enhancement_func(match, query, dataset_id, schema_info)
+                else:
+                    suggestion = enhancement_func(match, query, dataset_id)
                 return error_message + suggestion
             break
 

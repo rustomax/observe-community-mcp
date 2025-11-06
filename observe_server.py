@@ -791,9 +791,9 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 **Available datasets**: {await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")} total datasets in the database.
 """
             
-            # Format results
-            formatted_results = []
-            for i, row in enumerate(results, 1):
+            # Helper function for detailed dataset information
+            def _format_dataset_detail(row: Dict, index: int) -> str:
+                """Format complete dataset details with full schema (minus link fields)."""
                 # Parse JSON fields safely
                 try:
                     query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
@@ -812,26 +812,27 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                     interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
 
                 # Format ALL available fields with complete schema information
+                # Filter out link_ fields to reduce confusion
                 schema_info_str = ""
-
-                # Combine all fields from key_fields and nested_field_paths
                 all_fields_info = {}
 
-                # Add top-level fields from key_fields
+                # Add top-level fields from key_fields (exclude link_ fields)
                 if row.get('key_fields'):
                     for field in row['key_fields']:
-                        all_fields_info[field] = {"type": "unknown", "sample_values": []}
+                        if not field.startswith('link_'):
+                            all_fields_info[field] = {"type": "unknown", "sample_values": []}
 
-                # Add detailed nested field information
+                # Add detailed nested field information (exclude link_ fields)
                 if nested_field_paths:
                     for field_path, field_info in nested_field_paths.items():
-                        if isinstance(field_info, dict):
-                            all_fields_info[field_path] = {
-                                "type": field_info.get("type", "unknown"),
-                                "sample_values": field_info.get("sample_values", [])[:3]  # Show 3 samples max
-                            }
-                        else:
-                            all_fields_info[field_path] = {"type": "unknown", "sample_values": []}
+                        if not field_path.startswith('link_'):
+                            if isinstance(field_info, dict):
+                                all_fields_info[field_path] = {
+                                    "type": field_info.get("type", "unknown"),
+                                    "sample_values": field_info.get("sample_values", [])[:3]  # Show 3 samples max
+                                }
+                            else:
+                                all_fields_info[field_path] = {"type": "unknown", "sample_values": []}
 
                 if all_fields_info:
                     schema_info_str = "**COMPLETE SCHEMA - USE EXACT FIELD NAMES & TYPES**:\n"
@@ -843,7 +844,8 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                     for field_list, header in [(top_level_fields, "**Top-Level Fields**"), (nested_fields, "**Nested Fields**")]:
                         if field_list:
                             schema_info_str += f"\n{header}:\n"
-                            for field in sorted(field_list)[:15]:  # Limit to 15 per section to manage size
+                            # Show ALL fields (no truncation)
+                            for field in sorted(field_list):
                                 field_info = all_fields_info[field]
                                 type_info = f"({field_info['type']})" if field_info['type'] != 'unknown' else ""
 
@@ -861,9 +863,6 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                                             samples_str += " (likely milliseconds)"
 
                                 schema_info_str += f"  • `{field}` {type_info}{samples_str}\n"
-
-                            if len(field_list) > 15:
-                                schema_info_str += f"  • ... (+{len(field_list)-15} more {header.lower()} fields)\n"
 
                     schema_info_str += "\n"
 
@@ -888,7 +887,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
                 if row.get('similarity_score', 0) > 0:
                     score_details.append(f"similarity: {row['similarity_score']:.3f}")
 
-                result_text = f"""## {i}. {row['dataset_name']}
+                return f"""## {index}. {row['dataset_name']}
 **Dataset ID**: `{row['dataset_id']}`
 **Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
 {interfaces_str}**Purpose**: {row['inferred_purpose']}
@@ -896,8 +895,39 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 {schema_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
 **Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
 """
-                formatted_results.append(result_text)
-            
+
+            # Helper function for lightweight search results
+            def _format_dataset_summary(row: Dict, index: int) -> str:
+                """Format lightweight dataset summary for search/discovery."""
+                # Calculate combined relevance score
+                combined_score = max(row['rank'], row.get('similarity_score', 0))
+
+                # Format interface types
+                interfaces_str = ', '.join(row['interface_types']) if row['interface_types'] else 'unknown'
+
+                return f"""## {index}. {row['dataset_name']}
+**Dataset ID**: `{row['dataset_id']}`
+**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
+**Interfaces**: {interfaces_str}
+**Purpose**: {row['inferred_purpose']}
+**Relevance**: {combined_score:.3f}
+"""
+
+            # Determine mode: lightweight search vs detailed lookup
+            # Detail mode: dataset_id or dataset_name was provided (exact lookup)
+            # Search mode: query was provided (discovery)
+            is_detail_mode = (dataset_id is not None or dataset_name is not None)
+
+            # Format results based on mode
+            formatted_results = []
+            for i, row in enumerate(results, 1):
+                if is_detail_mode:
+                    # DETAIL MODE: Show complete schema for specific dataset
+                    formatted_results.append(_format_dataset_detail(row, i))
+                else:
+                    # SEARCH MODE: Show lightweight summary for discovery
+                    formatted_results.append(_format_dataset_summary(row, i))
+
             # Get summary stats
             total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")
             category_counts = await conn.fetch("""
@@ -916,6 +946,30 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
             # Log successful results
             semantic_logger.info(f"dataset search complete | found:{len(results)} datasets | total_available:{total_datasets}")
 
+            # Build mode-specific next steps guidance
+            if is_detail_mode:
+                next_steps = """**Next Steps**:
+- Use `execute_opal_query(query="...", primary_dataset_id="dataset_id")` to query this dataset
+- Use field names exactly as shown in the schema (case-sensitive, quote nested fields with dots)
+- Use `discover_metrics()` to find related metrics for correlation"""
+            else:
+                next_steps = f"""**Next Steps**:
+- To see complete schema with ALL fields, call: `discover_datasets(dataset_id="dataset_id")`
+- Then use `execute_opal_query()` with the dataset ID to query the data
+- Use `discover_metrics()` to find related metrics for analysis
+
+**Example**:
+```python
+# Step 1: Get full schema for dataset of interest
+discover_datasets(dataset_id="42160967")
+
+# Step 2: Use fields from schema in your query
+execute_opal_query(
+    query="filter error = true | limit 10",
+    primary_dataset_id="42160967"
+)
+```"""
+
             return f"""# Dataset Discovery Results
 
 **Query**: "{query}"
@@ -925,9 +979,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 {chr(10).join(formatted_results)}
 
 ---
-**Next Steps**:
-- Use `execute_opal_query()` with the dataset ID to query the data
-- Use `discover_metrics()` to find related metrics for analysis
+{next_steps}
 """
             
         finally:
@@ -956,7 +1008,7 @@ discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
 @trace_mcp_tool(tool_name="discover_metrics", record_args=True, record_result=False)
-async def discover_metrics(ctx: Context, query: str, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
+async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[str] = None, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
     """
     Discover observability metrics with intelligent categorization and complete usage guidance.
 
@@ -1088,11 +1140,58 @@ async def discover_metrics(ctx: Context, query: str, max_results: int = 20, cate
         conn = await asyncpg.connect(**db_config)
         
         try:
-            # Use the enhanced search function with trigram similarity
-            results = await conn.fetch("""
-                SELECT * FROM search_metrics_enhanced($1, $2, $3, $4, $5)
-            """, query, max_results, category_filter, technical_filter, 0.2)
-            
+            # Check for exact lookup by metric name
+            if metric_name is not None:
+                # Exact metric name lookup
+                semantic_logger.info(f"metric lookup by name | metric_name:{metric_name}")
+
+                results = await conn.fetch("""
+                    SELECT
+                        mi.id,
+                        mi.dataset_id::TEXT,
+                        mi.metric_name,
+                        mi.dataset_name,
+                        mi.metric_type,
+                        mi.description,
+                        mi.common_dimensions,
+                        mi.sample_dimensions,
+                        mi.value_type,
+                        mi.value_range,
+                        mi.data_frequency,
+                        mi.last_seen,
+                        mi.inferred_purpose,
+                        mi.typical_usage,
+                        mi.business_categories,
+                        mi.technical_category,
+                        mi.query_patterns,
+                        mi.common_fields,
+                        mi.nested_field_paths,
+                        mi.nested_field_analysis,
+                        1.0::REAL as rank,
+                        1.0::REAL as similarity_score
+                    FROM metrics_intelligence mi
+                    WHERE mi.metric_name = $1 AND mi.excluded = FALSE
+                    LIMIT 1
+                """, metric_name)
+
+                if not results:
+                    return f"""# Metric Lookup by Name
+
+**Metric Name**: `{metric_name}`
+**Result**: Not found
+
+**Possible reasons**:
+- Metric name does not exist
+- Metric has been excluded from search
+- Incorrect metric name (names are case-sensitive)
+
+**Suggestion**: Try using `discover_metrics("search term")` to find available metrics."""
+            else:
+                # Use the enhanced search function with trigram similarity
+                results = await conn.fetch("""
+                    SELECT * FROM search_metrics_enhanced($1, $2, $3, $4, $5)
+                """, query, max_results, category_filter, technical_filter, 0.2)
+
             if not results:
                 return f"""# Metrics Discovery Results
 
