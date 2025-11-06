@@ -223,10 +223,23 @@ def _process_response(response: httpx.Response) -> Dict[str, Any]:
     """
     if response.status_code >= 400:
         logger.warning(f"API error {response.status_code}: {response.text[:200]}")
+
+        # Try to parse JSON error response to extract the actual error message
+        try:
+            error_json = response.json()
+            logger.info(f"Parsed error JSON: {error_json}")
+            # Extract the actual error message for pattern matching
+            actual_error = error_json.get("message", response.text)
+            logger.info(f"Extracted error message: {actual_error}")
+        except json.JSONDecodeError as e:
+            # If not JSON, use the raw text
+            logger.info(f"JSON decode failed: {e}, using raw text")
+            actual_error = response.text
+
         return {
             "error": True,
             "status_code": response.status_code,
-            "message": f"Error from Observe API: {response.status_code} {response.text}"
+            "message": actual_error
         }
         
     content_type = response.headers.get("Content-Type", "")

@@ -16,9 +16,10 @@ from .client import make_observe_request
 from .config import validate_observe_config
 from .dataset_aliases import (
     validate_multi_dataset_query,
-    resolve_dataset_aliases, 
+    resolve_dataset_aliases,
     build_dataset_context
 )
+from .error_enhancement import enhance_api_error
 
 
 async def execute_opal_query(
@@ -124,7 +125,7 @@ async def execute_opal_query(
             timeout=timeout if timeout is not None else 30.0
         )
         
-        return _process_query_response(response)
+        return _process_query_response(response, query, primary_dataset_id)
         
     except Exception as e:
         import traceback
@@ -257,13 +258,15 @@ def _build_time_parameters(
     return params
 
 
-def _process_query_response(response: Dict[str, Any]) -> str:
+def _process_query_response(response: Dict[str, Any], query: str, dataset_id: str) -> str:
     """
     Process the query response and format it appropriately.
-    
+
     Args:
         response: API response dictionary
-        
+        query: The OPAL query that was executed
+        dataset_id: The dataset ID used in the query
+
     Returns:
         Formatted response string
     """
@@ -277,7 +280,11 @@ def _process_query_response(response: Dict[str, Any]) -> str:
     
     # Handle error responses
     if isinstance(response, dict) and response.get("error"):
-        return f"Error executing query: {response.get('message')}"
+        error_msg = response.get('message', 'Unknown error')
+        logger.info(f"Original error message: {error_msg[:200]}")
+        enhanced_msg = enhance_api_error(error_msg, query, dataset_id)
+        logger.info(f"Enhanced error message: {enhanced_msg[:200]}")
+        return f"Error executing query: {enhanced_msg}"
     
     # Handle paginated response (202 Accepted)
     if isinstance(response, dict) and response.get("content_type") == "text/html":
