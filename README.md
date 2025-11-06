@@ -8,6 +8,8 @@
 
 A Model Context Protocol (MCP) server that provides LLMs with intelligent access to [Observe](https://observeinc.com) platform data through semantic search, automated dataset discovery, and metrics intelligence.
 
+> **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
+
 ## What This Does
 
 This MCP server transforms how LLMs interact with observability data by providing intelligent discovery and search capabilities for the Observe platform. Instead of requiring users to know specific dataset names or metric structures, it enables natural language queries that automatically find relevant data sources and provide contextual analysis.
@@ -17,14 +19,15 @@ This MCP server transforms how LLMs interact with observability data by providin
 - **Metrics Intelligence**: Discover and understand metrics with automated categorization and usage guidance
 - **AI-Powered Documentation Search**: Gemini AI search with real-time access to docs.observeinc.com
 - **OPAL Query Execution**: Run queries against any Observe dataset with multi-dataset join support
+- **Intelligent Error Enhancement**: Contextual help for query errors with actionable suggestions and documentation links
+- **Comprehensive Query Validation**: 69 OPAL verbs, 286 functions, structural validation, and SQL→OPAL translation hints
 - **OpenTelemetry Integration**: Built-in Observe agent for collecting application telemetry data
 - **Always Current**: Documentation search queries live web content, no local archives needed
-
-> **⚠️ EXPERIMENTAL**: This is a community-built MCP server for testing and collaboration. A production version is available to Observe customers through official channels.
 
 ## Table of Contents
 
 - [Available Tools](#available-tools)
+- [Query Intelligence & Validation](#query-intelligence--validation)
 - [Quick Start](#quick-start)
 - [Remote Deployment with Nginx](#remote-deployment-with-nginx)
 - [Architecture](#architecture)
@@ -47,12 +50,30 @@ The server provides **4 intelligent tools** for Observe platform interaction:
 
 Each tool includes authentication validation, error handling, and structured result formatting optimized for LLM consumption.
 
+## Query Intelligence & Validation
+
+The server includes comprehensive OPAL query validation and intelligent error enhancement to help users write correct queries faster.
+
+### Query Validation and Error Enhancement
+
+Multi-layer validation catches errors before they reach the API:
+
+- **Structural Validation**: Balanced delimiters, quote matching, complexity limits, nesting depth checks
+- **Verb Validation**: All 69 OPAL verbs validated across piped query sequences
+- **Function Validation**: 286 OPAL functions with nested and multiple function support
+- **Pattern Detection**: Common mistakes like SQL-style sort syntax, m() outside align verb
+- **Translation Hints**: SQL→OPAL suggestions for 11 common SQL functions that don't exist in OPAL
+
+### Intelligent Error Enhancement
+
+When queries fail, the system provides contextual help with actionable suggestions. This significantly reduces error recovery for typical OPAL queries by providing immediate, context-aware guidance exactly when users need it.
+
 ## Quick Start
 
 ### Prerequisites
 
 - **Docker & Docker Compose** (recommended approach)
-- **Python 3.11+** (for manual installation)
+- **Python 3.13+** (for manual installation)
 - **Observe API credentials** (customer ID and token)
 
 ### 1. Clone and Configure
@@ -224,6 +245,8 @@ graph TB
 |-----------|------------|---------|
 | **MCP Server** | FastAPI + MCP Protocol | Tool definitions and request handling |
 | **Observe Integration** | Python asyncio + Observe API | Dataset queries and metadata access |
+| **Query Validation** | Pattern Matching + Rule Engine | 69 verbs, 286 functions, structural validation |
+| **Error Enhancement** | Regex Pattern Matching | Contextual help with actionable suggestions |
 | **Documentation Search** | Gemini AI + Google Search | Real-time web search against docs.observeinc.com |
 | **Intelligence Systems** | PostgreSQL + Rule-based Analysis | Dataset and metrics discovery with categorization |
 | **OpenTelemetry Collector** | OTEL Collector Contrib | Application telemetry collection and forwarding |
@@ -507,4 +530,6 @@ This project demonstrates modern approaches to LLM-native observability tooling.
 - Self-contained (minimal external dependencies)
 - Fast (< 2 second response times)
 - Intelligent (automated categorization and discovery)
-- Reliable (comprehensive error handling)
+- Reliable (comprehensive error handling and validation)
+- Secure (input validation, DoS prevention, comprehensive query validation)
+- User-friendly (contextual error messages with actionable guidance)
