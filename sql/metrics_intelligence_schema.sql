@@ -196,9 +196,27 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
     cleaned_query TEXT;
+    or_query TEXT;
 BEGIN
     -- Clean and normalize query
     cleaned_query := unaccent(lower(trim(search_query)));
+
+    -- Convert query to OR format for full-text search
+    -- Split on whitespace and join with ' | ' for OR logic
+    -- Also handle special tsquery characters by using quote_literal
+    or_query := (
+        SELECT string_agg(word, ' | ')
+        FROM (
+            SELECT DISTINCT regexp_replace(word, '[^a-zA-Z0-9]', '', 'g') AS word
+            FROM regexp_split_to_table(search_query, '\s+') AS word
+            WHERE regexp_replace(word, '[^a-zA-Z0-9]', '', 'g') != ''
+        ) AS words
+    );
+
+    -- Fallback to original query if processing fails
+    IF or_query IS NULL OR or_query = '' THEN
+        or_query := search_query;
+    END IF;
 
     RETURN QUERY
     WITH fulltext_results AS (
@@ -218,12 +236,12 @@ BEGIN
             m.value_range,
             m.data_frequency,
             m.last_seen,
-            ts_rank(m.search_vector, plainto_tsquery('english', search_query)) AS rank,
+            ts_rank(m.search_vector, to_tsquery('english', or_query)) AS rank,
             0.0::REAL AS similarity_score
         FROM metrics_intelligence m
         WHERE
             excluded = FALSE
-            AND m.search_vector @@ plainto_tsquery('english', search_query)
+            AND m.search_vector @@ to_tsquery('english', or_query)
             AND (category_filter IS NULL OR m.business_categories ? category_filter)
             AND (technical_filter IS NULL OR m.technical_category = technical_filter)
     ),

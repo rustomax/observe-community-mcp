@@ -166,9 +166,18 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
       | timechart count(), group_by(string(resource_attributes."k8s.namespace.name"))
 
     METRICS: align → aggregate → [filter]
-      # Metric aggregation
+      # Basic metric aggregation (use discover_metrics to find metric names)
       align 5m, errors:sum(m("<METRIC_NAME>"))
       | aggregate total_errors:sum(errors), group_by(service_name)
+      | filter total_errors > 10
+      | sort desc(total_errors)
+
+      # P95/P99 latency with tdigest (for duration/latency metrics)
+      align 5m, combined:tdigest_combine(m_tdigest("<TDIGEST_METRIC_NAME>"))
+      | aggregate agg:tdigest_combine(combined), group_by(service_name)
+      | make_col p95:tdigest_quantile(agg, 0.95), p99:tdigest_quantile(agg, 0.99)
+      | make_col p95_ms:p95/1000000
+      | sort desc(p95_ms)
 
     FIELD QUOTING (Field names with dots):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -520,6 +529,33 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
     """
     Discover datasets and get complete schema information for OPAL queries.
 
+    DATASET INTERFACES - IMPORTANT
+    ═══════════════════════════════════════════════════════════════════════
+    This tool finds datasets with LOG, SPAN, and RESOURCE interfaces.
+
+    ❌ NOT for datasets with METRIC interface (time-series data)
+       → Use discover_metrics() for metric datasets
+
+    Observe Dataset Interfaces:
+    • LOG interface (this tool): Event datasets for log analysis
+      - Query: Standard OPAL (filter, make_col, statsby)
+      - Examples: Kubernetes Logs, SSH Logs, Span Events
+
+    • SPAN interface (this tool): Interval datasets for distributed tracing
+      - Query: Standard OPAL with duration/span fields
+      - Examples: OpenTelemetry Span, trace analysis
+
+    • RESOURCE datasets (this tool): State tracking for entities
+      - Query: Standard OPAL
+      - Examples: Service maps, database resources, user sessions
+
+    • METRIC interface (discover_metrics): Event datasets with numeric time-series
+      - Query: align + m() + aggregate (required)
+      - Examples: Prometheus Metrics, Service Metrics, CPU/memory over time
+
+    This separation reflects how OPAL queries different dataset interfaces.
+    ═══════════════════════════════════════════════════════════════════════
+
     Returns dataset ID + EXACT field names needed for execute_opal_query().
 
     WHAT YOU GET:
@@ -642,10 +678,15 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
 
 **Possible reasons**:
 - Dataset ID does not exist
+- Dataset is a metric dataset (has metric interface)
 - Dataset has been excluded from search
 - Incorrect dataset ID format
 
-**Suggestion**: Try using `discover_datasets("search term")` to find available datasets."""
+**Next steps**:
+- For logs/traces/spans/resources: Try `discover_datasets("search term")`
+- For time-series metrics (CPU, memory, request rates): Try `discover_metrics("metric keywords")`
+
+**Note**: Metric datasets like "Kubernetes Explorer/Prometheus Metrics" require discover_metrics() due to their metric interface."""
 
             elif dataset_name is not None:
                 # Exact dataset name lookup
@@ -970,6 +1011,53 @@ execute_opal_query(
 )
 ```"""
 
+            # Cross-search: Check if there are related metrics
+            cross_search_section = ""
+            if query and not is_detail_mode:  # Only for search mode, not exact lookups
+                try:
+                    # Search for related metrics with same query
+                    metric_results = await conn.fetch("""
+                        SELECT
+                            mi.metric_name,
+                            mi.dataset_id::TEXT,
+                            mi.dataset_name,
+                            mi.inferred_purpose,
+                            mi.business_categories,
+                            mi.technical_category,
+                            ts_rank(mi.search_vector, plainto_tsquery('english', $1)) as rank
+                        FROM metrics_intelligence mi
+                        WHERE mi.excluded = FALSE
+                          AND mi.search_vector @@ plainto_tsquery('english', $1)
+                        ORDER BY rank DESC
+                        LIMIT 3
+                    """, query)
+
+                    if metric_results:
+                        total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE AND search_vector @@ plainto_tsquery('english', $1)", query)
+
+                        metric_preview = "\n".join([
+                            f"{i+1}. **{row['metric_name']}** ({', '.join(json.loads(row['business_categories']) if row['business_categories'] else [])} / {row['technical_category']})"
+                            for i, row in enumerate(metric_results[:3])
+                        ])
+
+                        cross_search_section = f"""
+---
+
+💡 **ALSO FOUND {total_metrics} RELATED METRICS**:
+
+{metric_preview}
+
+📊 **View all {total_metrics} metrics**: `discover_metrics("{query}")`
+
+💭 **What's the difference?**
+   • **Datasets** = Individual events with full context (logs, traces, spans)
+   • **Metrics** = Numeric trends over time (CPU %, error counts, latency)
+
+"""
+                except Exception as e:
+                    # Silently skip cross-search if it fails
+                    semantic_logger.debug(f"Cross-search to metrics failed: {e}")
+
             return f"""# Dataset Discovery Results
 
 **Query**: "{query}"
@@ -977,7 +1065,7 @@ execute_opal_query(
 **Search Scope**: {total_datasets} total datasets | Top categories: {category_summary}
 
 {chr(10).join(formatted_results)}
-
+{cross_search_section}
 ---
 {next_steps}
 """
@@ -1012,6 +1100,31 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
     """
     Discover observability metrics with intelligent categorization and complete usage guidance.
 
+    METRIC INTERFACE DATASETS - IMPORTANT
+    ═══════════════════════════════════════════════════════════════════════
+    This tool finds datasets with the METRIC interface (time-series data).
+
+    ❌ NOT for datasets with LOG or SPAN interfaces
+       → Use discover_datasets() for logs, traces, resources, sessions
+
+    Observe Dataset Interfaces:
+    • METRIC interface (this tool): Time-series numeric measurements
+      - Query: align + m() + aggregate (required)
+      - Dataset examples: "Kubernetes Explorer/Prometheus Metrics"
+      - Metric examples: CPU %, request rates, latency percentiles
+
+    • LOG interface (discover_datasets): Event data for log analysis
+      - Query: Standard OPAL (filter, make_col, statsby)
+      - Examples: Kubernetes Logs, error messages, audit events
+
+    • SPAN interface (discover_datasets): Distributed tracing intervals
+      - Query: Standard OPAL with span/duration fields
+      - Examples: OpenTelemetry spans, trace analysis
+
+    Metric datasets are Event datasets with interface "metric" applied,
+    optimized for time-series queries using align+m()+aggregate pattern.
+    ═══════════════════════════════════════════════════════════════════════
+
     This tool searches through 491+ analyzed metrics and returns comprehensive information
     including dataset IDs, dimensions, value ranges, and query patterns.
 
@@ -1019,6 +1132,78 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
     ═════════════════════════════
     ALL metric queries MUST use: align + m() + aggregate
     You CANNOT filter or aggregate metrics directly - see execute_opal_query() for pattern.
+
+    ESSENTIAL QUERY EXAMPLES
+    ═════════════════════════════
+    Follow this 2-step workflow for all metric queries:
+
+    Example 1: Basic CPU Usage Over Time
+    -------------------------------------
+    # Step 1: Discover the metric and get dataset_id
+    result = discover_metrics("cpu usage")
+    # From result, extract: metric_name and dataset_id
+    # Example result might show: k8s_pod_cpu_usage_nanocores, dataset_id: "..."
+
+    # Step 2: Query using the discovered metric_name and dataset_id
+    execute_opal_query(
+        query='''
+            align 5m, cpu:avg(m("METRIC_NAME_FROM_STEP1"))
+            | aggregate avg_cpu:avg(cpu), max_cpu:max(cpu), group_by(pod_name)
+            | filter avg_cpu > 1000000000
+            | sort desc(avg_cpu)
+            | limit 10
+        ''',
+        primary_dataset_id="DATASET_ID_FROM_STEP1",
+        time_range="1h"
+    )
+
+    Example 2: Error Rate by Service
+    ---------------------------------
+    # Step 1: Find error metrics and dimensions
+    result = discover_metrics("error rate")
+    # Check "Dimensions" section for available group_by fields (service_name, etc.)
+
+    # Step 2: Query error counts with discovered metric
+    execute_opal_query(
+        query='''
+            align 5m, errors:sum(m("METRIC_NAME_FROM_STEP1"))
+            | aggregate total_errors:sum(errors), group_by(service_name, status_code)
+            | filter total_errors > 10
+            | sort desc(total_errors)
+        ''',
+        primary_dataset_id="DATASET_ID_FROM_STEP1",
+        time_range="1h"
+    )
+
+    Example 3: P95/P99 Latency (Tdigest Quantiles)
+    -----------------------------------------------
+    # Step 1: Find latency/duration metrics (look for tdigest types)
+    result = discover_metrics("latency duration")
+    # Look for metrics with "tdigest" in name or description
+
+    # Step 2: Query percentiles using tdigest functions
+    execute_opal_query(
+        query='''
+            align 5m, combined:tdigest_combine(m_tdigest("METRIC_NAME_FROM_STEP1"))
+            | aggregate agg:tdigest_combine(combined), group_by(service_name)
+            | make_col p50:tdigest_quantile(agg, 0.50),
+                       p95:tdigest_quantile(agg, 0.95),
+                       p99:tdigest_quantile(agg, 0.99)
+            | make_col p95_ms:p95/1000000, p99_ms:p99/1000000
+            | sort desc(p95_ms)
+        ''',
+        primary_dataset_id="DATASET_ID_FROM_STEP1",
+        time_range="1h"
+    )
+
+    COMMON MISTAKES TO AVOID:
+    ❌ filter m("metric_name") > 100           # m() only works inside align
+    ❌ statsby sum(m("metric_name"))           # Must use align + aggregate
+    ❌ align 5m, value:m("metric")             # Missing aggregation function
+    ❌ aggregate sum(value)                    # Must have align before aggregate
+
+    ✅ align 5m, value:avg(m("metric_name"))   # Correct: align + aggregation
+       | aggregate total:sum(value)            # Then aggregate across dimensions
 
     METRICS-SPECIFIC GUIDANCE
     ═════════════════════════════
@@ -1353,6 +1538,53 @@ execute_opal_query(
 )
 ```"""
 
+            # Cross-search: Check if there are related datasets
+            cross_search_section = ""
+            if query and not is_detail_mode:  # Only for search mode, not exact lookups
+                try:
+                    # Search for related datasets with same query
+                    dataset_results = await conn.fetch("""
+                        SELECT
+                            di.dataset_id::TEXT,
+                            di.dataset_name,
+                            di.inferred_purpose,
+                            di.business_categories,
+                            di.technical_category,
+                            di.interface_types,
+                            ts_rank(di.search_vector, plainto_tsquery('english', $1)) as rank
+                        FROM datasets_intelligence di
+                        WHERE di.excluded = FALSE
+                          AND di.search_vector @@ plainto_tsquery('english', $1)
+                        ORDER BY rank DESC
+                        LIMIT 3
+                    """, query)
+
+                    if dataset_results:
+                        total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE AND search_vector @@ plainto_tsquery('english', $1)", query)
+
+                        dataset_preview = "\n".join([
+                            f"{i+1}. **{row['dataset_name']}** ({', '.join(json.loads(row['business_categories']) if row['business_categories'] else [])} / {row['technical_category']}) - Interfaces: {', '.join(row['interface_types']) if row['interface_types'] else 'unknown'}"
+                            for i, row in enumerate(dataset_results[:3])
+                        ])
+
+                        cross_search_section = f"""
+---
+
+💡 **ALSO FOUND {total_datasets} RELATED DATASETS**:
+
+{dataset_preview}
+
+📊 **View all {total_datasets} datasets**: `discover_datasets("{query}")`
+
+💭 **What's the difference?**
+   • **Metrics** = Numeric trends over time (CPU %, error counts, latency)
+   • **Datasets** = Individual events with full context (logs, traces, spans)
+
+"""
+                except Exception as e:
+                    # Silently skip cross-search if it fails
+                    semantic_logger.debug(f"Cross-search to datasets failed: {e}")
+
             return f"""# Metrics Discovery Results
 
 **Query**: "{query if query else metric_name}"
@@ -1360,7 +1592,7 @@ execute_opal_query(
 **Search Scope**: {total_metrics} total metrics | Top categories: {category_summary}
 
 {chr(10).join(formatted_results)}
-
+{cross_search_section}
 ---
 {next_steps}
 """

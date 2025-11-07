@@ -156,9 +156,27 @@ RETURNS TABLE (
 ) AS $$
 DECLARE
     cleaned_query TEXT;
+    or_query TEXT;
 BEGIN
     -- Clean and normalize query
     cleaned_query := unaccent(lower(trim(search_query)));
+
+    -- Convert query to OR format for full-text search
+    -- Split on whitespace and join with ' | ' for OR logic
+    -- Also handle special tsquery characters by using quote_literal
+    or_query := (
+        SELECT string_agg(word, ' | ')
+        FROM (
+            SELECT DISTINCT regexp_replace(word, '[^a-zA-Z0-9]', '', 'g') AS word
+            FROM regexp_split_to_table(search_query, '\s+') AS word
+            WHERE regexp_replace(word, '[^a-zA-Z0-9]', '', 'g') != ''
+        ) AS words
+    );
+
+    -- Fallback to original query if processing fails
+    IF or_query IS NULL OR or_query = '' THEN
+        or_query := search_query;
+    END IF;
 
     RETURN QUERY
     WITH fulltext_results AS (
@@ -176,12 +194,12 @@ BEGIN
             di.nested_field_analysis,
             di.common_use_cases,
             di.data_frequency::TEXT,
-            ts_rank(di.search_vector, plainto_tsquery('english', search_query)) AS rank,
+            ts_rank(di.search_vector, to_tsquery('english', or_query)) AS rank,
             0.0::REAL AS similarity_score
         FROM datasets_intelligence di
         WHERE
             excluded = FALSE
-            AND di.search_vector @@ plainto_tsquery('english', search_query)
+            AND di.search_vector @@ to_tsquery('english', or_query)
             AND (business_category_filter IS NULL OR di.business_categories ? business_category_filter)
             AND (technical_category_filter IS NULL OR di.technical_category = technical_category_filter)
             AND (interface_filter IS NULL OR interface_filter = ANY(di.interface_types))
@@ -228,9 +246,16 @@ BEGIN
         cr.dataset_id,
         cr.dataset_name,
         cr.inferred_purpose,
+        cr.typical_usage,
         cr.business_categories,
         cr.technical_category,
         cr.interface_types,
+        cr.key_fields,
+        cr.query_patterns,
+        cr.nested_field_paths,
+        cr.nested_field_analysis,
+        cr.common_use_cases,
+        cr.data_frequency,
         cr.rank,
         cr.similarity_score
     FROM combined_results cr
@@ -244,14 +269,30 @@ $$ LANGUAGE plpgsql;
 -- Search vector trigger function
 CREATE OR REPLACE FUNCTION update_datasets_search_vector()
 RETURNS TRIGGER AS $$
+DECLARE
+    important_fields_text TEXT;
 BEGIN
-    NEW.search_vector = 
+    -- Extract important field names from nested_field_analysis
+    -- This makes datasets discoverable by their field names (e.g., "database" finds datasets with db.* fields)
+    -- Split field paths on dots to extract individual components (e.g., "attributes.db.name" → "attributes db name")
+    important_fields_text := '';
+    IF NEW.nested_field_analysis IS NOT NULL AND NEW.nested_field_analysis ? 'important_fields' THEN
+        SELECT string_agg(
+            regexp_replace(field_name, '[._]', ' ', 'g'),  -- Replace dots and underscores with spaces
+            ' '
+        )
+        INTO important_fields_text
+        FROM jsonb_array_elements_text(NEW.nested_field_analysis->'important_fields') AS field_name;
+    END IF;
+
+    NEW.search_vector =
         setweight(to_tsvector('english', COALESCE(NEW.dataset_name, '')), 'A') ||
         setweight(to_tsvector('english', COALESCE(NEW.inferred_purpose, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(NEW.typical_usage, '')), 'C') ||
         setweight(to_tsvector('english', COALESCE(array_to_string(ARRAY(SELECT jsonb_array_elements_text(NEW.business_categories)), ' '), '') || ' ' || COALESCE(NEW.technical_category, '')), 'B') ||
         setweight(to_tsvector('english', COALESCE(array_to_string(NEW.interface_types, ' '), '')), 'D') ||
-        setweight(to_tsvector('english', COALESCE(array_to_string(NEW.common_use_cases, ' '), '')), 'C');
+        setweight(to_tsvector('english', COALESCE(array_to_string(NEW.common_use_cases, ' '), '')), 'C') ||
+        setweight(to_tsvector('english', COALESCE(important_fields_text, '')), 'D');
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
