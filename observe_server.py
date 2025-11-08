@@ -129,7 +129,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
     MANDATORY 2-STEP WORKFLOW (Skipping Step 1 = "field not found" errors):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Step 1: discover("search term") → Get dataset_id + EXACT field names + dimensions
+    Step 1: discover_context("search term") → Get dataset_id + EXACT field names + dimensions
     Step 2: execute_opal_query(query, dataset_id) → Use ONLY fields from Step 1
 
     CRITICAL: METRICS REQUIRE SPECIAL SYNTAX
@@ -166,7 +166,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
       | timechart count(), group_by(string(resource_attributes."k8s.namespace.name"))
 
     METRICS: align → aggregate → [filter]
-      # Basic metric aggregation (use discover() to find metric names + dimensions)
+      # Basic metric aggregation (use discover_context() to find metric names + dimensions)
       align 5m, errors:sum(m("<METRIC_NAME>"))
       | aggregate total_errors:sum(errors), group_by(service_name)
       | filter total_errors > 10
@@ -208,7 +208,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     Text Search: field ~ keyword (single token), field ~ <word1 word2> (multiple tokens, AND)
     OR Search: contains(field,"w1") or contains(field,"w2")
 
-    TIME UNITS (Check sample values in discover()):
+    TIME UNITS (Check sample values in discover_context()):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     No suffix (timestamp, duration) = NANOSECONDS → divide by 1M for ms
     With suffix (_ms, _s) = as labeled
@@ -222,7 +222,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     sort -field → Use: sort desc(field)
     SQL CASE/WHEN → Use: if(condition, true_val, false_val)
 
-    EXAMPLES (Replace <FIELD> with actual names from discover()):
+    EXAMPLES (Replace <FIELD> with actual names from discover_context()):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Basic search
     filter <BODY_FIELD> ~ error | limit 10
@@ -284,7 +284,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     Args:
         query: OPAL query (use syntax reference above)
         dataset_id: DEPRECATED - use primary_dataset_id
-        primary_dataset_id: Dataset ID from discover() (searches both datasets and metrics)
+        primary_dataset_id: Dataset ID from discover_context() (searches both datasets and metrics)
         secondary_dataset_ids: JSON array for joins: '["44508111"]'
         dataset_aliases: JSON object for joins: '{"volumes": "44508111"}'
         time_range: "1h", "24h", "7d", "30d"
@@ -545,8 +545,8 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-@trace_mcp_tool(tool_name="discover", record_args=True, record_result=False)
-async def discover(
+@trace_mcp_tool(tool_name="discover_context", record_args=True, record_result=False)
+async def discover_context(
     ctx: Context,
     query: str = "",
     dataset_id: Optional[str] = None,
@@ -564,12 +564,12 @@ async def discover(
     ⚠️ CRITICAL: 2-PHASE WORKFLOW REQUIRED ⚠️
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Phase 1: SEARCH MODE (lightweight browsing)
-      discover("error service") → Returns names, IDs, purposes
+      discover_context("error service") → Returns names, IDs, purposes
       NO field names, NO dimensions shown - context efficient!
 
     Phase 2: DETAIL MODE (complete schema) - ⚠️ REQUIRED BEFORE QUERIES
-      discover(dataset_id="...") → ALL fields with types and samples
-      discover(metric_name="...") → ALL dimensions with cardinality
+      discover_context(dataset_id="...") → ALL fields with types and samples
+      discover_context(metric_name="...") → ALL dimensions with cardinality
       This phase is MANDATORY before writing any queries!
 
     YOU MUST COMPLETE PHASE 2 BEFORE CALLING execute_opal_query()!
@@ -610,17 +610,17 @@ async def discover(
 
     Examples:
         # PHASE 1: Search mode (browse available options)
-        discover("error service")          # See what exists
-        discover("latency", result_type="metric")  # Only metrics
-        discover("kubernetes", business_category_filter="Infrastructure")
+        discover_context("error service")          # See what exists
+        discover_context("latency", result_type="metric")  # Only metrics
+        discover_context("kubernetes", business_category_filter="Infrastructure")
 
         # PHASE 2: Detail mode (REQUIRED before queries - get complete schema)
-        discover(dataset_id="42161740")    # ALL fields for this dataset
-        discover(metric_name="span_error_count_5m")  # ALL dimensions for this metric
+        discover_context(dataset_id="42161740")    # ALL fields for this dataset
+        discover_context(metric_name="span_error_count_5m")  # ALL dimensions for this metric
 
         # Typical workflow:
-        # 1. discover("errors") → browse options
-        # 2. discover(dataset_id="42161740") → get field list
+        # 1. discover_context("errors") → browse options
+        # 2. discover_context(dataset_id="42161740") → get field list
         # 3. execute_opal_query(...) → write query with correct fields
 
     Performance:
@@ -830,9 +830,9 @@ async def discover(
 
 **Examples**:
 ```python
-discover("error service")
-discover(dataset_id="42161740")
-discover(metric_name="span_error_count_5m")
+discover_context("error service")
+discover_context(dataset_id="42161740")
+discover_context(metric_name="span_error_count_5m")
 ```"""
 
             # Check if we found anything
@@ -857,9 +857,9 @@ discover(metric_name="span_error_count_5m")
 
 **Examples**:
 ```python
-discover("error")          # Broad search
-discover("kubernetes")     # Infrastructure search
-discover("latency")        # Performance metrics
+discover_context("error")          # Broad search
+discover_context("kubernetes")     # Infrastructure search
+discover_context("latency")        # Performance metrics
 ```"""
 
             # Format results
@@ -918,7 +918,7 @@ discover("latency")        # Performance metrics
 """)
             else:
                 output_parts.append(f"""
-💡 **Remember**: Get complete schema before querying → `discover(dataset_id="...")` or `discover(metric_name="...")`
+💡 **Remember**: Get complete schema before querying → `discover_context(dataset_id="...")` or `discover_context(metric_name="...")`
 """)
 
             result = "\n".join(output_parts)

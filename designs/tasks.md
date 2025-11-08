@@ -226,7 +226,7 @@ This auto-fix addresses the **#1 pain point from real-world usage**.
 ## Implementation Summary
 
 **What We Built:**
-A unified `discover()` tool with **2-phase workflow** that replaces both `discover_datasets()` and `discover_metrics()`, using Option C architecture for maximum context efficiency.
+A unified `discover_context()` tool with **2-phase workflow** that replaces both `discover_datasets()` and `discover_metrics()`, using Option C architecture for maximum context efficiency.
 
 **Architecture: Option C - Minimal Search + Mandatory Detail Lookup**
 
@@ -282,13 +282,13 @@ From reflection-02.md (line 616):
    - Both return dataset IDs, field information, query patterns
    - Duplication and inconsistency in presentation
 
-## Proposed Solution: Unified `discover()` Tool
+## Proposed Solution: Unified `discover_context()` Tool
 
 ### Design
 
 **Single Tool Signature:**
 ```python
-discover(
+discover_context(
     query: str = "",                    # Search query (required if no dataset_id/name)
     dataset_id: Optional[str] = None,   # Exact dataset ID for fast lookup
     dataset_name: Optional[str] = None, # Exact dataset name for lookup
@@ -417,7 +417,7 @@ Three options were evaluated:
 5. Most discovery sessions browse multiple options, only use 1-2
 
 ### Phase 2: Backend Implementation ✅ COMPLETED (2025-11-08)
-- [x] Create new `discover()` tool in `observe_server.py`
+- [x] Create new `discover_context()` tool in `observe_server.py`
 - [x] Move dataset discovery logic from `discover_datasets()`
 - [x] Move metric discovery logic from `discover_metrics()`
 - [x] Implement unified result formatting
@@ -426,7 +426,7 @@ Three options were evaluated:
 - [x] Generate example queries for both types
 
 **Implementation Details:**
-- New `discover()` tool: Lines 546-965 in observe_server.py
+- New `discover_context()` tool: Lines 546-965 in observe_server.py
 - 4 helper formatting functions: _format_dataset_summary, _format_dataset_detail, _format_metric_summary, _format_metric_detail
 - Unified response with visual separation (📊 Datasets vs 📈 Metrics)
 - Dimension cardinality shown for metrics (e.g., "service_name (50 unique values)")
@@ -441,7 +441,7 @@ Three options were evaluated:
 **Test Results**: 3/3 PASSED (100% success rate)
 
 **Test 1: Minimal Search Mode**
-- Query: `discover("error service", max_results=5)`
+- Query: `discover_context("error service", max_results=5)`
 - Result: 5 datasets + 5 metrics
 - Each result: ~8 lines (name, ID, category, purpose, relevance)
 - ✅ NO dimensions shown for metrics
@@ -450,7 +450,7 @@ Three options were evaluated:
 - ✅ Strong warning about REQUIRED next step
 
 **Test 2: Detail Mode for Metrics**
-- Query: `discover(metric_name="otelcol_scraper_errored_metric_points_total")`
+- Query: `discover_context(metric_name="otelcol_scraper_errored_metric_points_total")`
 - Result: Complete metric schema
 - ✅ ALL 31 dimensions listed with names
 - ✅ Cardinality shown (when available)
@@ -458,7 +458,7 @@ Three options were evaluated:
 - ✅ Mode indicator: "Detail (Complete Schema)"
 
 **Test 3: Detail Mode for Datasets**
-- Query: `discover(dataset_id="42161740")`
+- Query: `discover_context(dataset_id="42161740")`
 - Result: Complete dataset schema
 - ✅ ALL fields listed (top-level + nested)
 - ✅ Sample values shown
@@ -481,7 +481,7 @@ Three options were evaluated:
 
 **Files Modified:**
 - `observe_server.py`: Removed 1105 lines (2264→1159 lines)
-- `src/observe/error_enhancement.py`: Updated 4 error message references to use `discover()`
+- `src/observe/error_enhancement.py`: Updated 4 error message references to use `discover_context()`
 - `README.md`: Updated from 4 tools → 3 tools, added unified discovery description
 
 **Cleanup Summary:**

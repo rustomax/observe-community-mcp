@@ -41,7 +41,7 @@ This MCP server transforms how LLMs interact with observability data by providin
 The server provides **3 intelligent tools** for Observe platform interaction:
 
 ### 🔍 Discovery & Search
-- **`discover`**: Unified discovery tool for both datasets and metrics - shows dimensions, schemas, and query templates in one search. Addresses the #1 user pain point: "eliminate dimension guessing!"
+- **`discover_context`**: Unified discovery tool for both datasets and metrics - shows dimensions, schemas, and query templates in one search. Addresses the #1 user pain point: "eliminate dimension guessing!"
 - **`get_relevant_docs`**: Search Observe documentation using Gemini AI with real-time web access to docs.observeinc.com
 
 ### ⚡ Query Execution
