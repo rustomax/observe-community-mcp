@@ -307,10 +307,16 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     validate_input_size(secondary_dataset_ids, "secondary_dataset_ids", 100 * 1024)  # 100KB max for JSON
     validate_input_size(dataset_aliases, "dataset_aliases", 100 * 1024)  # 100KB max for JSON
 
-    # Validate OPAL query structure (H-INPUT-1)
-    is_valid, error_message = validate_opal_query_structure(query)
-    if not is_valid:
-        return f"OPAL Query Validation Error: {error_message}"
+    # Validate OPAL query structure and apply auto-fix transformations (H-INPUT-1)
+    validation_result = validate_opal_query_structure(query)
+    if not validation_result.is_valid:
+        return f"OPAL Query Validation Error: {validation_result.error_message}"
+
+    # Use transformed query if auto-fixes were applied
+    original_query = query
+    if validation_result.transformed_query:
+        opal_logger.info(f"Using auto-fixed query (applied {len(validation_result.transformations)} transformations)")
+        query = validation_result.transformed_query
 
     # Log the OPAL query operation with sanitized query (truncated for security)
     query_preview = query[:100] + "..." if len(query) > 100 else query
@@ -354,7 +360,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
             # Not a valid number, keep as-is (might be a valid format or will error downstream)
             pass
 
-    return await observe_execute_opal_query(
+    result = await observe_execute_opal_query(
         query=query,
         dataset_id=dataset_id,
         primary_dataset_id=primary_dataset_id,
@@ -366,6 +372,21 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
         format=format,
         timeout=timeout
     )
+
+    # Append transformation feedback if auto-fixes were applied at this level
+    # (Note: inner function may also apply transformations, which will have their own feedback)
+    if validation_result.transformations:
+        transformation_notes = "\n\n" + "="*60 + "\n"
+        transformation_notes += "AUTO-FIX APPLIED - Query Transformations\n"
+        transformation_notes += "="*60 + "\n\n"
+        for i, transformation in enumerate(validation_result.transformations, 1):
+            transformation_notes += f"{transformation}\n\n"
+        transformation_notes += "The query above was automatically corrected and executed successfully.\n"
+        transformation_notes += "Please use the corrected syntax in future queries.\n"
+        transformation_notes += "="*60
+        result = result + transformation_notes
+
+    return result
 
 
 

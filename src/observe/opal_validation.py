@@ -1,19 +1,117 @@
 """
-OPAL Query Validation
+OPAL Query Validation and Auto-Fixing
 
 Provides comprehensive validation for OPAL queries to catch errors early
-and prevent common mistakes that lead to empty results or API errors.
+and prevent common mistakes. Automatically fixes common patterns and provides
+educational feedback to help LLMs learn correct syntax over time.
 """
 
 import re
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+from dataclasses import dataclass
 
 
-def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
+@dataclass
+class ValidationResult:
+    """Result of OPAL query validation and transformation."""
+    is_valid: bool
+    transformed_query: Optional[str] = None  # None if no transformations applied
+    transformations: List[str] = None  # Descriptions of transformations
+    error_message: Optional[str] = None  # Error if validation failed
+
+    def __post_init__(self):
+        if self.transformations is None:
+            self.transformations = []
+
+
+def transform_multi_term_angle_brackets(query: str) -> Tuple[str, List[str]]:
     """
-    Validate OPAL query structure for security and correctness.
+    Auto-fix multi-term angle bracket syntax by converting to explicit OR logic.
 
-    This performs structural validation without full semantic parsing:
+    LLMs often write: filter body ~ <error exception fail>
+    Assuming OR semantics (any term matches).
+
+    But OPAL interprets this as AND (all terms must match).
+    This transformation converts to the assumed OR intent.
+
+    Examples:
+        Input:  filter body ~ <error exception>
+        Output: filter contains(body, "error") or contains(body, "exception")
+
+        Input:  filter message ~ <fail fatal panic>
+        Output: filter contains(message, "fail") or contains(message, "fatal") or contains(message, "panic")
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # Pattern to match: fieldname ~ <term1 term2 term3 ...>
+    # We need to capture:
+    # - The field (which could be complex like string(field) or resource_attributes.name)
+    # - The operator (~)
+    # - The multi-term angle bracket content
+
+    # Match pattern: field name followed by ~ followed by <multiple terms>
+    # Field name can be: word, dotted path, or function call like string(field)
+    # Terms inside <> cannot contain angle brackets or pipes (to avoid matching across multiple patterns)
+    # Use [^<>|]+ to match any chars except < > | , and make it non-greedy with +?
+    # Then require at least one space and more content to ensure multi-term
+    pattern = r'([\w.()\"]+)\s+~\s+<([^<>|]+)>'
+
+    def replace_func(match):
+        field = match.group(1)
+        terms_str = match.group(2).strip()
+        terms = terms_str.split()
+
+        # Only transform if there are multiple terms (single-term angle brackets are fine in OPAL)
+        if len(terms) <= 1:
+            return match.group(0)  # Return original, no transformation
+
+        # Build the contains() or chain
+        contains_exprs = [f'contains({field}, "{term}")' for term in terms]
+        or_chain = ' or '.join(contains_exprs)
+        # Wrap in parentheses to ensure correct precedence with pipeline operator
+        replacement = f'({or_chain})'
+
+        # Create educational feedback
+        terms_preview = ' '.join(terms[:3])
+        if len(terms) > 3:
+            terms_preview += f" ... ({len(terms)} terms total)"
+
+        transformations.append(
+            f"✓ Auto-fix applied: Multi-term angle bracket converted to OR logic\n"
+            f"  Original: {match.group(0)}\n"
+            f"  Fixed:    {replacement}\n"
+            f"  Reason: <{terms_preview}> uses AND semantics in OPAL (all must match).\n"
+            f"          Converted to explicit OR for typical intent (any matches).\n"
+            f"  Note: Use single-term syntax if you meant AND: filter {field} ~ {terms[0]} and {field} ~ {terms[1]}"
+        )
+
+        return replacement
+
+    transformed_query = re.sub(pattern, replace_func, query)
+
+    # Check if any transformations were made
+    if transformed_query != query:
+        return transformed_query, transformations
+    else:
+        return query, []
+
+
+def validate_opal_query_structure(query: str) -> ValidationResult:
+    """
+    Validate OPAL query structure and apply auto-fix transformations.
+
+    This performs:
+    1. Auto-fix transformations for common LLM mistakes
+    2. Structural validation without full semantic parsing
+    3. Educational feedback on what was changed and why
+
+    Transformations applied:
+    - Multi-term angle brackets: <error exception> → contains() OR logic
+
+    Validation checks:
     - Validates all verbs in piped sequences against whitelist
     - Checks balanced delimiters (prevents malformed queries)
     - Enforces complexity limits (prevents DoS)
@@ -21,14 +119,21 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
     The Observe API remains the authoritative validator for full semantics.
 
     Args:
-        query: OPAL query string to validate
+        query: OPAL query string to validate and transform
 
     Returns:
-        Tuple of (is_valid, error_message)
-
-    Raises:
-        ValueError: If query structure is invalid
+        ValidationResult with:
+        - is_valid: Whether query passed validation
+        - transformed_query: Auto-fixed query (None if no changes)
+        - transformations: List of transformation descriptions
+        - error_message: Error details if validation failed
     """
+    all_transformations = []
+
+    # Apply transformations before validation
+    # Transform 1: Multi-term angle brackets
+    query, angle_bracket_transforms = transform_multi_term_angle_brackets(query)
+    all_transformations.extend(angle_bracket_transforms)
     # Complete list of OPAL functions (288 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
         'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad',
@@ -135,23 +240,48 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
 
     # 1. Check for balanced parentheses, brackets, and braces
     if query.count('(') != query.count(')'):
-        return False, "Unbalanced parentheses in OPAL query"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message="Unbalanced parentheses in OPAL query"
+        )
     if query.count('[') != query.count(']'):
-        return False, "Unbalanced brackets in OPAL query"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message="Unbalanced brackets in OPAL query"
+        )
     if query.count('{') != query.count('}'):
-        return False, "Unbalanced braces in OPAL query"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message="Unbalanced braces in OPAL query"
+        )
 
     # 2. Check for balanced quotes (simplified - just count double quotes)
     # More sophisticated quote handling would require state machine
     double_quote_count = query.count('"')
     if double_quote_count % 2 != 0:
-        return False, "Unbalanced double quotes in OPAL query"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message="Unbalanced double quotes in OPAL query"
+        )
 
     # 3. Check query complexity (prevent DoS)
     MAX_OPERATIONS = 20
     operations = [op.strip() for op in query.split('|') if op.strip()]
     if len(operations) > MAX_OPERATIONS:
-        return False, f"Query too complex: {len(operations)} operations (max {MAX_OPERATIONS})"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message=f"Query too complex: {len(operations)} operations (max {MAX_OPERATIONS})"
+        )
 
     # 4. Check nesting depth (prevent stack overflow)
     MAX_NESTING = 10
@@ -164,7 +294,12 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
         elif char in ')}]':
             current_depth -= 1
     if max_depth > MAX_NESTING:
-        return False, f"Query nesting too deep: {max_depth} levels (max {MAX_NESTING})"
+        return ValidationResult(
+            is_valid=False,
+            transformed_query=query if all_transformations else None,
+            transformations=all_transformations,
+            error_message=f"Query nesting too deep: {max_depth} levels (max {MAX_NESTING})"
+        )
 
     # 5. Validate all verbs in the pipeline (not just the first one)
     for i, operation in enumerate(operations, 1):
@@ -178,10 +313,15 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
         if first_word not in ALLOWED_VERBS:
             similar_verbs = [v for v in ALLOWED_VERBS if v.startswith(first_word[:3])][:5]
             suggestion = f" Similar verbs: {', '.join(similar_verbs)}" if similar_verbs else ""
-            return False, (
-                f"Unknown OPAL verb '{first_word}' at position {i} in pipeline. "
-                f"Valid verbs include: filter, make_col, statsby, timechart, sort, etc.{suggestion} "
-                f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html)"
+            return ValidationResult(
+                is_valid=False,
+                transformed_query=query if all_transformations else None,
+                transformations=all_transformations,
+                error_message=(
+                    f"Unknown OPAL verb '{first_word}' at position {i} in pipeline. "
+                    f"Valid verbs include: filter, make_col, statsby, timechart, sort, etc.{suggestion} "
+                    f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALVerbs.html)"
+                )
             )
 
     # 6. Validate function calls (including nested functions)
@@ -194,15 +334,25 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
         if func_name not in ALLOWED_FUNCTIONS:
             # Check if it's a common SQL function with a hint
             if func_name in SQL_FUNCTION_HINTS:
-                return False, f"Unknown function '{func_name}()'. {SQL_FUNCTION_HINTS[func_name]}"
+                return ValidationResult(
+                    is_valid=False,
+                    transformed_query=query if all_transformations else None,
+                    transformations=all_transformations,
+                    error_message=f"Unknown function '{func_name}()'. {SQL_FUNCTION_HINTS[func_name]}"
+                )
             else:
                 # Provide helpful similar function suggestions
                 similar_funcs = [f for f in ALLOWED_FUNCTIONS if f.startswith(func_name[:3])][:5]
                 suggestion = f" Similar functions: {', '.join(similar_funcs)}" if similar_funcs else ""
-                return False, (
-                    f"Unknown function '{func_name}()'. "
-                    f"Valid OPAL functions: count, sum, avg, if, contains, string, parse_json, etc.{suggestion} "
-                    f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALFunctions.html)"
+                return ValidationResult(
+                    is_valid=False,
+                    transformed_query=query if all_transformations else None,
+                    transformations=all_transformations,
+                    error_message=(
+                        f"Unknown function '{func_name}()'. "
+                        f"Valid OPAL functions: count, sum, avg, if, contains, string, parse_json, etc.{suggestion} "
+                        f"(see https://docs.observeinc.com/en/latest/content/query-language-reference/ListOfOPALFunctions.html)"
+                    )
                 )
 
     # 7. Check for common SQL-style sort syntax (sort -field instead of sort desc(field))
@@ -211,38 +361,25 @@ def validate_opal_query_structure(query: str) -> Tuple[bool, Optional[str]]:
         # Check if this operation starts with "sort -" (after stripping whitespace)
         stripped_op = operation.strip()
         if re.match(r'^sort\s+-', stripped_op):
-            return False, (
-                "Invalid sort syntax. "
-                "OPAL uses 'sort desc(field)' not 'sort -field'. "
-                "Use: sort desc(field) for descending or sort asc(field) for ascending. "
-                "(see https://docs.observeinc.com/en/latest/content/query-language-reference/verbs/sort.html)"
+            return ValidationResult(
+                is_valid=False,
+                transformed_query=query if all_transformations else None,
+                transformations=all_transformations,
+                error_message=(
+                    "Invalid sort syntax. "
+                    "OPAL uses 'sort desc(field)' not 'sort -field'. "
+                    "Use: sort desc(field) for descending or sort asc(field) for ascending. "
+                    "(see https://docs.observeinc.com/en/latest/content/query-language-reference/verbs/sort.html)"
+                )
             )
 
-    # 8. Check for multi-term angle bracket syntax <term1 term2 ...> which uses AND logic
-    # LLMs often assume this is OR logic, leading to empty results
-    multi_term_pattern = re.compile(r'<\s*(\S+(?:\s+\S+)+)\s*>')
-    multi_term_matches = multi_term_pattern.findall(query)
+    # NOTE: Multi-term angle bracket syntax is now AUTO-FIXED above (transform_multi_term_angle_brackets)
+    # No longer blocking - we automatically convert to explicit OR logic
 
-    if multi_term_matches:
-        example_terms = multi_term_matches[0].split()[:2]  # Get first two terms as example
-        return False, (
-            f"⚠️ Multi-term angle bracket syntax detected: <{' '.join(example_terms)} ...>\n"
-            f"\n"
-            f"This probably doesn't do what you wanted:\n"
-            f"• In OPAL, <term1 term2> means 'term1 AND term2' (both must be present)\n"
-            f"• Most LLMs assume this means 'term1 OR term2' (either present)\n"
-            f"• This often results in empty query results\n"
-            f"\n"
-            f"Since we can't validate your intent, we're blocking this query.\n"
-            f"\n"
-            f"To fix, rewrite using explicit boolean logic:\n"
-            f"\n"
-            f"❌ Instead of: filter body ~ <{' '.join(example_terms)}>\n"
-            f"✅ For OR:     filter contains(body, \"{example_terms[0]}\") or contains(body, \"{example_terms[1]}\")\n"
-            f"✅ For AND:    filter contains(body, \"{example_terms[0]}\") and contains(body, \"{example_terms[1]}\")\n"
-            f"✅ Single term: filter body ~ {example_terms[0]}\n"
-            f"\n"
-            f"Single-term angle brackets are fine: filter body ~ <error> works correctly."
-        )
-
-    return True, None
+    # All validations passed
+    return ValidationResult(
+        is_valid=True,
+        transformed_query=query if all_transformations else None,
+        transformations=all_transformations,
+        error_message=None
+    )
