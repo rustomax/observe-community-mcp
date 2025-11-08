@@ -123,7 +123,7 @@ def enhance_field_error(match, query: str, dataset_id: str, schema_info: Optiona
         help_text += (
             f"\n\n🎯 Metrics Query Tip:"
             f"\n• After align/aggregate, dimensions move to the 'labels' object"
-            f"\n• Use discover_metrics() to see available dimensions for this metric"
+            f"\n• Use discover() to see available dimensions for this metric"
             f"\n• Filter on dimensions BEFORE aggregation for best results"
         )
 
@@ -135,12 +135,12 @@ def enhance_field_error(match, query: str, dataset_id: str, schema_info: Optiona
         if is_metrics_query:
             help_text += (
                 f"\n\n🔍 To see metric details (dimensions, value ranges, examples), run:"
-                f"\n   discover_metrics(\"{field_name}\")"
+                f"\n   discover(metric_name=\"{field_name}\")"
             )
         else:
             help_text += (
                 f"\n\n🔍 To see complete field details (types, samples, nested paths), run:"
-                f"\n   discover_datasets(dataset_id=\"{dataset_id}\")"
+                f"\n   discover(dataset_id=\"{dataset_id}\")"
             )
 
         # Common issues (only if not already covered by metrics-specific guidance)
@@ -266,12 +266,12 @@ def enhance_invalid_dataset_id_error(match, query: str, dataset_id: str) -> str:
         "\n• Dataset IDs must be numeric strings like '42161740'"
         "\n• To find valid dataset IDs:"
         "\n"
-        "\n  discover_datasets(query='your search term')"
+        "\n  discover(query='your search term')"
         "\n"
         "\n• Examples:"
-        "\n  - discover_datasets('kubernetes logs')"
-        "\n  - discover_datasets('error metrics')"
-        "\n  - discover_datasets(dataset_name='Kubernetes Explorer/Kubernetes Logs')"
+        "\n  - discover('kubernetes logs')"
+        "\n  - discover('error metrics')"
+        "\n  - discover(dataset_name='Kubernetes Explorer/Kubernetes Logs')"
     )
 
 

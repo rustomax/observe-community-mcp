@@ -138,7 +138,9 @@ def transform_redundant_time_filters(query: str, time_range: Optional[str] = Non
         'event_time',
         'eventTime',
         'observedTimestamp',
-        'OBSERVATION_TIME'
+        'OBSERVATION_TIME',
+        'start_time',      # OpenTelemetry span start time
+        'end_time'         # OpenTelemetry span end time
     ]
 
     # Pattern to match timestamp filters with @"..." syntax

@@ -129,7 +129,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
     MANDATORY 2-STEP WORKFLOW (Skipping Step 1 = "field not found" errors):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Step 1: discover_datasets("search term") → Get dataset_id + EXACT field names
+    Step 1: discover("search term") → Get dataset_id + EXACT field names + dimensions
     Step 2: execute_opal_query(query, dataset_id) → Use ONLY fields from Step 1
 
     CRITICAL: METRICS REQUIRE SPECIAL SYNTAX
@@ -166,7 +166,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
       | timechart count(), group_by(string(resource_attributes."k8s.namespace.name"))
 
     METRICS: align → aggregate → [filter]
-      # Basic metric aggregation (use discover_metrics to find metric names)
+      # Basic metric aggregation (use discover() to find metric names + dimensions)
       align 5m, errors:sum(m("<METRIC_NAME>"))
       | aggregate total_errors:sum(errors), group_by(service_name)
       | filter total_errors > 10
@@ -208,7 +208,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     Text Search: field ~ keyword (single token), field ~ <word1 word2> (multiple tokens, AND)
     OR Search: contains(field,"w1") or contains(field,"w2")
 
-    TIME UNITS (Check sample values in discover_datasets):
+    TIME UNITS (Check sample values in discover()):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     No suffix (timestamp, duration) = NANOSECONDS → divide by 1M for ms
     With suffix (_ms, _s) = as labeled
@@ -222,7 +222,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     sort -field → Use: sort desc(field)
     SQL CASE/WHEN → Use: if(condition, true_val, false_val)
 
-    EXAMPLES (Replace <FIELD> with actual names from discover_datasets):
+    EXAMPLES (Replace <FIELD> with actual names from discover()):
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # Basic search
     filter <BODY_FIELD> ~ error | limit 10
@@ -284,7 +284,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     Args:
         query: OPAL query (use syntax reference above)
         dataset_id: DEPRECATED - use primary_dataset_id
-        primary_dataset_id: Dataset ID from discover_datasets() or discover_metrics()
+        primary_dataset_id: Dataset ID from discover() (searches both datasets and metrics)
         secondary_dataset_ids: JSON array for joins: '["44508111"]'
         dataset_aliases: JSON object for joins: '{"volumes": "44508111"}'
         time_range: "1h", "24h", "7d", "30d"
@@ -545,106 +545,107 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-@trace_mcp_tool(tool_name="discover_datasets", record_args=True, record_result=False)
-async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[str] = None, dataset_name: Optional[str] = None, max_results: int = 15, business_category_filter: Optional[str] = None, technical_category_filter: Optional[str] = None, interface_filter: Optional[str] = None) -> str:
+@trace_mcp_tool(tool_name="discover", record_args=True, record_result=False)
+async def discover(
+    ctx: Context,
+    query: str = "",
+    dataset_id: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+    metric_name: Optional[str] = None,
+    result_type: Optional[str] = None,
+    max_results: int = 20,
+    business_category_filter: Optional[str] = None,
+    technical_category_filter: Optional[str] = None,
+    interface_filter: Optional[str] = None
+) -> str:
     """
-    Discover datasets and get complete schema information for OPAL queries.
+    Unified discovery tool for datasets and metrics in the Observe platform.
 
-    DATASET INTERFACES - IMPORTANT
-    ═══════════════════════════════════════════════════════════════════════
-    This tool finds datasets with LOG, SPAN, and RESOURCE interfaces.
+    ⚠️ CRITICAL: 2-PHASE WORKFLOW REQUIRED ⚠️
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    Phase 1: SEARCH MODE (lightweight browsing)
+      discover("error service") → Returns names, IDs, purposes
+      NO field names, NO dimensions shown - context efficient!
 
-    ❌ NOT for datasets with METRIC interface (time-series data)
-       → Use discover_metrics() for metric datasets
+    Phase 2: DETAIL MODE (complete schema) - ⚠️ REQUIRED BEFORE QUERIES
+      discover(dataset_id="...") → ALL fields with types and samples
+      discover(metric_name="...") → ALL dimensions with cardinality
+      This phase is MANDATORY before writing any queries!
 
-    Observe Dataset Interfaces:
-    • LOG interface (this tool): Event datasets for log analysis
-      - Query: Standard OPAL (filter, make_col, statsby)
-      - Examples: Kubernetes Logs, SSH Logs, Span Events
+    YOU MUST COMPLETE PHASE 2 BEFORE CALLING execute_opal_query()!
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    • SPAN interface (this tool): Interval datasets for distributed tracing
-      - Query: Standard OPAL with duration/span fields
-      - Examples: OpenTelemetry Span, trace analysis
+    WHY 2 PHASES?
+    • Context efficiency: Browse 20+ options without bloat
+    • Natural workflow: Search → Select → Detail → Query
+    • Complete information: Get full schemas only when needed
+    • Prevents errors: Field names verified before query construction
 
-    • RESOURCE datasets (this tool): State tracking for entities
-      - Query: Standard OPAL
-      - Examples: Service maps, database resources, user sessions
+    WHAT YOU GET IN EACH MODE:
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    • METRIC interface (discover_metrics): Event datasets with numeric time-series
-      - Query: align + m() + aggregate (required)
-      - Examples: Prometheus Metrics, Service Metrics, CPU/memory over time
+    SEARCH MODE (Phase 1):
+    📊 Datasets: Names, IDs, categories, purposes
+    📈 Metrics: Names, IDs, categories, purposes
+    ⛔ NOT included: Fields, dimensions, schemas (use Phase 2!)
 
-    This separation reflects how OPAL queries different dataset interfaces.
-    ═══════════════════════════════════════════════════════════════════════
-
-    Returns dataset ID + EXACT field names needed for execute_opal_query().
-
-    WHAT YOU GET:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    • Dataset ID (required for execute_opal_query)
-    • Top-level fields → Use directly: filter body ~ error
-    • Nested fields with dots → MUST quote: resource_attributes."k8s.namespace.name"
-    • Sample values → Check time field units (19 digits = nanoseconds, 13 = milliseconds)
-    • Query examples → Copy structure, replace field names
-
-    BEFORE CALLING execute_opal_query:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    1. Save dataset_id from results
-    2. Copy-paste exact field names (case-sensitive, don't retype!)
-    3. CRITICAL: Quote field names with dots: resource_attributes."k8s.namespace.name"
-    4. Check sample values for time units (no suffix = nanoseconds)
+    DETAIL MODE (Phase 2):
+    📊 Datasets: Complete field list with types, samples, nested paths
+    📈 Metrics: ALL dimensions with cardinality, value ranges, examples
+    ✅ Everything needed to write queries correctly
 
     Args:
-        query: Search query (e.g., "kubernetes logs", "error traces"). Optional if dataset_id/dataset_name provided.
-        dataset_id: Exact dataset ID for fast lookup (e.g., "42161740"). Returns only this dataset.
-        dataset_name: Exact dataset name for lookup (e.g., "Kubernetes Explorer/Kubernetes Logs"). Case-sensitive.
-        max_results: Maximum datasets for search queries (1-30, default: 15). Ignored for exact ID/name lookups.
-        business_category_filter: Filter by business category (Infrastructure, Application, Database, User, Security, etc.)
-        technical_category_filter: Filter by technical category (Logs, Metrics, Traces, Events, Resources, etc.)
-        interface_filter: Filter by interface type (log, metric, otel_span, etc.)
+        query: Search term (e.g., "error service", "kubernetes logs", "cpu usage")
+        dataset_id: Exact dataset ID for detailed lookup
+        dataset_name: Exact dataset name for lookup
+        metric_name: Exact metric name for detailed lookup
+        result_type: Filter results - "dataset", "metric", or None (both)
+        max_results: Maximum results to return (default: 20)
+        business_category_filter: Infrastructure, Application, Database, etc.
+        technical_category_filter: Logs, Metrics, Traces, Events, etc.
+        interface_filter: log, metric, otel_span, etc.
 
     Returns:
-        Formatted dataset information with COMPLETE SCHEMA including:
-        - Dataset ID and name for use with execute_opal_query()
-        - Purpose and typical usage patterns
-        - Top-level fields with types and sample values
-        - Nested field paths with proper access syntax
-        - Query pattern examples
-        - Time unit indicators for duration fields
+        Formatted results with clear sections for datasets and metrics
 
     Examples:
-        # Smart search
-        discover_datasets("kubernetes error logs")
+        # PHASE 1: Search mode (browse available options)
+        discover("error service")          # See what exists
+        discover("latency", result_type="metric")  # Only metrics
+        discover("kubernetes", business_category_filter="Infrastructure")
 
-        # Fast exact lookups
-        discover_datasets(dataset_id="42161740")
-        discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
+        # PHASE 2: Detail mode (REQUIRED before queries - get complete schema)
+        discover(dataset_id="42161740")    # ALL fields for this dataset
+        discover(metric_name="span_error_count_5m")  # ALL dimensions for this metric
 
-        # Filtered search
-        discover_datasets("performance", technical_category_filter="Metrics")
-        discover_datasets("application logs", business_category_filter="Application", max_results=5)
+        # Typical workflow:
+        # 1. discover("errors") → browse options
+        # 2. discover(dataset_id="42161740") → get field list
+        # 3. execute_opal_query(...) → write query with correct fields
 
     Performance:
-        - Search queries: 200-500ms
-        - Exact ID/name lookups: <100ms
+        - Search queries: 200-500ms, shows 10-20 results
+        - Detail lookups: <100ms, shows complete schemas
     """
     # Validate input sizes to prevent DoS attacks (H-INPUT-2)
-    validate_input_size(query, "query", 1024)  # 1KB max for search queries
-    validate_input_size(dataset_id, "dataset_id", 1024)  # 1KB max
-    validate_input_size(dataset_name, "dataset_name", 1024)  # 1KB max
-    validate_input_size(business_category_filter, "business_category_filter", 1024)  # 1KB max
-    validate_input_size(technical_category_filter, "technical_category_filter", 1024)  # 1KB max
-    validate_input_size(interface_filter, "interface_filter", 1024)  # 1KB max
+    validate_input_size(query, "query", 1024)
+    validate_input_size(dataset_id, "dataset_id", 1024)
+    validate_input_size(dataset_name, "dataset_name", 1024)
+    validate_input_size(metric_name, "metric_name", 1024)
+    validate_input_size(result_type, "result_type", 1024)
+    validate_input_size(business_category_filter, "business_category_filter", 1024)
+    validate_input_size(technical_category_filter, "technical_category_filter", 1024)
+    validate_input_size(interface_filter, "interface_filter", 1024)
 
     try:
         import asyncpg
         import json
         from typing import List, Dict, Any
 
-        # Log the semantic search operation
-        semantic_logger.info(f"dataset search | query:'{query}' | max_results:{max_results} | filters:{business_category_filter or technical_category_filter or interface_filter}")
+        # Log the discovery operation
+        semantic_logger.info(f"unified discovery | query:'{query}' | dataset_id:{dataset_id} | dataset_name:{dataset_name} | metric_name:{metric_name} | result_type:{result_type} | max_results:{max_results}")
 
-        # Database connection using individual parameters (same as working scripts)
+        # Database connection
         db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
         if not db_password:
             raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
@@ -657,19 +658,24 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
             'password': db_password
         }
 
-        # Validate parameters
-        max_results = min(max(1, max_results), 30)  # Clamp between 1 and 30
+        # Validate and normalize parameters
+        max_results = min(max(1, max_results), 50)
+        should_fetch_datasets = (result_type is None or result_type == "dataset")
+        should_fetch_metrics = (result_type is None or result_type == "metric")
 
-        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
+        # Connect to database
         conn = await asyncpg.connect(**db_config)
 
         try:
-            # Check for exact lookups by ID or name
-            if dataset_id is not None:
-                # Exact dataset ID lookup
-                semantic_logger.info(f"dataset lookup by ID | dataset_id:{dataset_id}")
+            dataset_results = []
+            metric_results = []
+            is_detail_mode = False
 
-                results = await conn.fetch("""
+            # EXACT LOOKUPS (Detail Mode)
+            if dataset_id is not None:
+                is_detail_mode = True
+                semantic_logger.info(f"exact dataset lookup | dataset_id:{dataset_id}")
+                dataset_results = await conn.fetch("""
                     SELECT
                         di.dataset_id::TEXT,
                         di.dataset_name::TEXT,
@@ -684,36 +690,15 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
                         di.nested_field_analysis,
                         di.common_use_cases,
                         di.data_frequency,
-                        di.excluded,
-                        1.0::REAL as rank,
-                        1.0::REAL as similarity_score
+                        1.0::REAL as rank
                     FROM datasets_intelligence di
                     WHERE di.dataset_id::TEXT = $1 AND di.excluded = FALSE
                 """, dataset_id)
 
-                if not results:
-                    return f"""# Dataset Lookup by ID
-
-**Dataset ID**: `{dataset_id}`
-**Result**: Not found
-
-**Possible reasons**:
-- Dataset ID does not exist
-- Dataset is a metric dataset (has metric interface)
-- Dataset has been excluded from search
-- Incorrect dataset ID format
-
-**Next steps**:
-- For logs/traces/spans/resources: Try `discover_datasets("search term")`
-- For time-series metrics (CPU, memory, request rates): Try `discover_metrics("metric keywords")`
-
-**Note**: Metric datasets like "Kubernetes Explorer/Prometheus Metrics" require discover_metrics() due to their metric interface."""
-
             elif dataset_name is not None:
-                # Exact dataset name lookup
-                semantic_logger.info(f"dataset lookup by name | dataset_name:{dataset_name}")
-
-                results = await conn.fetch("""
+                is_detail_mode = True
+                semantic_logger.info(f"exact dataset lookup | dataset_name:{dataset_name}")
+                dataset_results = await conn.fetch("""
                     SELECT
                         di.dataset_id::TEXT,
                         di.dataset_name::TEXT,
@@ -728,632 +713,16 @@ async def discover_datasets(ctx: Context, query: str = "", dataset_id: Optional[
                         di.nested_field_analysis,
                         di.common_use_cases,
                         di.data_frequency,
-                        di.excluded,
-                        1.0::REAL as rank,
-                        1.0::REAL as similarity_score
+                        1.0::REAL as rank
                     FROM datasets_intelligence di
                     WHERE di.dataset_name = $1 AND di.excluded = FALSE
                 """, dataset_name)
 
-                if not results:
-                    return f"""# Dataset Lookup by Name
-
-**Dataset Name**: `{dataset_name}`
-**Result**: Not found
-
-**Possible reasons**:
-- Dataset name does not exist
-- Dataset has been excluded from search
-- Name does not match exactly (case-sensitive)
-
-**Suggestion**: Try using `discover_datasets("partial name")` to search for similar datasets."""
-
-            elif not query:
-                # No search criteria provided
-                return """# Dataset Discovery Error
-
-**Issue**: No search criteria provided
-
-**Required**: At least one of the following must be provided:
-- `query`: Search term for finding datasets
-- `dataset_id`: Exact dataset ID to lookup
-- `dataset_name`: Exact dataset name to lookup
-
-**Examples**:
-```python
-discover_datasets("kubernetes logs")
-discover_datasets(dataset_id="42161740")
-discover_datasets(dataset_name="Kubernetes Explorer/Kubernetes Logs")
-```"""
-            else:
-                # Perform full-text search (existing logic)
-                # Enhanced manual query with better search capabilities
-                # Split complex queries into individual terms for better matching
-                search_terms = query.lower().split()
-
-                # Create individual search conditions for better matching
-                search_conditions = []
-                params = []
-                param_idx = 1
-
-                for term in search_terms:
-                    search_conditions.append(f"di.search_vector @@ plainto_tsquery('english', ${param_idx})")
-                    params.append(term)
-                    param_idx += 1
-
-                # If no individual terms match, fall back to full query
-                if not search_conditions:
-                    search_conditions = [f"di.search_vector @@ plainto_tsquery('english', ${param_idx})"]
-                    params.append(query)
-                    param_idx += 1
-
-                # Combine search conditions with OR for better matching
-                where_clause = f"({' OR '.join(search_conditions)})"
-
-                # Add filters
-                if business_category_filter:
-                    where_clause += f" AND di.business_categories ? ${param_idx}"
-                    params.append(business_category_filter)
-                    param_idx += 1
-
-                if technical_category_filter:
-                    where_clause += f" AND di.technical_category = ${param_idx}"
-                    params.append(technical_category_filter)
-                    param_idx += 1
-
-                if interface_filter:
-                    where_clause += f" AND ${param_idx} = ANY(di.interface_types)"
-                    params.append(interface_filter)
-                    param_idx += 1
-
-                # Add limit parameter
-                params.append(max_results)
-                limit_param = param_idx
-
-                query_sql = f"""
+            elif metric_name is not None:
+                is_detail_mode = True
+                semantic_logger.info(f"exact metric lookup | metric_name:{metric_name}")
+                metric_results = await conn.fetch("""
                     SELECT
-                        di.dataset_id::TEXT,
-                        di.dataset_name::TEXT,
-                        di.inferred_purpose,
-                        di.typical_usage,
-                        di.business_categories,
-                        di.technical_category,
-                        di.interface_types,
-                        di.key_fields,
-                        di.query_patterns,
-                        di.nested_field_paths,
-                        di.nested_field_analysis,
-                        di.common_use_cases,
-                        di.data_frequency,
-                        FALSE as excluded,
-                        ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank,
-                        0.0::REAL as similarity_score
-                    FROM datasets_intelligence di
-                    WHERE di.excluded = FALSE
-                      AND {where_clause}
-                    ORDER BY rank DESC
-                    LIMIT ${limit_param}
-                """
-
-                results = await conn.fetch(query_sql, *params)
-            
-            if not results:
-                return f"""# Dataset Discovery Results
-
-**Query**: "{query}"
-**Found**: 0 datasets
-
-**No matching datasets found.**
-
-**Suggestions**:
-- Try broader terms (e.g., "logs" instead of "error logs")
-- Remove filters to see all results
-- Check available categories: Infrastructure, Application, Database, User, Security, Monitoring
-
-**Available datasets**: {await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")} total datasets in the database.
-"""
-            
-            # Helper function for detailed dataset information
-            def _format_dataset_detail(row: Dict, index: int) -> str:
-                """Format complete dataset details with full schema (minus link fields)."""
-                # Parse JSON fields safely
-                try:
-                    query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
-                    nested_field_paths = json.loads(row.get('nested_field_paths', '{}')) if row.get('nested_field_paths') else {}
-                    nested_field_analysis = json.loads(row.get('nested_field_analysis', '{}')) if row.get('nested_field_analysis') else {}
-                    common_use_cases = row.get('common_use_cases', []) or []
-                except (json.JSONDecodeError, TypeError):
-                    query_patterns = []
-                    nested_field_paths = {}
-                    nested_field_analysis = {}
-                    common_use_cases = []
-
-                # Format interface types
-                interfaces_str = ""
-                if row['interface_types']:
-                    interfaces_str = f"**Interfaces**: {', '.join(row['interface_types'])}\n"
-
-                # Format ALL available fields with complete schema information
-                # Filter out link_ fields to reduce confusion
-                schema_info_str = ""
-                all_fields_info = {}
-
-                # Add top-level fields from key_fields (exclude link_ fields)
-                if row.get('key_fields'):
-                    for field in row['key_fields']:
-                        if not field.startswith('link_'):
-                            all_fields_info[field] = {"type": "unknown", "sample_values": []}
-
-                # Add detailed nested field information (exclude link_ fields)
-                if nested_field_paths:
-                    for field_path, field_info in nested_field_paths.items():
-                        if not field_path.startswith('link_'):
-                            if isinstance(field_info, dict):
-                                all_fields_info[field_path] = {
-                                    "type": field_info.get("type", "unknown"),
-                                    "sample_values": field_info.get("sample_values", [])[:3]  # Show 3 samples max
-                                }
-                            else:
-                                all_fields_info[field_path] = {"type": "unknown", "sample_values": []}
-
-                if all_fields_info:
-                    schema_info_str = "**COMPLETE SCHEMA - USE EXACT FIELD NAMES & TYPES**:\n"
-
-                    # Sort fields: top-level first, then nested
-                    top_level_fields = [f for f in all_fields_info.keys() if '.' not in f]
-                    nested_fields = [f for f in all_fields_info.keys() if '.' in f]
-
-                    for field_list, header in [(top_level_fields, "**Top-Level Fields**"), (nested_fields, "**Nested Fields**")]:
-                        if field_list:
-                            schema_info_str += f"\n{header}:\n"
-                            # Show ALL fields (no truncation)
-                            for field in sorted(field_list):
-                                field_info = all_fields_info[field]
-                                type_info = f"({field_info['type']})" if field_info['type'] != 'unknown' else ""
-
-                                # Show sample values with type hints for duration fields
-                                samples_str = ""
-                                if field_info['sample_values']:
-                                    samples = field_info['sample_values'][:2]  # Show 2 samples max
-                                    samples_str = f" → {samples}"
-
-                                    # Add duration unit hints
-                                    if any(keyword in field.lower() for keyword in ['time', 'elapsed', 'duration', 'timestamp']):
-                                        if any(len(str(s)) >= 15 for s in samples if str(s).isdigit()):
-                                            samples_str += " (likely nanoseconds)"
-                                        elif any(len(str(s)) == 13 for s in samples if str(s).isdigit()):
-                                            samples_str += " (likely milliseconds)"
-
-                                schema_info_str += f"  • `{field}` {type_info}{samples_str}\n"
-
-                    schema_info_str += "\n"
-
-                # Format query guidance
-                query_guidance_str = ""
-                if query_patterns and len(query_patterns) > 0:
-                    primary_pattern = query_patterns[0]
-                    if isinstance(primary_pattern, dict) and primary_pattern.get('pattern'):
-                        query_guidance_str = f"**Query Example**: `{primary_pattern['pattern']}`\n"
-
-                # Format usage scenarios
-                usage_str = ""
-                if common_use_cases:
-                    usage_scenarios = common_use_cases[:2]  # Show top 2
-                    usage_str = f"**Common Uses**: {', '.join(usage_scenarios)}\n"
-
-                # Calculate combined relevance score
-                combined_score = max(row['rank'], row.get('similarity_score', 0))
-                score_details = []
-                if row['rank'] > 0:
-                    score_details.append(f"text-match: {row['rank']:.3f}")
-                if row.get('similarity_score', 0) > 0:
-                    score_details.append(f"similarity: {row['similarity_score']:.3f}")
-
-                return f"""## {index}. {row['dataset_name']}
-**Dataset ID**: `{row['dataset_id']}`
-**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
-{interfaces_str}**Purpose**: {row['inferred_purpose']}
-**Usage**: {row.get('typical_usage', 'Not specified')}
-{schema_info_str}{query_guidance_str}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
-**Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
-"""
-
-            # Helper function for lightweight search results
-            def _format_dataset_summary(row: Dict, index: int) -> str:
-                """Format lightweight dataset summary for search/discovery."""
-                # Calculate combined relevance score
-                combined_score = max(row['rank'], row.get('similarity_score', 0))
-
-                # Format interface types
-                interfaces_str = ', '.join(row['interface_types']) if row['interface_types'] else 'unknown'
-
-                return f"""## {index}. {row['dataset_name']}
-**Dataset ID**: `{row['dataset_id']}`
-**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
-**Interfaces**: {interfaces_str}
-**Purpose**: {row['inferred_purpose']}
-**Relevance**: {combined_score:.3f}
-"""
-
-            # Determine mode: lightweight search vs detailed lookup
-            # Detail mode: dataset_id or dataset_name was provided (exact lookup)
-            # Search mode: query was provided (discovery)
-            is_detail_mode = (dataset_id is not None or dataset_name is not None)
-
-            # Format results based on mode
-            formatted_results = []
-            for i, row in enumerate(results, 1):
-                if is_detail_mode:
-                    # DETAIL MODE: Show complete schema for specific dataset
-                    formatted_results.append(_format_dataset_detail(row, i))
-                else:
-                    # SEARCH MODE: Show lightweight summary for discovery
-                    formatted_results.append(_format_dataset_summary(row, i))
-
-            # Get summary stats
-            total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")
-            category_counts = await conn.fetch("""
-                SELECT
-                    jsonb_array_elements_text(business_categories) as business_category,
-                    COUNT(*) as count
-                FROM datasets_intelligence
-                WHERE excluded = FALSE
-                GROUP BY jsonb_array_elements_text(business_categories)
-                ORDER BY count DESC
-                LIMIT 5
-            """)
-            
-            category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
-            
-            # Log successful results
-            semantic_logger.info(f"dataset search complete | found:{len(results)} datasets | total_available:{total_datasets}")
-
-            # Build mode-specific next steps guidance
-            if is_detail_mode:
-                next_steps = """**Next Steps**:
-- Use `execute_opal_query(query="...", primary_dataset_id="dataset_id")` to query this dataset
-- Use field names exactly as shown in the schema (case-sensitive, quote nested fields with dots)
-- Use `discover_metrics()` to find related metrics for correlation"""
-            else:
-                next_steps = f"""**Next Steps**:
-- To see complete schema with ALL fields, call: `discover_datasets(dataset_id="dataset_id")`
-- Then use `execute_opal_query()` with the dataset ID to query the data
-- Use `discover_metrics()` to find related metrics for analysis
-
-**Example**:
-```python
-# Step 1: Get full schema for dataset of interest
-discover_datasets(dataset_id="42160967")
-
-# Step 2: Use fields from schema in your query
-execute_opal_query(
-    query="filter error = true | limit 10",
-    primary_dataset_id="42160967"
-)
-```"""
-
-            # Cross-search: Check if there are related metrics
-            cross_search_section = ""
-            if query and not is_detail_mode:  # Only for search mode, not exact lookups
-                try:
-                    # Search for related metrics with same query
-                    metric_results = await conn.fetch("""
-                        SELECT
-                            mi.metric_name,
-                            mi.dataset_id::TEXT,
-                            mi.dataset_name,
-                            mi.inferred_purpose,
-                            mi.business_categories,
-                            mi.technical_category,
-                            ts_rank(mi.search_vector, plainto_tsquery('english', $1)) as rank
-                        FROM metrics_intelligence mi
-                        WHERE mi.excluded = FALSE
-                          AND mi.search_vector @@ plainto_tsquery('english', $1)
-                        ORDER BY rank DESC
-                        LIMIT 3
-                    """, query)
-
-                    if metric_results:
-                        total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE AND search_vector @@ plainto_tsquery('english', $1)", query)
-
-                        metric_preview = "\n".join([
-                            f"{i+1}. **{row['metric_name']}** ({', '.join(json.loads(row['business_categories']) if row['business_categories'] else [])} / {row['technical_category']})"
-                            for i, row in enumerate(metric_results[:3])
-                        ])
-
-                        cross_search_section = f"""
----
-
-💡 **ALSO FOUND {total_metrics} RELATED METRICS**:
-
-{metric_preview}
-
-📊 **View all {total_metrics} metrics**: `discover_metrics("{query}")`
-
-💭 **What's the difference?**
-   • **Datasets** = Individual events with full context (logs, traces, spans)
-   • **Metrics** = Numeric trends over time (CPU %, error counts, latency)
-
-"""
-                except Exception as e:
-                    # Silently skip cross-search if it fails
-                    semantic_logger.debug(f"Cross-search to metrics failed: {e}")
-
-            return f"""# Dataset Discovery Results
-
-**Query**: "{query}"
-**Found**: {len(results)} datasets (showing top {max_results})
-**Search Scope**: {total_datasets} total datasets | Top categories: {category_summary}
-
-{chr(10).join(formatted_results)}
-{cross_search_section}
----
-{next_steps}
-"""
-            
-        finally:
-            await conn.close()
-            
-    except ImportError as e:
-        return f"""# Dataset Discovery Error
-**Issue**: Required database library not available
-**Error**: {str(e)}
-**Solution**: The dataset intelligence system requires asyncpg. Please install it with: pip install asyncpg"""
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        return f"""# Dataset Discovery Error
-**Issue**: Database query failed
-**Error**: {str(e)}
-**Type**: {type(e).__name__}
-**Traceback**:
-```
-{tb[:1000]}
-```
-**Query Params**: query='{query}', business_filter='{business_category_filter}', max_results={max_results}
-**Solution**: Check database connection and ensure dataset intelligence has been populated."""
-
-
-@mcp.tool()
-@requires_scopes(['admin', 'read'])
-@trace_mcp_tool(tool_name="discover_metrics", record_args=True, record_result=False)
-async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[str] = None, max_results: int = 20, category_filter: Optional[str] = None, technical_filter: Optional[str] = None) -> str:
-    """
-    Discover observability metrics with intelligent categorization and complete usage guidance.
-
-    METRIC INTERFACE DATASETS - IMPORTANT
-    ═══════════════════════════════════════════════════════════════════════
-    This tool finds datasets with the METRIC interface (time-series data).
-
-    ❌ NOT for datasets with LOG or SPAN interfaces
-       → Use discover_datasets() for logs, traces, resources, sessions
-
-    Observe Dataset Interfaces:
-    • METRIC interface (this tool): Time-series numeric measurements
-      - Query: align + m() + aggregate (required)
-      - Dataset examples: "Kubernetes Explorer/Prometheus Metrics"
-      - Metric examples: CPU %, request rates, latency percentiles
-
-    • LOG interface (discover_datasets): Event data for log analysis
-      - Query: Standard OPAL (filter, make_col, statsby)
-      - Examples: Kubernetes Logs, error messages, audit events
-
-    • SPAN interface (discover_datasets): Distributed tracing intervals
-      - Query: Standard OPAL with span/duration fields
-      - Examples: OpenTelemetry spans, trace analysis
-
-    Metric datasets are Event datasets with interface "metric" applied,
-    optimized for time-series queries using align+m()+aggregate pattern.
-    ═══════════════════════════════════════════════════════════════════════
-
-    This tool searches through 491+ analyzed metrics and returns comprehensive information
-    including dataset IDs, dimensions, value ranges, and query patterns.
-
-    METRICS QUERY REQUIREMENT:
-    ═════════════════════════════
-    ALL metric queries MUST use: align + m() + aggregate
-    You CANNOT filter or aggregate metrics directly - see execute_opal_query() for pattern.
-
-    ESSENTIAL QUERY EXAMPLES
-    ═════════════════════════════
-    Follow this 2-step workflow for all metric queries:
-
-    Example 1: Basic CPU Usage Over Time
-    -------------------------------------
-    # Step 1: Discover the metric and get dataset_id
-    result = discover_metrics("cpu usage")
-    # From result, extract: metric_name and dataset_id
-    # Example result might show: k8s_pod_cpu_usage_nanocores, dataset_id: "..."
-
-    # Step 2: Query using the discovered metric_name and dataset_id
-    execute_opal_query(
-        query='''
-            align 5m, cpu:avg(m("METRIC_NAME_FROM_STEP1"))
-            | aggregate avg_cpu:avg(cpu), max_cpu:max(cpu), group_by(pod_name)
-            | filter avg_cpu > 1000000000
-            | sort desc(avg_cpu)
-            | limit 10
-        ''',
-        primary_dataset_id="DATASET_ID_FROM_STEP1",
-        time_range="1h"
-    )
-
-    Example 2: Error Rate by Service
-    ---------------------------------
-    # Step 1: Find error metrics and dimensions
-    result = discover_metrics("error rate")
-    # Check "Dimensions" section for available group_by fields (service_name, etc.)
-
-    # Step 2: Query error counts with discovered metric
-    execute_opal_query(
-        query='''
-            align 5m, errors:sum(m("METRIC_NAME_FROM_STEP1"))
-            | aggregate total_errors:sum(errors), group_by(service_name, status_code)
-            | filter total_errors > 10
-            | sort desc(total_errors)
-        ''',
-        primary_dataset_id="DATASET_ID_FROM_STEP1",
-        time_range="1h"
-    )
-
-    Example 3: P95/P99 Latency (Tdigest Quantiles)
-    -----------------------------------------------
-    # Step 1: Find latency/duration metrics (look for tdigest types)
-    result = discover_metrics("latency duration")
-    # Look for metrics with "tdigest" in name or description
-
-    # Step 2: Query percentiles using tdigest functions
-    execute_opal_query(
-        query='''
-            align 5m, combined:tdigest_combine(m_tdigest("METRIC_NAME_FROM_STEP1"))
-            | aggregate agg:tdigest_combine(combined), group_by(service_name)
-            | make_col p50:tdigest_quantile(agg, 0.50),
-                       p95:tdigest_quantile(agg, 0.95),
-                       p99:tdigest_quantile(agg, 0.99)
-            | make_col p95_ms:p95/1000000, p99_ms:p99/1000000
-            | sort desc(p95_ms)
-        ''',
-        primary_dataset_id="DATASET_ID_FROM_STEP1",
-        time_range="1h"
-    )
-
-    COMMON MISTAKES TO AVOID:
-    ❌ filter m("metric_name") > 100           # m() only works inside align
-    ❌ statsby sum(m("metric_name"))           # Must use align + aggregate
-    ❌ align 5m, value:m("metric")             # Missing aggregation function
-    ❌ aggregate sum(value)                    # Must have align before aggregate
-
-    ✅ align 5m, value:avg(m("metric_name"))   # Correct: align + aggregation
-       | aggregate total:sum(value)            # Then aggregate across dimensions
-
-    METRICS-SPECIFIC GUIDANCE
-    ═════════════════════════════
-
-    WHAT METRICS PROVIDE:
-    - Error FREQUENCIES and counts (not actual error messages)
-    - Performance metrics (latency, throughput, resource utilization)
-    - System health indicators (availability, saturation, errors)
-
-    WHAT METRICS DON'T PROVIDE:
-    - Actual error messages or stack traces → Use discover_datasets() for logs
-    - Detailed request context → Use discover_datasets() for trace/span data
-
-    METRIC TYPES
-       - Counter: Cumulative values that only increase (error_count, request_total)
-       - Gauge: Point-in-time values that can go up/down (cpu_usage, memory_bytes, queue_depth)
-       - Histogram: Distribution data with buckets (latency_bucket, response_time_bucket)
-
-    COMMON DIMENSIONS (Group-By Fields)
-       - Service identifiers: service_name, endpoint, method
-       - Infrastructure: namespace, pod, container, node, zone
-       - Status indicators: status_code, error_type, severity
-       - Check "Dimensions" section in results for available groupings
-
-    TIME UNITS (Same as datasets!)
-       - Fields without suffix (duration, elapsed) = NANOSECONDS
-       - Fields with suffix (duration_ms, latency_s) = as labeled
-       - Always check sample values and convert if needed
-
-    VALUE RANGES - Use for filtering and anomaly detection
-       - "Range: 0-100" indicates percentage metrics
-       - "Range: 0-1000000000" indicates nanosecond duration metrics
-       - Check ranges to understand metric scale and units
-
-    TYPICAL WORKFLOWS
-    ─────────────────
-    1. ERROR INVESTIGATION
-       discover_metrics("error rate") → Get error frequencies by service
-       ↓
-       discover_datasets("error logs") → Get actual error messages
-       ↓
-       Correlate: Which services have highest error rates + what errors occur
-
-    2. PERFORMANCE ANALYSIS
-       discover_metrics("latency duration") → Get p95/p99 latency by endpoint
-       ↓
-       execute_opal_query() → Filter for slow requests above threshold
-       ↓
-       discover_datasets("traces") → Analyze slow request traces
-
-    3. RESOURCE MONITORING
-       discover_metrics("cpu memory") → Get resource utilization metrics
-       ↓
-       execute_opal_query() → Aggregate by service and time window
-       ↓
-       Identify: Services approaching resource limits
-
-    Args:
-        query: Search query (e.g., "error rate", "cpu usage", "database latency", "service performance")
-        max_results: Maximum metrics to return (1-50, default: 20)
-        category_filter: Filter by business category (Infrastructure, Application, Database, Storage, Network, Monitoring)
-        technical_filter: Filter by technical category (Error, Latency, Count, Performance, Resource, Throughput, Availability)
-
-    Returns:
-        Formatted metrics information including:
-        - Metric name and dataset ID for querying
-        - Purpose and typical usage patterns
-        - Common dimensions for group-by operations
-        - Value ranges for context and filtering
-        - Query pattern examples
-        - Last seen timestamp
-
-    Examples:
-        # Error analysis (frequencies only)
-        discover_metrics("error rate service")
-
-        # Resource monitoring
-        discover_metrics("cpu memory usage", category_filter="Infrastructure")
-
-        # Performance investigation
-        discover_metrics("latency", technical_filter="Latency", max_results=10)
-
-        # Multi-category search
-        discover_metrics("database throughput")
-
-    Performance:
-        - Search queries: 200-500ms
-    """
-    # Validate input sizes to prevent DoS attacks (H-INPUT-2)
-    validate_input_size(query, "query", 1024)  # 1KB max for search queries
-    validate_input_size(category_filter, "category_filter", 1024)  # 1KB max
-    validate_input_size(technical_filter, "technical_filter", 1024)  # 1KB max
-
-    try:
-        import asyncpg
-        import json
-        from typing import List, Dict, Any
-
-        # Log the semantic search operation
-        semantic_logger.info(f"metrics search | query:'{query}' | max_results:{max_results} | filters:{category_filter or technical_filter}")
-
-        # Database connection using individual parameters (same as working scripts)
-        db_password = os.getenv('SEMANTIC_GRAPH_PASSWORD')
-        if not db_password:
-            raise ValueError("SEMANTIC_GRAPH_PASSWORD environment variable must be set")
-
-        db_config = {
-            'host': os.getenv('POSTGRES_HOST', 'localhost'),
-            'port': int(os.getenv('POSTGRES_PORT', '5432')),
-            'database': os.getenv('POSTGRES_DB', 'semantic_graph'),
-            'user': os.getenv('POSTGRES_USER', 'semantic_graph'),
-            'password': db_password
-        }
-
-        # Validate parameters
-        max_results = min(max(1, max_results), 50)  # Clamp between 1 and 50
-
-        # Connect to database using individual parameters (avoids SSL/TLS DNS issues)
-        conn = await asyncpg.connect(**db_config)
-        
-        try:
-            # Check for exact lookup by metric name
-            if metric_name is not None:
-                # Exact metric name lookup
-                semantic_logger.info(f"metric lookup by name | metric_name:{metric_name}")
-
-                results = await conn.fetch("""
-                    SELECT
-                        mi.id,
                         mi.dataset_id::TEXT,
                         mi.metric_name,
                         mi.dataset_name,
@@ -1372,278 +741,377 @@ async def discover_metrics(ctx: Context, query: str = "", metric_name: Optional[
                         mi.query_patterns,
                         mi.common_fields,
                         mi.nested_field_paths,
-                        mi.nested_field_analysis,
-                        1.0::REAL as rank,
-                        1.0::REAL as similarity_score
+                        1.0::REAL as rank
                     FROM metrics_intelligence mi
                     WHERE mi.metric_name = $1 AND mi.excluded = FALSE
                     LIMIT 1
                 """, metric_name)
 
-                if not results:
-                    return f"""# Metric Lookup by Name
+            # SEARCH MODE (query provided)
+            elif query:
+                # Search datasets if requested
+                if should_fetch_datasets:
+                    search_terms = query.lower().split()
+                    search_conditions = []
+                    params = []
+                    param_idx = 1
 
-**Metric Name**: `{metric_name}`
-**Result**: Not found
+                    for term in search_terms:
+                        search_conditions.append(f"di.search_vector @@ plainto_tsquery('english', ${param_idx})")
+                        params.append(term)
+                        param_idx += 1
 
-**Possible reasons**:
-- Metric name does not exist
-- Metric has been excluded from search
-- Incorrect metric name (names are case-sensitive)
+                    if not search_conditions:
+                        search_conditions = [f"di.search_vector @@ plainto_tsquery('english', ${param_idx})"]
+                        params.append(query)
+                        param_idx += 1
 
-**Suggestion**: Try using `discover_metrics("search term")` to find available metrics."""
-            else:
-                # Use the enhanced search function with trigram similarity
-                results = await conn.fetch("""
-                    SELECT * FROM search_metrics_enhanced($1, $2, $3, $4, $5)
-                """, query, max_results, category_filter, technical_filter, 0.2)
+                    where_clause = f"({' OR '.join(search_conditions)})"
 
-            if not results:
-                return f"""# Metrics Discovery Results
+                    # Add filters
+                    if business_category_filter:
+                        where_clause += f" AND di.business_categories ? ${param_idx}"
+                        params.append(business_category_filter)
+                        param_idx += 1
 
-**Query**: "{query}"
-**Results**: No metrics found
+                    if technical_category_filter:
+                        where_clause += f" AND di.technical_category = ${param_idx}"
+                        params.append(technical_category_filter)
+                        param_idx += 1
 
-**Suggestions**:
-- Try broader terms (e.g., "error" instead of "error_rate")
-- Check available categories: Infrastructure, Application, Database, Storage, Network, Monitoring
-- Use technical categories: Error, Latency, Count, Performance, Resource, Throughput, Availability
+                    if interface_filter:
+                        where_clause += f" AND ${param_idx} = ANY(di.interface_types)"
+                        params.append(interface_filter)
+                        param_idx += 1
 
-**Available metrics**: {await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")} total metrics in the database.
-"""
+                    params.append(max_results)
+                    limit_param = param_idx
 
-            # Helper function for detailed metric information
-            def _format_metric_detail(row: Dict, index: int) -> str:
-                """Format complete metric details with full dimensions (minus link fields)."""
-                # Parse JSON fields safely
-                try:
-                    dimensions = json.loads(row['common_dimensions']) if row['common_dimensions'] else {}
-                    value_range = json.loads(row['value_range']) if row['value_range'] else {}
-                    query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
-                    nested_field_paths = json.loads(row.get('nested_field_paths', '{}')) if row.get('nested_field_paths') else {}
-                    nested_field_analysis = json.loads(row.get('nested_field_analysis', '{}')) if row.get('nested_field_analysis') else {}
-                except (json.JSONDecodeError, TypeError):
-                    dimensions = {}
-                    value_range = {}
-                    query_patterns = []
-                    nested_field_paths = {}
-                    nested_field_analysis = {}
-
-                # Format dimension keys (filter out link_ fields)
-                dim_keys = [k for k in dimensions.keys() if not k.startswith('link_')]
-                dim_text = f"**Dimensions**: {', '.join(dim_keys)}" if dim_keys else "**Dimensions**: None"
-
-                # Format value range
-                range_text = ""
-                if value_range and isinstance(value_range, dict):
-                    if 'min' in value_range and 'max' in value_range:
-                        range_text = f"**Range**: {value_range.get('min', 'N/A')} - {value_range.get('max', 'N/A')}\n"
-
-                # Format last seen
-                last_seen = row['last_seen'].strftime('%Y-%m-%d %H:%M') if row['last_seen'] else 'Unknown'
-
-                # Format metric type and query patterns
-                metric_type = row.get('metric_type', 'unknown')
-                common_fields = [f for f in (row.get('common_fields', []) or []) if not f.startswith('link_')]
-
-                # Create enhanced query guidance section
-                query_guidance = ""
-                if query_patterns and len(query_patterns) > 0:
-                    # Show primary query pattern
-                    primary_pattern = query_patterns[0]
-                    pattern_text = primary_pattern.get('pattern', '') if isinstance(primary_pattern, dict) else str(primary_pattern)
-                    if pattern_text:
-                        query_guidance = f"**Query Pattern**: `{pattern_text}`\n"
-                        # Show use case if available
-                        if isinstance(primary_pattern, dict) and primary_pattern.get('use_case'):
-                            query_guidance += f"**Use Case**: {primary_pattern['use_case']}\n"
-
-                # Add nested field information (filter link_ fields)
-                if nested_field_paths:
-                    important_fields = [f for f in (nested_field_analysis.get('important_fields', []) if nested_field_analysis else [])
-                                       if not f.startswith('link_')]
-                    if important_fields:
-                        nested_text = ', '.join(important_fields)
-                        query_guidance += f"**Key Nested Fields (EXACT PATHS)**: {nested_text}\n"
-
-                if common_fields:
-                    field_list = ', '.join(common_fields)
-                    query_guidance += f"**Common Fields (USE EXACT NAMES)**: {field_list}\n"
-
-                # Calculate combined relevance score
-                combined_score = max(row['rank'], row.get('similarity_score', 0))
-                score_details = []
-                if row['rank'] > 0:
-                    score_details.append(f"text-match: {row['rank']:.3f}")
-                if row.get('similarity_score', 0) > 0:
-                    score_details.append(f"similarity: {row['similarity_score']:.3f}")
-
-                return f"""## {index}. {row['metric_name']}
-**Dataset**: {row['dataset_name']}
-**Dataset ID**: `{row['dataset_id']}`
-**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
-**Type**: {metric_type}
-**Purpose**: {row['inferred_purpose']}
-**Usage**: {row['typical_usage']}
-{dim_text}
-{query_guidance}{range_text}**Frequency**: {row['data_frequency']} | **Last Seen**: {last_seen}
-**Relevance Score**: {combined_score:.3f} ({', '.join(score_details) if score_details else 'fuzzy-match'})
-"""
-
-            # Helper function for lightweight search results
-            def _format_metric_summary(row: Dict, index: int) -> str:
-                """Format lightweight metric summary for search/discovery."""
-                # Calculate combined relevance score
-                combined_score = max(row['rank'], row.get('similarity_score', 0))
-
-                return f"""## {index}. {row['metric_name']}
-**Dataset**: {row['dataset_name']}
-**Dataset ID**: `{row['dataset_id']}`
-**Category**: {', '.join(json.loads(row['business_categories']) if row['business_categories'] else ['Unknown'])} / {row['technical_category']}
-**Purpose**: {row['inferred_purpose']}
-**Relevance**: {combined_score:.3f}
-"""
-
-            # Determine mode: lightweight search vs detailed lookup
-            is_detail_mode = (metric_name is not None)
-
-            # Format results based on mode
-            formatted_results = []
-            for i, row in enumerate(results, 1):
-                if is_detail_mode:
-                    # DETAIL MODE: Show complete metric details
-                    formatted_results.append(_format_metric_detail(row, i))
-                else:
-                    # SEARCH MODE: Show lightweight summary for discovery
-                    formatted_results.append(_format_metric_summary(row, i))
-
-            # Get summary stats
-            total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")
-            category_counts = await conn.fetch("""
-                SELECT
-                    jsonb_array_elements_text(business_categories) as business_category,
-                    COUNT(*) as count
-                FROM metrics_intelligence
-                WHERE excluded = FALSE
-                GROUP BY jsonb_array_elements_text(business_categories)
-                ORDER BY count DESC
-            """)
-            
-            category_summary = ", ".join([f"{row['business_category']} ({row['count']})" for row in category_counts[:3]])
-
-            # Log successful results
-            semantic_logger.info(f"metrics search complete | found:{len(results)} metrics | total_available:{total_metrics}")
-
-            # Build mode-specific next steps guidance
-            if is_detail_mode:
-                next_steps = """**Next Steps**:
-- Use `execute_opal_query(query="...", primary_dataset_id="dataset_id")` to query this metric
-- REQUIRED pattern: `align [interval], value:sum(m("metric_name"))` then aggregate/filter
-- Use `discover_datasets()` to find related datasets for correlation analysis
-- Remember: Metrics require align + m() + aggregate pattern (see execute_opal_query docs)"""
-            else:
-                next_steps = f"""**Next Steps**:
-- To see complete details with ALL dimensions, call: `discover_metrics(metric_name="metric_name")`
-- Then use `execute_opal_query()` with the metric's dataset ID
-- Use `discover_datasets()` to find related datasets for comprehensive analysis
-
-**Example**:
-```python
-# Step 1: Get full details for metric of interest
-discover_metrics(metric_name="http_request_duration_5m")
-
-# Step 2: Query the metric using REQUIRED align + m() + aggregate pattern
-execute_opal_query(
-    query="align 5m, value:avg(m(\\"http_request_duration_5m\\")) | aggregate avg_latency:avg(value), group_by(service_name)",
-    primary_dataset_id="42160967"
-)
-```"""
-
-            # Cross-search: Check if there are related datasets
-            cross_search_section = ""
-            if query and not is_detail_mode:  # Only for search mode, not exact lookups
-                try:
-                    # Search for related datasets with same query
-                    dataset_results = await conn.fetch("""
+                    query_sql = f"""
                         SELECT
                             di.dataset_id::TEXT,
-                            di.dataset_name,
+                            di.dataset_name::TEXT,
                             di.inferred_purpose,
+                            di.typical_usage,
                             di.business_categories,
                             di.technical_category,
                             di.interface_types,
-                            ts_rank(di.search_vector, plainto_tsquery('english', $1)) as rank
+                            di.key_fields,
+                            di.query_patterns,
+                            di.nested_field_paths,
+                            di.nested_field_analysis,
+                            di.common_use_cases,
+                            di.data_frequency,
+                            ts_rank(di.search_vector, plainto_tsquery('english', $1))::REAL as rank
                         FROM datasets_intelligence di
-                        WHERE di.excluded = FALSE
-                          AND di.search_vector @@ plainto_tsquery('english', $1)
+                        WHERE di.excluded = FALSE AND {where_clause}
                         ORDER BY rank DESC
-                        LIMIT 3
-                    """, query)
+                        LIMIT ${limit_param}
+                    """
 
-                    if dataset_results:
-                        total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE AND search_vector @@ plainto_tsquery('english', $1)", query)
+                    dataset_results = await conn.fetch(query_sql, *params)
 
-                        dataset_preview = "\n".join([
-                            f"{i+1}. **{row['dataset_name']}** ({', '.join(json.loads(row['business_categories']) if row['business_categories'] else [])} / {row['technical_category']}) - Interfaces: {', '.join(row['interface_types']) if row['interface_types'] else 'unknown'}"
-                            for i, row in enumerate(dataset_results[:3])
-                        ])
+                # Search metrics if requested
+                if should_fetch_metrics:
+                    metric_results = await conn.fetch("""
+                        SELECT * FROM search_metrics_enhanced($1, $2, $3, $4, $5)
+                    """, query, max_results, business_category_filter, technical_category_filter, 0.2)
 
-                        cross_search_section = f"""
----
+            else:
+                return """# Discovery Error
 
-💡 **ALSO FOUND {total_datasets} RELATED DATASETS**:
+**Issue**: No search criteria provided
 
-{dataset_preview}
+**Required**: At least one of the following:
+- `query`: Search term
+- `dataset_id`: Exact dataset ID
+- `dataset_name`: Exact dataset name
+- `metric_name`: Exact metric name
 
-📊 **View all {total_datasets} datasets**: `discover_datasets("{query}")`
+**Examples**:
+```python
+discover("error service")
+discover(dataset_id="42161740")
+discover(metric_name="span_error_count_5m")
+```"""
 
-💭 **What's the difference?**
-   • **Metrics** = Numeric trends over time (CPU %, error counts, latency)
-   • **Datasets** = Individual events with full context (logs, traces, spans)
+            # Check if we found anything
+            if not dataset_results and not metric_results:
+                search_term = query or dataset_id or dataset_name or metric_name
+                total_datasets = await conn.fetchval("SELECT COUNT(*) FROM datasets_intelligence WHERE excluded = FALSE")
+                total_metrics = await conn.fetchval("SELECT COUNT(*) FROM metrics_intelligence WHERE excluded = FALSE")
 
-"""
-                except Exception as e:
-                    # Silently skip cross-search if it fails
-                    semantic_logger.debug(f"Cross-search to datasets failed: {e}")
+                return f"""# Discovery Results
 
-            return f"""# Metrics Discovery Results
+**Search**: "{search_term}"
+**Found**: 0 results
 
-**Query**: "{query if query else metric_name}"
-**Found**: {len(results)} metric{"s" if len(results) != 1 else ""} (showing top {max_results})
-**Search Scope**: {total_metrics} total metrics | Top categories: {category_summary}
+**Suggestions**:
+- Try broader search terms
+- Remove filters to see all results
+- Check spelling and try alternative terms
 
-{chr(10).join(formatted_results)}
-{cross_search_section}
----
-{next_steps}
-"""
-            
+**Available in database**:
+- {total_datasets} datasets
+- {total_metrics} metrics
+
+**Examples**:
+```python
+discover("error")          # Broad search
+discover("kubernetes")     # Infrastructure search
+discover("latency")        # Performance metrics
+```"""
+
+            # Format results
+            output_parts = []
+
+            # Header
+            mode_indicator = "**Mode**: Detail (Complete Schema)" if is_detail_mode else "**Mode**: Search (Lightweight Browsing - NO schemas shown)"
+
+            if query:
+                output_parts.append(f"# Discovery Results for \"{query}\"\n")
+            else:
+                output_parts.append(f"# Discovery Results\n")
+
+            output_parts.append(f"{mode_indicator}\n")
+            output_parts.append(f"**Found**: {len(dataset_results)} datasets, {len(metric_results)} metrics\n")
+
+            # DATASETS SECTION
+            if dataset_results:
+                output_parts.append("\n" + "=" * 80)
+                output_parts.append("\n## 📊 Datasets (LOG/SPAN/RESOURCE Interfaces)\n")
+                output_parts.append("**Query Pattern**: Standard OPAL (filter, make_col, statsby)\n")
+
+                for i, row in enumerate(dataset_results, 1):
+                    if is_detail_mode:
+                        output_parts.append(_format_dataset_detail(row, i, json))
+                    else:
+                        output_parts.append(_format_dataset_summary(row, i, json))
+
+            # METRICS SECTION
+            if metric_results:
+                output_parts.append("\n" + "=" * 80)
+                output_parts.append("\n## 📈 Metrics (METRIC Interface)\n")
+                output_parts.append("**Query Pattern**: align + m() + aggregate (REQUIRED!)\n")
+
+                for i, row in enumerate(metric_results, 1):
+                    if is_detail_mode:
+                        output_parts.append(_format_metric_detail(row, i, json))
+                    else:
+                        output_parts.append(_format_metric_summary(row, i, json))
+
+            # NEXT STEPS
+            output_parts.append("\n" + "=" * 80)
+            output_parts.append("\n## Next Steps\n")
+
+            if is_detail_mode:
+                output_parts.append("""
+**For Datasets**:
+1. Use `execute_opal_query(query="...", primary_dataset_id="dataset_id")`
+2. Copy field names exactly as shown (case-sensitive!)
+3. Quote nested fields with dots: `resource_attributes."k8s.namespace.name"`
+
+**For Metrics**:
+1. Use `execute_opal_query()` with align + m() + aggregate pattern
+2. Use dimensions shown above for group_by operations
+3. See example queries in each metric's details
+""")
+            else:
+                output_parts.append(f"""
+💡 **Remember**: Get complete schema before querying → `discover(dataset_id="...")` or `discover(metric_name="...")`
+""")
+
+            result = "\n".join(output_parts)
+            semantic_logger.info(f"unified discovery complete | datasets:{len(dataset_results)} | metrics:{len(metric_results)}")
+
+            return result
+
         finally:
             await conn.close()
-            
-    except ImportError as e:
-        return f"""# Metrics Discovery Error
-
-**Issue**: Required database library not available
-**Error**: {str(e)}
-**Solution**: The metrics intelligence system requires asyncpg. Please install it:
-```bash
-pip install asyncpg
-```
-"""
 
     except Exception as e:
-        return f"""# Metrics Discovery Error
+        import traceback
+        error_details = traceback.format_exc()
+        semantic_logger.error(f"discovery error | {str(e)} | {error_details}")
+        return f"""# Discovery Error
 
-**Query**: "{query}"
 **Error**: {str(e)}
 
-**Possible Causes**:
-- Database connection failed
-- Metrics intelligence table not initialized
-- Invalid search parameters
+**Troubleshooting**:
+- Check database connectivity
+- Verify SEMANTIC_GRAPH_PASSWORD is set
+- Try simpler search terms
+- Check the server logs for details
 
-**Solution**: Ensure the metrics intelligence system is running and database is accessible.
+**Support**: If the issue persists, contact support with this error message."""
+
+
+# Helper functions for formatting (defined at module level for use by discover tool)
+def _format_dataset_summary(row: Dict, index: int, json) -> str:
+    """Format lightweight dataset summary for search/discovery."""
+    combined_score = row.get('rank', 0.0)
+    interfaces_str = ', '.join(row['interface_types']) if row.get('interface_types') else 'unknown'
+    business_cats = json.loads(row['business_categories']) if row.get('business_categories') else ['Unknown']
+
+    return f"""
+### {index}. {row['dataset_name']}
+**ID**: `{row['dataset_id']}`
+**Category**: {', '.join(business_cats)} / {row.get('technical_category', 'Unknown')}
+**Interfaces**: {interfaces_str}
+**Purpose**: {row.get('inferred_purpose', 'N/A')}
+**Relevance**: {combined_score:.3f}
+"""
+
+
+def _format_dataset_detail(row: Dict, index: int, json) -> str:
+    """Format complete dataset details with full schema."""
+    try:
+        query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
+        nested_field_paths = json.loads(row.get('nested_field_paths', '{}')) if row.get('nested_field_paths') else {}
+        common_use_cases = row.get('common_use_cases', []) or []
+    except (json.JSONDecodeError, TypeError):
+        query_patterns = []
+        nested_field_paths = {}
+        common_use_cases = []
+
+    interfaces_str = ', '.join(row['interface_types']) if row.get('interface_types') else 'unknown'
+    business_cats = json.loads(row['business_categories']) if row.get('business_categories') else ['Unknown']
+
+    # Build schema information
+    schema_str = "\n**COMPLETE SCHEMA**:\n"
+    all_fields_info = {}
+
+    # Add top-level fields
+    if row.get('key_fields'):
+        for field in row['key_fields']:
+            if not field.startswith('link_'):
+                all_fields_info[field] = {"type": "unknown", "samples": []}
+
+    # Add nested fields
+    if nested_field_paths:
+        for field_path, field_info in nested_field_paths.items():
+            if not field_path.startswith('link_'):
+                if isinstance(field_info, dict):
+                    all_fields_info[field_path] = {
+                        "type": field_info.get("type", "unknown"),
+                        "samples": field_info.get("sample_values", [])[:2]
+                    }
+
+    # Format fields
+    top_level = [f for f in all_fields_info.keys() if '.' not in f]
+    nested = [f for f in all_fields_info.keys() if '.' in f]
+
+    if top_level:
+        schema_str += "\n**Top-Level Fields**:\n"
+        for field in sorted(top_level):
+            info = all_fields_info[field]
+            type_str = f"({info['type']})" if info['type'] != 'unknown' else ""
+            samples_str = f" → {info['samples']}" if info['samples'] else ""
+            schema_str += f"  • `{field}` {type_str}{samples_str}\n"
+
+    if nested:
+        schema_str += "\n**Nested Fields (MUST QUOTE!)**:\n"
+        for field in sorted(nested):
+            info = all_fields_info[field]
+            type_str = f"({info['type']})" if info['type'] != 'unknown' else ""
+            samples_str = f" → {info['samples']}" if info['samples'] else ""
+            schema_str += f"  • `{field}` {type_str}{samples_str}\n"
+
+    # Query example
+    query_ex = ""
+    if query_patterns and len(query_patterns) > 0:
+        pattern = query_patterns[0]
+        if isinstance(pattern, dict) and pattern.get('pattern'):
+            query_ex = f"\n**Query Example**:\n```\n{pattern['pattern']}\n```\n"
+
+    # Usage scenarios
+    usage_str = ""
+    if common_use_cases:
+        usage_str = f"\n**Common Uses**: {', '.join(common_use_cases[:2])}\n"
+
+    return f"""
+### {index}. {row['dataset_name']}
+**ID**: `{row['dataset_id']}`
+**Category**: {', '.join(business_cats)} / {row.get('technical_category', 'Unknown')}
+**Interfaces**: {interfaces_str}
+**Purpose**: {row.get('inferred_purpose', 'N/A')}
+**Usage**: {row.get('typical_usage', 'N/A')}
+{schema_str}{query_ex}{usage_str}**Frequency**: {row.get('data_frequency', 'unknown')}
+"""
+
+
+def _format_metric_summary(row: Dict, index: int, json) -> str:
+    """Format minimal metric summary for search/discovery - NO dimensions shown."""
+    combined_score = max(row.get('rank', 0.0), row.get('similarity_score', 0.0))
+    business_cats = json.loads(row.get('business_categories', '[]')) if row.get('business_categories') else ['Unknown']
+
+    return f"""
+### {index}. {row['metric_name']}
+**Dataset**: {row.get('dataset_name', 'Unknown')}
+**ID**: `{row['dataset_id']}`
+**Category**: {', '.join(business_cats)} / {row.get('technical_category', 'Unknown')}
+**Purpose**: {row.get('inferred_purpose', 'N/A')}
+**Relevance**: {combined_score:.3f}
+"""
+
+
+def _format_metric_detail(row: Dict, index: int, json) -> str:
+    """Format complete metric details with full dimensions."""
+    try:
+        dimensions = json.loads(row.get('common_dimensions', '{}')) if row.get('common_dimensions') else {}
+        value_range = json.loads(row.get('value_range', '{}')) if row.get('value_range') else {}
+        query_patterns = json.loads(row.get('query_patterns', '[]')) if row.get('query_patterns') else []
+    except (json.JSONDecodeError, TypeError):
+        dimensions = {}
+        value_range = {}
+        query_patterns = []
+
+    business_cats = json.loads(row.get('business_categories', '[]')) if row.get('business_categories') else ['Unknown']
+
+    # Format dimensions with cardinality (CRITICAL - addresses #1 pain point!)
+    dim_text = "\n**✨ AVAILABLE DIMENSIONS (for group_by)**:\n"
+    dim_keys = [k for k in dimensions.keys() if not k.startswith('link_')]
+    if dim_keys:
+        for dim in sorted(dim_keys):
+            dim_info = dimensions[dim]
+            if isinstance(dim_info, dict):
+                cardinality = dim_info.get('unique_count', 'unknown')
+                dim_text += f"  • `{dim}` ({cardinality} unique values)\n"
+            else:
+                dim_text += f"  • `{dim}`\n"
+    else:
+        dim_text += "  • No dimensions (metric is pre-aggregated)\n"
+
+    # Value range
+    range_text = ""
+    if value_range and isinstance(value_range, dict):
+        if 'min' in value_range and 'max' in value_range:
+            range_text = f"\n**Value Range**: {value_range.get('min', 'N/A')} - {value_range.get('max', 'N/A')}\n"
+
+    # Query example
+    query_ex = ""
+    if query_patterns and len(query_patterns) > 0:
+        pattern = query_patterns[0]
+        pattern_text = pattern.get('pattern', '') if isinstance(pattern, dict) else str(pattern)
+        if pattern_text:
+            query_ex = f"\n**Query Example**:\n```\n{pattern_text}\n```\n"
+
+    # Last seen
+    last_seen = row.get('last_seen', 'Unknown')
+    if hasattr(last_seen, 'strftime'):
+        last_seen = last_seen.strftime('%Y-%m-%d %H:%M')
+
+    metric_type = row.get('metric_type', 'unknown')
+
+    return f"""
+### {index}. {row['metric_name']}
+**Dataset**: {row.get('dataset_name', 'Unknown')}
+**ID**: `{row['dataset_id']}`
+**Category**: {', '.join(business_cats)} / {row.get('technical_category', 'Unknown')}
+**Type**: {metric_type}
+**Purpose**: {row.get('inferred_purpose', 'N/A')}
+**Usage**: {row.get('typical_usage', 'N/A')}
+{dim_text}{range_text}{query_ex}**Frequency**: {row.get('data_frequency', 'unknown')} | **Last Seen**: {last_seen}
 """
 
 
