@@ -308,7 +308,7 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
     validate_input_size(dataset_aliases, "dataset_aliases", 100 * 1024)  # 100KB max for JSON
 
     # Validate OPAL query structure and apply auto-fix transformations (H-INPUT-1)
-    validation_result = validate_opal_query_structure(query)
+    validation_result = validate_opal_query_structure(query, time_range=time_range)
     if not validation_result.is_valid:
         return f"OPAL Query Validation Error: {validation_result.error_message}"
 

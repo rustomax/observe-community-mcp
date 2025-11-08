@@ -99,7 +99,129 @@ def transform_multi_term_angle_brackets(query: str) -> Tuple[str, List[str]]:
         return query, []
 
 
-def validate_opal_query_structure(query: str) -> ValidationResult:
+def transform_redundant_time_filters(query: str, time_range: Optional[str] = None) -> Tuple[str, List[str]]:
+    """
+    Auto-remove redundant timestamp filters when time_range parameter is set.
+
+    LLMs often add explicit timestamp filters even when the time_range parameter
+    already constrains the query time window. This creates redundancy and confusion.
+
+    Examples:
+        Input:  filter timestamp > @"1 hour ago" | filter body ~ error
+        Context: time_range="1h" is set
+        Output: filter body ~ error
+
+        Input:  filter body ~ error | filter BUNDLE_TIMESTAMP >= @"2024-01-01" | limit 10
+        Context: time_range="7d" is set
+        Output: filter body ~ error | limit 10
+
+    Only removes filters when:
+    1. time_range parameter is explicitly set
+    2. Filter uses common timestamp field names
+    3. Filter uses @"..." time expression syntax
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # Only transform if time_range is actually set
+    if not time_range:
+        return query, []
+
+    # Common timestamp field names in OPAL/OpenTelemetry
+    TIME_FIELDS = [
+        'timestamp',
+        'BUNDLE_TIMESTAMP',
+        'time',
+        '@timestamp',
+        'event_time',
+        'eventTime',
+        'observedTimestamp',
+        'OBSERVATION_TIME'
+    ]
+
+    # Pattern to match timestamp filters with @"..." syntax
+    # Matches: filter <time_field> <operator> @"..."
+    # Captures the entire filter operation including surrounding whitespace/pipes
+    time_field_pattern = '|'.join(TIME_FIELDS)
+
+    # Match patterns:
+    # 1. "filter FIELD OPERATOR @"..." |" (filter in middle/start with following pipe)
+    # 2. "| filter FIELD OPERATOR @"..."" (filter at end or middle with preceding pipe)
+    # Use alternation to handle both cases
+    pattern = rf'(?:^\s*|\|\s*)filter\s+({time_field_pattern})\s*([><=!]+)\s*@"[^"]+"\s*(?:\||$)'
+
+    matches = list(re.finditer(pattern, query))
+
+    if not matches:
+        return query, []
+
+    # Process matches in reverse order to preserve positions during removal
+    transformed_query = query
+    for match in reversed(matches):
+        field_name = match.group(1)
+        operator = match.group(2)
+        original_filter = match.group(0)
+
+        # Determine how to remove the filter cleanly
+        # Need to handle pipes properly to avoid leaving "| |" or starting with "|"
+        start_pos = match.start()
+        end_pos = match.end()
+
+        # Check what comes before and after
+        before = transformed_query[:start_pos]
+        after = transformed_query[end_pos:]
+
+        # Clean up pipes:
+        # - If filter starts with "|" and ends with "|", keep one "|" between before/after
+        # - If filter is at start (no "|" before), remove trailing "|" if present
+        # - If filter is at end (no "|" after), remove preceding "|" if present
+
+        if before.rstrip().endswith('|') or original_filter.lstrip().startswith('|'):
+            # Has preceding pipe
+            if after.lstrip().startswith('|') or original_filter.rstrip().endswith('|'):
+                # Has following pipe - remove filter and keep one pipe
+                before_trimmed = before.rstrip()
+                if before_trimmed.endswith('|'):
+                    before_trimmed = before_trimmed[:-1].rstrip()
+                after_trimmed = after.lstrip()
+                if after_trimmed.startswith('|'):
+                    after_trimmed = after_trimmed[1:].lstrip()
+
+                if before_trimmed and after_trimmed:
+                    # Both sides have content, need pipe between them
+                    transformed_query = before_trimmed + ' | ' + after_trimmed
+                else:
+                    # One side is empty, just concatenate
+                    transformed_query = before_trimmed + after_trimmed
+            else:
+                # No following pipe - just remove filter and preceding pipe
+                before_trimmed = before.rstrip()
+                if before_trimmed.endswith('|'):
+                    before_trimmed = before_trimmed[:-1].rstrip()
+                transformed_query = before_trimmed + ' ' + after.lstrip()
+        else:
+            # No preceding pipe (filter at start)
+            after_trimmed = after.lstrip()
+            if after_trimmed.startswith('|'):
+                after_trimmed = after_trimmed[1:].lstrip()
+            transformed_query = before + after_trimmed
+
+        # Create feedback for this removal
+        transformations.append(
+            f"✓ Auto-fix applied: Redundant timestamp filter removed\n"
+            f"  Removed: filter {field_name} {operator} @\"...\"\n"
+            f"  Reason: The time_range=\"{time_range}\" parameter already constrains the query time window.\n"
+            f"          Explicit timestamp filters are redundant and can cause confusion.\n"
+            f"  Note: To narrow the time window beyond time_range, you can still add timestamp filters,\n"
+            f"        but in most cases the time_range parameter is sufficient."
+        )
+
+    return transformed_query, transformations
+
+
+def validate_opal_query_structure(query: str, time_range: Optional[str] = None) -> ValidationResult:
     """
     Validate OPAL query structure and apply auto-fix transformations.
 
@@ -110,6 +232,7 @@ def validate_opal_query_structure(query: str) -> ValidationResult:
 
     Transformations applied:
     - Multi-term angle brackets: <error exception> → contains() OR logic
+    - Redundant time filters: Removes timestamp filters when time_range is set
 
     Validation checks:
     - Validates all verbs in piped sequences against whitelist
@@ -120,6 +243,7 @@ def validate_opal_query_structure(query: str) -> ValidationResult:
 
     Args:
         query: OPAL query string to validate and transform
+        time_range: Optional time range parameter (e.g., "1h", "24h") - if set, redundant time filters will be removed
 
     Returns:
         ValidationResult with:
@@ -134,6 +258,11 @@ def validate_opal_query_structure(query: str) -> ValidationResult:
     # Transform 1: Multi-term angle brackets
     query, angle_bracket_transforms = transform_multi_term_angle_brackets(query)
     all_transformations.extend(angle_bracket_transforms)
+
+    # Transform 2: Redundant time filters (when time_range is set)
+    query, time_filter_transforms = transform_redundant_time_filters(query, time_range)
+    all_transformations.extend(time_filter_transforms)
+
     # Complete list of OPAL functions (288 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
         'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad',

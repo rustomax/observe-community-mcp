@@ -73,9 +73,10 @@ async def execute_opal_query(
         return config_error
 
     # Validate OPAL query structure and apply auto-fix transformations (H-INPUT-1)
-    validation_result = validate_opal_query_structure(query)
+    validation_result = validate_opal_query_structure(query, time_range=time_range)
     logger.info(f"Query validation result: is_valid={validation_result.is_valid}, "
                 f"transformations={len(validation_result.transformations)}, "
+                f"time_range={time_range}, "
                 f"error_preview={str(validation_result.error_message)[:50] if validation_result.error_message else 'None'}")
 
     if not validation_result.is_valid:
