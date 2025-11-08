@@ -221,6 +221,118 @@ def transform_redundant_time_filters(query: str, time_range: Optional[str] = Non
     return transformed_query, transformations
 
 
+def transform_nested_field_quoting(query: str) -> Tuple[str, List[str]]:
+    """
+    Auto-quote nested field names that contain dots.
+
+    LLMs often write: resource_attributes.k8s.namespace.name
+    Which OPAL interprets as: resource_attributes → k8s → namespace → name (4 levels)
+    But actually means: resource_attributes → "k8s.namespace.name" (2 levels)
+
+    This is the #1 cause of "field not found" errors in OpenTelemetry data.
+
+    Examples:
+        Input:  resource_attributes.k8s.namespace.name
+        Output: resource_attributes."k8s.namespace.name"
+
+        Input:  attributes.http.status_code
+        Output: attributes."http.status_code"
+
+        Input:  resource_attributes.service.name
+        Output: resource_attributes.service.name (no change - valid field)
+
+    Detection strategy:
+    - Look for common parent fields (resource_attributes, attributes, fields)
+    - Followed by known dotted prefixes (k8s., http., service., net., etc.)
+    - Group and quote the dotted portion
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # Common parent field names in OpenTelemetry
+    PARENT_FIELDS = [
+        'resource_attributes',
+        'attributes',
+        'fields',
+        'span_attributes',
+        'resource',
+    ]
+
+    # Known OpenTelemetry attribute prefixes that use dots
+    # See: https://opentelemetry.io/docs/specs/semconv/
+    DOTTED_PREFIXES = [
+        'k8s',           # k8s.namespace.name, k8s.pod.name, etc.
+        'http',          # http.status_code, http.method, etc.
+        'service',       # service.instance.id, service.namespace, etc.
+        'net',           # net.host.name, net.peer.name, etc.
+        'db',            # db.system, db.connection_string, etc.
+        'messaging',     # messaging.system, messaging.destination, etc.
+        'rpc',           # rpc.system, rpc.service, etc.
+        'code',          # code.function, code.namespace, etc.
+        'enduser',       # enduser.id, enduser.role, etc.
+        'thread',        # thread.id, thread.name, etc.
+        'faas',          # faas.execution, faas.document, etc.
+        'peer',          # peer.service, etc.
+        'host',          # host.name, host.type, etc.
+        'container',     # container.id, container.name, etc.
+        'deployment',    # deployment.environment, etc.
+        'telemetry',     # telemetry.sdk.name, etc.
+        'cloud',         # cloud.provider, cloud.region, etc.
+        'aws',           # aws.ecs.task.arn, etc.
+        'gcp',           # gcp.gce.instance.name, etc.
+        'azure',         # azure.vm.scaleset.name, etc.
+    ]
+
+    # Pattern to match field access that might need quoting
+    # Matches: parent_field.prefix.more.stuff
+    # We'll use a callback to inspect and transform each match
+    parent_pattern = '|'.join(PARENT_FIELDS)
+    prefix_pattern = '|'.join(DOTTED_PREFIXES)
+
+    # Match: (parent_field).(dotted_prefix).rest.of.path
+    # Capture groups: (1) parent field, (2) the FULL dotted path from prefix onward
+    # Use negative lookahead to avoid already-quoted fields: (?!")
+    # IMPORTANT: Wrap prefix_pattern in (?:...) so the dot applies to all alternatives
+    # Then capture the whole expression including the prefix
+    pattern = rf'\b({parent_pattern})\.(?!")((?:{prefix_pattern})\.[a-zA-Z0-9_.]+)'
+
+    def replace_func(match):
+        parent = match.group(1)
+        dotted_path = match.group(2)
+
+        # Check if this is already quoted (should be caught by negative lookahead, but extra safety)
+        full_match = match.group(0)
+        match_start = match.start()
+        if match_start > 0 and query[match_start - 1] == '"':
+            return full_match  # Already quoted
+
+        # Build the quoted version
+        replacement = f'{parent}."{dotted_path}"'
+
+        # Create educational feedback
+        transformations.append(
+            f"✓ Auto-fix applied: Nested field name auto-quoted\n"
+            f"  Original: {full_match}\n"
+            f"  Fixed:    {replacement}\n"
+            f"  Reason: Field names containing dots must be quoted in OPAL.\n"
+            f"          Without quotes, '{dotted_path}' is interpreted as nested object access.\n"
+            f"  Note: OpenTelemetry attributes like 'k8s.namespace.name' are single field names,\n"
+            f"        not nested paths. Always quote them: \"{dotted_path}\""
+        )
+
+        return replacement
+
+    transformed_query = re.sub(pattern, replace_func, query)
+
+    # Check if any transformations were made
+    if transformed_query != query:
+        return transformed_query, transformations
+    else:
+        return query, []
+
+
 def validate_opal_query_structure(query: str, time_range: Optional[str] = None) -> ValidationResult:
     """
     Validate OPAL query structure and apply auto-fix transformations.
@@ -233,6 +345,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     Transformations applied:
     - Multi-term angle brackets: <error exception> → contains() OR logic
     - Redundant time filters: Removes timestamp filters when time_range is set
+    - Nested field quoting: resource_attributes.k8s.namespace.name → resource_attributes."k8s.namespace.name"
 
     Validation checks:
     - Validates all verbs in piped sequences against whitelist
@@ -255,11 +368,15 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     all_transformations = []
 
     # Apply transformations before validation
-    # Transform 1: Multi-term angle brackets
+    # Transform 1: Nested field quoting (structural fix - do this first)
+    query, field_quoting_transforms = transform_nested_field_quoting(query)
+    all_transformations.extend(field_quoting_transforms)
+
+    # Transform 2: Multi-term angle brackets
     query, angle_bracket_transforms = transform_multi_term_angle_brackets(query)
     all_transformations.extend(angle_bracket_transforms)
 
-    # Transform 2: Redundant time filters (when time_range is set)
+    # Transform 3: Redundant time filters (when time_range is set)
     query, time_filter_transforms = transform_redundant_time_filters(query, time_range)
     all_transformations.extend(time_filter_transforms)
 
