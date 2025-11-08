@@ -333,6 +333,147 @@ def transform_nested_field_quoting(query: str) -> Tuple[str, List[str]]:
         return query, []
 
 
+def transform_sort_syntax(query: str) -> Tuple[str, List[str]]:
+    """
+    Auto-fix SQL-style sort syntax: sort -field → sort desc(field)
+
+    LLMs often write: sort -field_name
+    Which is SQL/shell syntax, not OPAL.
+
+    OPAL requires: sort desc(field_name) or sort asc(field_name)
+
+    Examples:
+        Input:  sort -count
+        Output: sort desc(count)
+
+        Input:  filter error ~ true | sort -timestamp | limit 10
+        Output: filter error ~ true | sort desc(timestamp) | limit 10
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # Pattern to match: sort -field_name
+    # Captures the field name after the minus sign
+    # Field name can be simple (word) or complex (dotted path, quoted field)
+    pattern = r'\bsort\s+-(\w+(?:\.\w+)*)'
+
+    def replace_func(match):
+        field_name = match.group(1)
+        original = match.group(0)
+        replacement = f'sort desc({field_name})'
+
+        transformations.append(
+            f"✓ Auto-fix applied: Sort syntax corrected\n"
+            f"  Original: {original}\n"
+            f"  Fixed:    {replacement}\n"
+            f"  Reason: OPAL doesn't support SQL/shell-style 'sort -field' syntax.\n"
+            f"          Use 'sort desc(field)' for descending or 'sort asc(field)' for ascending.\n"
+            f"  Note: The minus prefix (-) has no meaning in OPAL sort operations."
+        )
+
+        return replacement
+
+    transformed_query = re.sub(pattern, replace_func, query)
+
+    if transformed_query != query:
+        return transformed_query, transformations
+    else:
+        return query, []
+
+
+def transform_count_if(query: str) -> Tuple[str, List[str]]:
+    """
+    Auto-fix count_if() function calls with proper OPAL pattern.
+
+    LLMs often write: statsby count_if(condition)
+    Which doesn't exist in OPAL.
+
+    Proper OPAL pattern: make_col flag:if(condition,1,0) | statsby sum(flag)
+
+    Examples:
+        Input:  statsby error_count:count_if(severity="error")
+        Output: make_col __count_if_error_count:if(severity="error",1,0) | statsby error_count:sum(__count_if_error_count)
+
+        Input:  statsby errors:count_if(status_code >= 500), total:count()
+        Output: make_col __count_if_errors:if(status_code >= 500,1,0) | statsby errors:sum(__count_if_errors), total:count()
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # Pattern to match: label:count_if(condition)
+    # Captures: (1) optional label before colon, (2) the condition inside count_if()
+    # We need to handle this inside statsby or aggregate contexts
+    pattern = r'\b(\w+):count_if\(([^)]+)\)'
+
+    matches = list(re.finditer(pattern, query))
+
+    if not matches:
+        return query, []
+
+    # Check if we're in a statsby or aggregate context
+    # We need to inject a make_col before the statsby/aggregate
+    transformed_query = query
+
+    # Process each count_if occurrence
+    for match in reversed(matches):  # Reverse to preserve positions
+        label = match.group(1)
+        condition = match.group(2)
+        original_expr = match.group(0)
+
+        # Generate a unique temp field name
+        temp_field = f'__count_if_{label}'
+
+        # Replace count_if(condition) with sum(temp_field)
+        replacement_agg = f'{label}:sum({temp_field})'
+        transformed_query = transformed_query.replace(original_expr, replacement_agg, 1)
+
+        # Now we need to inject make_col BEFORE the statsby/aggregate
+        # Find the statsby or aggregate that contains this expression
+        # Look for "statsby" or "aggregate" before our match position
+
+        # Split query into pipeline stages
+        stages = [s.strip() for s in transformed_query.split('|')]
+
+        # Find which stage contains our aggregation
+        agg_stage_idx = None
+        for idx, stage in enumerate(stages):
+            if replacement_agg in stage and (stage.startswith('statsby') or stage.startswith('aggregate')):
+                agg_stage_idx = idx
+                break
+
+        if agg_stage_idx is not None:
+            # Insert make_col stage before the aggregation
+            make_col_stage = f'make_col {temp_field}:if({condition},1,0)'
+
+            # Check if there's already a make_col in this position
+            if agg_stage_idx > 0 and stages[agg_stage_idx - 1].startswith('make_col'):
+                # Append to existing make_col
+                stages[agg_stage_idx - 1] += f', {temp_field}:if({condition},1,0)'
+            else:
+                # Insert new make_col stage
+                stages.insert(agg_stage_idx, make_col_stage)
+
+            transformed_query = ' | '.join(stages)
+
+            transformations.append(
+                f"✓ Auto-fix applied: count_if() converted to OPAL pattern\n"
+                f"  Original: {original_expr}\n"
+                f"  Fixed:    Added 'make_col {temp_field}:if({condition},1,0)' + '{replacement_agg}'\n"
+                f"  Reason: OPAL doesn't have count_if() function.\n"
+                f"          Use make_col with if() to create a flag, then sum() in aggregation.\n"
+                f"  Note: Pattern is: make_col flag:if(condition,1,0) | statsby sum(flag)"
+            )
+
+    if transformed_query != query:
+        return transformed_query, transformations
+    else:
+        return query, []
+
+
 def validate_opal_query_structure(query: str, time_range: Optional[str] = None) -> ValidationResult:
     """
     Validate OPAL query structure and apply auto-fix transformations.
@@ -346,6 +487,8 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     - Multi-term angle brackets: <error exception> → contains() OR logic
     - Redundant time filters: Removes timestamp filters when time_range is set
     - Nested field quoting: resource_attributes.k8s.namespace.name → resource_attributes."k8s.namespace.name"
+    - Sort syntax: sort -field → sort desc(field)
+    - count_if() function: label:count_if(cond) → make_col flag:if(cond,1,0) | statsby label:sum(flag)
 
     Validation checks:
     - Validates all verbs in piped sequences against whitelist
@@ -379,6 +522,14 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     # Transform 3: Redundant time filters (when time_range is set)
     query, time_filter_transforms = transform_redundant_time_filters(query, time_range)
     all_transformations.extend(time_filter_transforms)
+
+    # Transform 4: Sort syntax (SQL-style to OPAL)
+    query, sort_transforms = transform_sort_syntax(query)
+    all_transformations.extend(sort_transforms)
+
+    # Transform 5: count_if() function (doesn't exist in OPAL)
+    query, count_if_transforms = transform_count_if(query)
+    all_transformations.extend(count_if_transforms)
 
     # Complete list of OPAL functions (288 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
@@ -601,26 +752,11 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
                     )
                 )
 
-    # 7. Check for common SQL-style sort syntax (sort -field instead of sort desc(field))
-    # Check each operation in the pipeline (avoids matching inside quoted strings)
-    for operation in operations:
-        # Check if this operation starts with "sort -" (after stripping whitespace)
-        stripped_op = operation.strip()
-        if re.match(r'^sort\s+-', stripped_op):
-            return ValidationResult(
-                is_valid=False,
-                transformed_query=query if all_transformations else None,
-                transformations=all_transformations,
-                error_message=(
-                    "Invalid sort syntax. "
-                    "OPAL uses 'sort desc(field)' not 'sort -field'. "
-                    "Use: sort desc(field) for descending or sort asc(field) for ascending. "
-                    "(see https://docs.observeinc.com/en/latest/content/query-language-reference/verbs/sort.html)"
-                )
-            )
-
-    # NOTE: Multi-term angle bracket syntax is now AUTO-FIXED above (transform_multi_term_angle_brackets)
-    # No longer blocking - we automatically convert to explicit OR logic
+    # NOTE: Common syntax issues are now AUTO-FIXED above:
+    # - Multi-term angle bracket syntax → contains() OR logic (transform_multi_term_angle_brackets)
+    # - SQL-style sort syntax → sort desc(field) (transform_sort_syntax)
+    # - count_if() function → make_col + if() + sum() (transform_count_if)
+    # No longer blocking - we automatically convert to correct OPAL syntax
 
     # All validations passed
     return ValidationResult(
