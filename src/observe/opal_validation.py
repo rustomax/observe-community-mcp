@@ -474,6 +474,147 @@ def transform_count_if(query: str) -> Tuple[str, List[str]]:
         return query, []
 
 
+def transform_metric_pipeline(query: str) -> Tuple[str, List[str]]:
+    """
+    Auto-fix metric queries missing required align verb.
+
+    LLMs often write: filter m("metric_name") > 0
+    Or: statsby sum(m("metric_name"))
+
+    But metrics REQUIRE: align + m() + aggregate pattern
+
+    Examples:
+        Input:  filter m("k8s_pod_cpu_usage") > 1000000
+        Output: align 5m, cpu:avg(m("k8s_pod_cpu_usage")) | filter cpu > 1000000
+
+        Input:  statsby errors:sum(m("error_count")), group_by(service_name)
+        Output: align 5m, errors:sum(m("error_count")) | statsby errors:sum(errors), group_by(service_name)
+
+    Returns:
+        Tuple of (transformed_query, list_of_transformation_descriptions)
+    """
+    transformations = []
+
+    # First, check if query contains m() or m_tdigest() calls
+    has_metric_function = bool(re.search(r'\bm(?:_tdigest)?\s*\(', query))
+
+    if not has_metric_function:
+        return query, []
+
+    # Check if query already has align verb
+    has_align = bool(re.search(r'\balign\s+', query))
+
+    if has_align:
+        # Already has align, no transformation needed
+        return query, []
+
+    # Query has m() but no align - need to inject align
+
+    # Pattern 1: filter m("metric") OPERATOR value
+    # Example: filter m("metric_name") > 0
+    filter_pattern = r'\bfilter\s+m(?:_tdigest)?\s*\([^)]+\)\s*([><=!]+)\s*([^\s|]+)'
+    filter_match = re.search(filter_pattern, query)
+
+    if filter_match:
+        # Extract the full m() call
+        m_call_pattern = r'm(?:_tdigest)?\s*\([^)]+\)'
+        m_call = re.search(m_call_pattern, query).group(0)
+        operator = filter_match.group(1)
+        threshold = filter_match.group(2)
+
+        # Determine aggregation function - default to avg for filter context
+        agg_func = 'avg'
+        if operator in ['>', '>=']:
+            agg_func = 'max'  # If filtering for high values, use max
+        elif operator in ['<', '<=']:
+            agg_func = 'min'  # If filtering for low values, use min
+
+        # Build the align stage
+        temp_field = 'metric_value'
+        align_stage = f'align 5m, {temp_field}:{agg_func}({m_call})'
+
+        # Replace the filter with field reference
+        new_filter = f'filter {temp_field} {operator} {threshold}'
+        original_filter = filter_match.group(0)
+
+        # Build transformed query
+        rest_of_query = query.replace(original_filter, new_filter, 1)
+        transformed_query = f'{align_stage} | {rest_of_query}'
+
+        transformations.append(
+            f"✓ Auto-fix applied: Metric query missing align verb\n"
+            f"  Original: {original_filter}\n"
+            f"  Fixed:    {align_stage} | {new_filter}\n"
+            f"  Reason: Metrics require the align+m()+aggregate pattern.\n"
+            f"          The m() function only works inside align verb.\n"
+            f"  Note: align [interval], field:aggregation(m(\"metric_name\"))\n"
+            f"        Common intervals: 1m, 5m, 15m, 1h"
+        )
+
+        return transformed_query, transformations
+
+    # Pattern 2: statsby/aggregate with m() calls
+    # Example: statsby errors:sum(m("error_count"))
+    agg_pattern = r'\b(statsby|aggregate)\s+.*?m(?:_tdigest)?\s*\([^)]+\)'
+    agg_match = re.search(agg_pattern, query)
+
+    if agg_match:
+        # Find all metric aggregations like label:agg_func(m("metric"))
+        metric_agg_pattern = r'(\w+):(sum|avg|min|max|count|tdigest_combine)\s*\(\s*m(?:_tdigest)?\s*\(([^)]+)\)\s*\)'
+        metric_aggs = list(re.finditer(metric_agg_pattern, query))
+
+        if not metric_aggs:
+            return query, []
+
+        # Build align stage with all metric aggregations
+        align_parts = []
+        replacements = []
+
+        for match in metric_aggs:
+            label = match.group(1)
+            agg_func = match.group(2)
+            metric_name = match.group(3)
+
+            # Create align aggregation
+            if agg_func == 'tdigest_combine':
+                # Special handling for tdigest
+                align_parts.append(f'{label}:tdigest_combine(m_tdigest({metric_name}))')
+            else:
+                align_parts.append(f'{label}:{agg_func}(m({metric_name}))')
+
+            # Track replacement: m("metric") -> field_name
+            original = match.group(0)
+            # In statsby, keep the same label but reference the aligned field
+            replacement = f'{label}:{agg_func}({label})'
+            replacements.append((original, replacement))
+
+        # Build align stage
+        align_stage = 'align 5m, ' + ', '.join(align_parts)
+
+        # Replace m() calls in the rest of the query
+        transformed_query = query
+        for original, replacement in replacements:
+            transformed_query = transformed_query.replace(original, replacement, 1)
+
+        # Prepend align stage
+        transformed_query = f'{align_stage} | {transformed_query}'
+
+        transformations.append(
+            f"✓ Auto-fix applied: Metric aggregation missing align verb\n"
+            f"  Original: {agg_match.group(0)[:80]}...\n"
+            f"  Fixed:    {align_stage} | ...\n"
+            f"  Reason: Metric queries require align before aggregation.\n"
+            f"          Pattern: align [interval], field:agg(m(\"metric\")) | aggregate/statsby\n"
+            f"  Note: The align stage time-buckets metrics, then you aggregate across dimensions."
+        )
+
+        return transformed_query, transformations
+
+    # If we have m() but didn't match known patterns, return unchanged
+    # The query will likely fail validation, but we don't want to make incorrect assumptions
+    return query, []
+
+
 def validate_opal_query_structure(query: str, time_range: Optional[str] = None) -> ValidationResult:
     """
     Validate OPAL query structure and apply auto-fix transformations.
@@ -489,6 +630,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     - Nested field quoting: resource_attributes.k8s.namespace.name → resource_attributes."k8s.namespace.name"
     - Sort syntax: sort -field → sort desc(field)
     - count_if() function: label:count_if(cond) → make_col flag:if(cond,1,0) | statsby label:sum(flag)
+    - Metric pipeline: m() outside align → align + m() + aggregate pattern
 
     Validation checks:
     - Validates all verbs in piped sequences against whitelist
@@ -511,23 +653,28 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     all_transformations = []
 
     # Apply transformations before validation
-    # Transform 1: Nested field quoting (structural fix - do this first)
+    # Transform 1: Metric pipeline detection (structural - do this first, before field quoting)
+    # This must come first because it restructures the entire query
+    query, metric_pipeline_transforms = transform_metric_pipeline(query)
+    all_transformations.extend(metric_pipeline_transforms)
+
+    # Transform 2: Nested field quoting (structural fix)
     query, field_quoting_transforms = transform_nested_field_quoting(query)
     all_transformations.extend(field_quoting_transforms)
 
-    # Transform 2: Multi-term angle brackets
+    # Transform 3: Multi-term angle brackets
     query, angle_bracket_transforms = transform_multi_term_angle_brackets(query)
     all_transformations.extend(angle_bracket_transforms)
 
-    # Transform 3: Redundant time filters (when time_range is set)
+    # Transform 4: Redundant time filters (when time_range is set)
     query, time_filter_transforms = transform_redundant_time_filters(query, time_range)
     all_transformations.extend(time_filter_transforms)
 
-    # Transform 4: Sort syntax (SQL-style to OPAL)
+    # Transform 5: Sort syntax (SQL-style to OPAL)
     query, sort_transforms = transform_sort_syntax(query)
     all_transformations.extend(sort_transforms)
 
-    # Transform 5: count_if() function (doesn't exist in OPAL)
+    # Transform 6: count_if() function (doesn't exist in OPAL)
     query, count_if_transforms = transform_count_if(query)
     all_transformations.extend(count_if_transforms)
 
