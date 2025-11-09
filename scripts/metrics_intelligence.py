@@ -666,6 +666,26 @@ class MetricsIntelligenceAnalyzer:
             if 'resource_attributes' in row and isinstance(row['resource_attributes'], dict):
                 dimensions.update(row['resource_attributes'])
 
+            # Top-level dimension fields (for ServiceExplorer and other flat-structure metrics)
+            # These datasets have dimensions as top-level fields instead of nested in labels/attributes
+            excluded_top_level_fields = {
+                'metric', 'value', 'timestamp', 'time', 'metricType', 'tdigestValue',
+                'meta', 'tags', 'labels', 'attributes', 'resource_attributes'
+            }
+
+            for key, value in row.items():
+                # Skip fields we've already processed or that aren't dimensions
+                if key in dimensions or key in excluded_top_level_fields:
+                    continue
+
+                # Skip link fields (link_42160969_2, etc.) - these are internal references
+                if key.startswith('link_'):
+                    continue
+
+                # Add non-null, non-empty top-level fields as dimensions
+                if value is not None and value != '':
+                    dimensions[key] = value
+
             # Enhanced: Include important nested fields as dimensions
             for field_path, field_info in nested_analysis['nested_fields'].items():
                 # Convert nested field path to value if it exists in this row
@@ -714,13 +734,24 @@ class MetricsIntelligenceAnalyzer:
             
             # Consider common if present in >10% of data points and not too high cardinality
             if len(metric_data) > 0:
-                presence_rate = len([row for row in metric_data 
-                                   if any(key in dims for dims in [
-                                       row.get('labels', {}), 
-                                       row.get('attributes', {}), 
-                                       row.get('resource_attributes', {})
-                                   ] if isinstance(dims, dict))]) / len(metric_data)
-                
+                # Check presence in both nested structures and top-level fields
+                presence_count = 0
+                for row in metric_data:
+                    # Check nested structures
+                    found_in_nested = any(key in dims for dims in [
+                        row.get('labels', {}),
+                        row.get('attributes', {}),
+                        row.get('resource_attributes', {})
+                    ] if isinstance(dims, dict))
+
+                    # Check top-level (for flat-structure metrics)
+                    found_in_top_level = key in row and row[key] is not None and row[key] != ''
+
+                    if found_in_nested or found_in_top_level:
+                        presence_count += 1
+
+                presence_rate = presence_count / len(metric_data)
+
                 if presence_rate > 0.1 and cardinality < self.HIGH_CARDINALITY_THRESHOLD:
                     common_dimensions[key] = {
                         'presence_rate': presence_rate,

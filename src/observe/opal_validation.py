@@ -680,7 +680,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     query, count_if_transforms = transform_count_if(query)
     all_transformations.extend(count_if_transforms)
 
-    # Complete list of OPAL functions (288 functions across 11 categories)
+    # Complete list of OPAL functions (289 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
         'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad',
         'asc', 'desc',  # Sort direction functions
@@ -702,7 +702,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'map_keys', 'map_values', 'match', 'match_regex', 'max', 'md5', 'median', 'min',
         'mode', 'nanoseconds', 'nanoseconds_to_milliseconds', 'nanoseconds_to_seconds',
         'not_null', 'now', 'nth', 'null_if', 'num_bytes', 'num_codepoints', 'object_agg',
-        'object_delete', 'parse_csv', 'parse_duration', 'parse_isotime', 'parse_json',
+        'object_delete', 'options', 'parse_csv', 'parse_duration', 'parse_isotime', 'parse_json',
         'parse_key_value', 'parse_time', 'parse_timestamp', 'parse_url', 'parse_user_agent',
         'path', 'percentile', 'pi', 'pow', 'protocol', 'query_param', 'query_params',
         'radians_to_degrees', 'rand', 'regextract', 'regexmatch', 'replace', 'replace_regex',
@@ -756,11 +756,11 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'getdate': 'OPAL doesn\'t have getdate(). Use: now()'
     }
 
-    # Complete list of OPAL verbs (69 verbs across 6 categories)
+    # Complete list of OPAL verbs (70 verbs across 6 categories)
     ALLOWED_VERBS = {
         # Aggregate verbs
         'aggregate', 'align', 'dedup', 'distinct', 'fill', 'histogram',
-        'make_event', 'rollup', 'statsby', 'timechart', 'top', 'top_logsources',
+        'make_event', 'rollup', 'statsby', 'timechart', 'top', 'topk', 'top_logsources',
         'window', 'bottom',
         # Filter verbs
         'filter', 'filter_null', 'filter_repeated_source', 'filter_repeated_value',

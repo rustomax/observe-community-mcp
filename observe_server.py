@@ -125,178 +125,556 @@ from src.observe.opal_validation import validate_opal_query_structure
 @trace_mcp_tool(tool_name="execute_opal_query", record_args=True, record_result=False)
 async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, primary_dataset_id: str = None, secondary_dataset_ids: Optional[str] = None, dataset_aliases: Optional[str] = None, time_range: Optional[str] = "1h", start_time: Optional[str] = None, end_time: Optional[str] = None, format: Optional[str] = "csv", timeout: Optional[float] = None) -> str:
     """
-    Execute OPAL (Observe Processing and Analytics Language) queries on datasets.
+    Execute OPAL (Observe Processing and Analytics Language) queries on datasets and metrics in Observe.
 
-    MANDATORY 2-STEP WORKFLOW (Skipping Step 1 = "field not found" errors):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Step 1: discover_context("search term") → Get dataset_id + EXACT field names + dimensions
-    Step 2: execute_opal_query(query, dataset_id) → Use ONLY fields from Step 1
+    ## Overview
 
-    CRITICAL: METRICS REQUIRE SPECIAL SYNTAX
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    Metric queries MUST use align verb - m() function ONLY works inside align!
+    Observe stores three fundamental types of observability data, each requiring different OPAL approaches:
 
-    WILL ALWAYS FAIL:
-      filter m("metric_name") > 0              # m() outside align
-      statsby sum(m("metric_name"))            # m() without align
+    1. **Events** (Logs) - Point-in-time occurrences with no duration
+    2. **Intervals** (Spans, Resources) - Time-bounded entities with start/end times
+    3. **Metrics** - Pre-aggregated measurements collected at regular intervals
 
-    REQUIRED PATTERN:
-      align 5m, value:sum(m("metric_name"))    # align + m()
-      | aggregate total:sum(value), group_by(service_name)
-      | filter total > 100                     # filter AFTER aggregate
+    **Critical Rule:** Always use `discover_context()` BEFORE writing queries to get exact field names, metric types, and available dimensions.
 
-    TDIGEST METRICS (span_duration_5m, etc.):
-      align 5m, combined: tdigest_combine(m_tdigest("metric"))
-      | aggregate agg: tdigest_combine(combined), group_by(field)
-      | make_col p95: tdigest_quantile(agg, 0.95)
+    ---
 
-      WARNING: Must use m_tdigest() not m(), must use tdigest_combine() before tdigest_quantile()
+    ## Understanding Data Types
 
-    COMMON QUERY PATTERNS (90% of use cases):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    DATASETS (Logs/Spans): filter → [make_col] → statsby/timechart
-      # Error analysis by service
-      filter <BODY_FIELD> ~ error
-      | make_col service:string(resource_attributes."service.name")
-      | statsby error_count:count(), group_by(service)
-      | sort desc(error_count)
+    ### Events (Logs)
+    **Characteristics:**
+    - Point-in-time entries (single timestamp)
+    - High volume, text-heavy
+    - Examples: Application logs, system logs, audit logs
 
-      # Time-series analysis
-      filter <BODY_FIELD> ~ error
-      | timechart count(), group_by(string(resource_attributes."k8s.namespace.name"))
+    **Interface:** `log`
 
-    METRICS: align → aggregate → [filter]
-      # Basic metric aggregation (use discover_context() to find metric names + dimensions)
-      align 5m, errors:sum(m("<METRIC_NAME>"))
-      | aggregate total_errors:sum(errors), group_by(service_name)
-      | filter total_errors > 10
-      | sort desc(total_errors)
+    **Best for:** Searching text, error analysis, event counting
 
-      # P95/P99 latency with tdigest (for duration/latency metrics)
-      align 5m, combined:tdigest_combine(m_tdigest("<TDIGEST_METRIC_NAME>"))
-      | aggregate agg:tdigest_combine(combined), group_by(service_name)
-      | make_col p95:tdigest_quantile(agg, 0.95), p99:tdigest_quantile(agg, 0.99)
-      | make_col p95_ms:p95/1000000
-      | sort desc(p95_ms)
+    **Query approach:** Direct filtering and aggregation with `statsby`
 
-    FIELD QUOTING (Field names with dots):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    WRONG: resource_attributes.k8s.namespace.name
-       (OPAL interprets as: resource_attributes → k8s → namespace → name)
+    ---
 
-    CORRECT: resource_attributes."k8s.namespace.name"
-       (Single field name containing dots - MUST quote the field name)
+    ### Intervals (Spans, Resources)
+    **Characteristics:**
+    - Time-bounded with start and end timestamps
+    - Have duration
+    - Examples: Distributed traces (spans), Kubernetes pods, database connections
 
-    Rule: If field name contains dots, wrap it in quotes: object."field.with.dots"
+    **Interface:** `otel_span`, `resource`
 
-    COMMON FAILURES - DON'T DO THIS:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    1. Forgetting field quoting → Quote field names with dots
-    2. SQL syntax (CASE/WHEN, -field) → Use if(), desc(field)
-    3. count_if() function → Use make_col + if() + sum() pattern
-    4. m() outside align verb → Metrics REQUIRE align + m() + aggregate
-    5. Missing parentheses → group_by(field), desc(field), if(cond,val,val)
+    **Best for:** Latency analysis, request tracing, resource lifecycle tracking
 
-    CORE OPAL SYNTAX:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    filter: field ~ keyword, field = value, field > 100
-    make_col: new_field:expression, nested:object."field.name"
-    statsby: metric:count(), metric:sum(field), group_by(dimension)
-    sort: desc(field), asc(field)  [NOT sort -field]
-    limit: limit 10
-    Conditionals: if(condition, true_value, false_value)
-    Text Search: field ~ keyword (single token), field ~ <word1 word2> (multiple tokens, AND)
-    OR Search: contains(field,"w1") or contains(field,"w2")
+    **Query approach:** Calculate duration, filter by time ranges, percentile analysis
 
-    TIME UNITS (Check sample values in discover_context()):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    No suffix (timestamp, duration) = NANOSECONDS → divide by 1M for ms
-    With suffix (_ms, _s) = as labeled
-      • 19 digits (1760201545280843522) = nanoseconds
-      • 13 digits (1758543367916) = milliseconds
+    ---
 
-    DON'T EXIST IN OPAL:
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    count_if() → Use: make_col flag:if(condition,1,0) | statsby sum(flag)
-    pick → Use: make_col to select fields, or reference directly
-    sort -field → Use: sort desc(field)
-    SQL CASE/WHEN → Use: if(condition, true_val, false_val)
+    ### Metrics
+    **Characteristics:**
+    - Pre-aggregated data points
+    - Collected at regular intervals (e.g., every 5 minutes)
+    - Efficient for time-series analysis
+    - Types: `gauge`, `counter`, `delta`, `tdigest`
 
-    EXAMPLES (Replace <FIELD> with actual names from discover_context()):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # Basic search
-    filter <BODY_FIELD> ~ error | limit 10
+    **Best for:** Performance dashboards, trending over time, efficient aggregations
 
-    # Nested fields with dots (QUOTE the field name)
-    filter resource_attributes."k8s.namespace.name" = "default" | limit 10
-    make_col ns:resource_attributes."k8s.namespace.name" | filter ns = "default"
+    **Query approach:** MUST use `align` verb to work with time buckets
 
-    # Conditional counting (NO count_if!)
-    make_col is_error:if(contains(<BODY_FIELD>, "error"), 1, 0)
-    | statsby error_count:sum(is_error), total:count(), group_by(service)
+    ---
+
+    ## OPAL Patterns by Data Type
+
+    ### Pattern 1: Events (Logs)
+
+    **Use `filter` → `make_col` → `statsby`**
+
+    ```opal
+    # Count errors by service
+    filter body ~ "error"
+    | make_col svc:string(resource_attributes."service.name")
+    | statsby error_count:count(), group_by(svc)
+    | sort desc(error_count)
+    | limit 20
+
+    # Search with multiple conditions
+    filter contains(body, "error") or contains(body, "exception")
+    | filter string(resource_attributes."k8s.namespace.name") = "production"
+    | statsby count(), group_by(string(resource_attributes."service.name"))
+    ```
+
+    **Key points:**
+    - Use `statsby` for aggregations (NOT `aggregate`)
+    - Quote nested field names with dots: `resource_attributes."k8s.namespace.name"`
+    - Results: One row per group across entire time range
+
+    ---
+
+    ### Pattern 2: Intervals (Spans)
+
+    **Use `filter` → `make_col` (calculate duration) → `statsby`**
+
+    ```opal
+    # Service latency percentiles
+    make_col svc:service_name, dur_ms:float64(duration)/1000000
+    | statsby p50:percentile(dur_ms, 0.50),
+              p95:percentile(dur_ms, 0.95),
+              p99:percentile(dur_ms, 0.99),
+              group_by(svc)
+    | sort desc(p95)
+    | limit 20
+
+    # Count requests by service
+    make_col svc:service_name
+    | statsby request_count:count(), group_by(svc)
+    | sort desc(request_count)
+
+    # Error analysis
+    filter error = true
+    | make_col svc:service_name, error_msg:string(error_message)
+    | statsby error_count:count(), group_by(svc, error_msg)
+    | sort desc(error_count)
+    ```
+
+    **Key points:**
+    - Duration is typically in nanoseconds - divide by 1,000,000 for milliseconds
+    - Use `percentile()` function for latency analysis
+    - `statsby` aggregates across the entire time range
+    - Results: Summary statistics, one row per group
+
+    ---
+
+    ### Pattern 3: Metrics (Pre-aggregated Data)
+
+    **CRITICAL: Metrics require `align` verb**
+
+    Metrics queries produce different output based on binning strategy:
+
+    #### Option A: Summary Output (One Row Per Service)
+    **Use `align options(bins: 1)` for single summary across time range**
+
+    ```opal
+    # Total request count per service
+    align options(bins: 1), rate:sum(m("span_call_count_5m"))
+    aggregate total_requests:sum(rate), group_by(service_name)
+    fill total_requests:0
+
+    # Average error rate per service
+    align options(bins: 1), errors:sum(m("span_error_count_5m"))
+    aggregate total_errors:sum(errors), group_by(service_name)
+    filter total_errors > 0
+    ```
+
+    **Result:** One row per service (summary across entire time window)
+
+    **Note:** No pipe `|` between `align` and `aggregate` when using `options(bins: 1)`
+
+    #### Option B: Time-Series Output (Multiple Rows Per Service)
+    **Use `align 5m` or `align` (auto bins) for trending over time**
+
+    ```opal
+    # Request rate trending over time
+    align 5m, rate:sum(m("span_call_count_5m"))
+    | aggregate total_requests:sum(rate), group_by(service_name)
+    | sort desc(total_requests)
+    ```
+
+    **Result:** Multiple rows per service (one per time bucket)
+
+    **Output includes:**
+    - `_c_bucket` - Time bucket identifier
+    - `valid_from`, `valid_to` - Time bucket boundaries
+    - One row per (service, time_bucket) combination
+
+    ---
+
+    ## Working with Metrics
+
+    ### Metric Types and Functions
+
+    **1. Counter/Gauge/Delta Metrics**
+    Use `m()` function:
+    ```opal
+    # Summary (single row per service)
+    align options(bins: 1), total:sum(m("span_call_count_5m"))
+    aggregate total_calls:sum(total), group_by(service_name)
+
+    # Time-series (multiple rows)
+    align total:sum(m("span_call_count_5m"))
+    | aggregate total_calls:sum(total), group_by(service_name)
+    ```
+
+    **2. TDigest Metrics (Percentile/Latency)**
+    Use `m_tdigest()` with special combine/quantile pattern:
+
+    ```opal
+    # Summary (single row per service)
+    align options(bins: 1), combined:tdigest_combine(m_tdigest("span_duration_tdigest_5m"))
+    aggregate p50:tdigest_quantile(tdigest_combine(combined), 0.50),
+              p95:tdigest_quantile(tdigest_combine(combined), 0.95),
+              p99:tdigest_quantile(tdigest_combine(combined), 0.99),
+              group_by(service_name)
+    make_col p50_ms:p50/1000000, p95_ms:p95/1000000, p99_ms:p99/1000000
+    ```
+
+    **Critical pattern for tdigest:**
+    1. `align` → `tdigest_combine(m_tdigest("metric"))`
+    2. `aggregate` → `tdigest_quantile(tdigest_combine(column), percentile)`
+    3. Note: `tdigest_combine` appears TWICE - once in align, once nested in aggregate
+
+    **How to know which function to use:**
+    ```bash
+    # Check metric type in discover_context() output:
+    # - type: "tdigest" → use m_tdigest()
+    # - type: "gauge", "counter", "delta" → use m()
+    ```
+
+    ---
+
+    ## Time Bucketing and Aggregation
+
+    ### Understanding align options(bins: N)
+
+    | Pattern | Output | Use Case |
+    |---------|--------|----------|
+    | `align options(bins: 1)` | One row per group | Summary reports, totals, single percentiles |
+    | `align 5m` | Many rows per group | Time-series charts, trending |
+    | `align 1h` | Many rows per group | Hourly trends |
+    | `align` (default) | Auto-sized buckets | Dashboards (Observe picks optimal size) |
+
+    **Important syntax note:** When using `options(bins: 1)`, do NOT use pipe `|` between `align` and `aggregate`
+
+    ### Decision Tree
+
+    ```
+    ┌─────────────────────────────────────┐
+    │ What do you need?                   │
+    └─────────────────────────────────────┘
+               │
+               ├─ Single summary per service (e.g., "total requests in 24h")
+               │  └─> Use: Metrics + align options(bins: 1)
+               │      Result: 1 row per service
+               │
+               ├─ Trends over time (e.g., "requests per hour")
+               │  └─> Use: Metrics + align 5m + aggregate
+               │      Result: Multiple rows per service (time-series)
+               │
+               └─ Raw detailed analysis (no metrics available)
+                  └─> Use: Raw dataset + statsby (no align)
+                      Result: 1 row per group
+    ```
+
+    ---
+
+    ## Complete Examples
+
+    ### Example 1: RED Methodology (Summary)
+
+    **Goal:** Get Rate, Error, Duration summary for all services over 24 hours
+
+    ```opal
+    # RATE - Total requests per service
+    align options(bins: 1), rate:sum(m("span_call_count_5m"))
+    aggregate total_requests:sum(rate), group_by(service_name)
+    fill total_requests:0
+
+    # ERRORS - Total errors per service
+    align options(bins: 1), errors:sum(m("span_error_count_5m"))
+    aggregate total_errors:sum(errors), group_by(service_name)
+    filter total_errors > 0
+
+    # DURATION - Latency percentiles per service
+    align options(bins: 1), combined:tdigest_combine(m_tdigest("span_sn_service_node_duration_tdigest_5m"))
+    aggregate p50:tdigest_quantile(tdigest_combine(combined), 0.50),
+              p95:tdigest_quantile(tdigest_combine(combined), 0.95),
+              p99:tdigest_quantile(tdigest_combine(combined), 0.99),
+              group_by(service_name)
+    make_col p50_ms:p50/1000000, p95_ms:p95/1000000, p99_ms:p99/1000000
+    ```
+
+    **Output:** One row per service with summary statistics
+
+    **Important:** No pipe `|` between verbs when using `options(bins: 1)`
+
+    ---
+
+    ### Example 2: RED Methodology (Alternative - Raw Spans)
+
+    **When to use:** Metrics don't exist, or you need span-level details
+
+    ```opal
+    # RATE - Request count
+    make_col svc:service_name
+    | statsby request_count:count(), group_by(svc)
+    | sort desc(request_count)
+
+    # ERRORS - Error count
+    filter error = true
+    | make_col svc:service_name
+    | statsby error_count:count(), group_by(svc)
     | sort desc(error_count)
 
-    # Multi-keyword search
-    filter <BODY_FIELD> ~ <error exception>    # Both tokens present (AND)
-    filter contains(<BODY_FIELD>,"error") or contains(<BODY_FIELD>,"warn")  # Either (OR)
+    # DURATION - Latency percentiles
+    make_col svc:service_name, dur_ms:float64(duration)/1000000
+    | statsby p50:percentile(dur_ms, 0.50),
+              p95:percentile(dur_ms, 0.95),
+              p99:percentile(dur_ms, 0.99),
+              group_by(svc)
+    | sort desc(p95)
+    ```
 
-    # Time-based with nanosecond conversion
-    filter <TIME_FIELD> > @"1 hour ago"
-    | make_col duration_ms:<NANO_FIELD> / 1000000
-    | filter duration_ms > 500 | limit 100
+    **Note:** Slower than metrics approach but works on raw data
 
-    MULTI-DATASET JOINS (Joining two or more datasets):
-    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    CRITICAL: Join syntax does NOT include dataset reference as first argument!
+    ---
 
-    CORRECT SYNTAX:
-      join on(field=@alias.field), new_col:@alias.column
+    ### Example 3: Top Errors with Details
 
-    WRONG SYNTAX (will fail):
-      join @alias, on(field=@alias.field), new_col:@alias.column  # Extra @alias argument!
+    ```opal
+    # Find top errors from spans with full details
+    filter error = true
+    | make_col svc:service_name,
+              error_msg:string(error_message),
+              span:span_name,
+              status:string(status_code)
+    | statsby error_count:count(), group_by(svc, error_msg, span)
+    | sort desc(error_count)
+    | limit 20
+    ```
 
-    # Example: Join spans with span events to get error details
-    # Dataset 1 (primary): Spans with OPAL queries in attributes
-    # Dataset 2 (secondary): Span Events with error messages
+    ---
 
-    primary_dataset_id = "42160967"  # Spans
-    secondary_dataset_ids = '["42160966"]'  # Span Events
-    dataset_aliases = '{"events": "42160966"}'
+    ### Example 4: Time-Series for Dashboard
 
-    query = '''
-    filter service_name = "my-service"
-    | filter span_name = "http_request"
-    | make_col request_span_id:span_id
-    | join on(request_span_id=@events.span_id),
-        event_type:@events.event_name,
-        error_msg:@events.attributes."error.message"
-    | filter event_type = "error_event"
-    | make_col error_message:string(error_msg)
-    | limit 10
-    '''
+    ```opal
+    # Request rate over time (for charting)
+    align 5m, rate:sum(m("span_call_count_5m"))
+    | aggregate requests_per_5min:sum(rate), group_by(service_name)
 
-    # Key points:
-    # 1. Use secondary_dataset_ids as JSON array: '["42160966"]'
-    # 2. Use dataset_aliases to name datasets: '{"events": "42160966"}'
-    # 3. Reference secondary dataset with @alias in join
-    # 4. No @alias before on() predicate!
+    # Error rate over time
+    align 5m, errors:sum(m("span_error_count_5m"))
+    | aggregate errors_per_5min:sum(errors), group_by(service_name)
+    | filter errors_per_5min > 0
+    ```
 
-    Args:
-        query: OPAL query (use syntax reference above)
-        dataset_id: DEPRECATED - use primary_dataset_id
-        primary_dataset_id: Dataset ID from discover_context() (searches both datasets and metrics)
-        secondary_dataset_ids: JSON array for joins: '["44508111"]'
-        dataset_aliases: JSON object for joins: '{"volumes": "44508111"}'
-        time_range: "1h", "24h", "7d", "30d"
-        start_time: ISO format "2024-01-20T16:20:00Z"
-        end_time: ISO format "2024-01-20T17:20:00Z"
-        format: "csv" (default) or "ndjson"
-        timeout: Seconds (default: 30s)
+    **Result:** Time-series data suitable for line charts
 
-    Returns:
-        Query results (CSV: first 1000 rows, or limited by query)
+    ---
 
-    Need help with unknown syntax errors? Call get_relevant_docs("opal <keyword>")
+    ## Common Patterns
+
+    ### Pattern: Conditional Counting (No count_if!)
+
+    OPAL doesn't have `count_if()`. Use this pattern instead:
+
+    ```opal
+    # Count errors vs total requests
+    make_col svc:service_name, is_error:if(error = true, 1, 0)
+    | statsby total:count(), error_count:sum(is_error), group_by(svc)
+    | make_col error_rate:float64(error_count)/float64(total)
+    | sort desc(error_rate)
+    ```
+
+    ---
+
+    ### Pattern: Nested Field Access
+
+    ```opal
+    # Fields with dots MUST be quoted
+    make_col namespace:string(resource_attributes."k8s.namespace.name"),
+             service:string(resource_attributes."service.name")
+    | filter namespace = "production"
+    ```
+
+    **Rule:** `object."field.with.dots"` - quote only the field name, not the whole path
+
+    ---
+
+    ### Pattern: Time Unit Conversion
+
+    ```opal
+    # Nanoseconds to milliseconds
+    make_col dur_ms:duration/1000000
+
+    # Nanoseconds to seconds
+    make_col dur_sec:duration/1000000000
+
+    # Check field samples in discover_context() to identify units!
+    # 19 digits (1760201545280843522) = nanoseconds
+    # 13 digits (1758543367916) = milliseconds
+    ```
+
+    ---
+
+    ## Troubleshooting
+
+    ### Issue: "Same service appears multiple times!"
+
+    **Cause:** Using metrics with `align` produces time-series data
+
+    **Solution:**
+    - For summary: Use `align options(bins: 1)`
+    - For trends: This is correct behavior - each row is a time bucket
+
+    ---
+
+    ### Issue: "Only getting one service in results"
+
+    **Diagnosis:**
+    1. Check if metric has data for other services: `discover_context(metric_name="...")`
+    2. Verify dimensions available in metric
+    3. Try querying raw dataset to confirm other services exist
+
+    **Solution:** You might be using a metric that only captures one service, or need to filter differently
+
+    ---
+
+    ### Issue: "Field not found" error
+
+    **Cause:**
+    - Field name spelled incorrectly (case-sensitive!)
+    - Missing quotes around nested fields with dots
+    - Using wrong dataset
+
+    **Solution:**
+    1. Run `discover_context(dataset_id="...")` to get exact field names
+    2. Copy field names exactly as shown
+    3. Quote nested fields: `resource_attributes."k8s.namespace.name"`
+
+    ---
+
+    ### Issue: "Percentiles look wrong"
+
+    **Check:**
+    1. **Time units** - Duration often in nanoseconds (divide by 1M for ms)
+    2. **TDigest pattern** - Must use `tdigest_combine` twice (align + aggregate)
+    3. **Correct syntax:**
+       ```opal
+       aggregate p95:tdigest_quantile(tdigest_combine(combined), 0.95)
+       ```
+       NOT:
+       ```opal
+       aggregate agg:tdigest_combine(combined)
+       | make_col p95:tdigest_quantile(agg, 0.95)
+       ```
+
+    ---
+
+    ### Issue: "Unknown function" error
+
+    **Common mistakes:**
+    - Using `count_if()` - doesn't exist, use `if()` + `sum()` pattern
+    - Using `pick` - doesn't exist, use `make_col`
+    - Using SQL syntax like `CASE/WHEN` - use `if(condition, true_val, false_val)`
+
+    **Solution:** See OPAL documentation or use `get_relevant_docs()` to find correct syntax
+
+    ---
+
+    ### Issue: Metric query fails with "column has to be aggregated or grouped"
+
+    **Cause:** Trying to use a column from `align` directly in `aggregate` without re-combining
+
+    **Solution for tdigest:**
+    ```opal
+    # WRONG
+    align combined:tdigest_combine(m_tdigest("metric"))
+    | aggregate p95:tdigest_quantile(combined, 0.95)  ❌
+
+    # CORRECT
+    align combined:tdigest_combine(m_tdigest("metric"))
+    | aggregate p95:tdigest_quantile(tdigest_combine(combined), 0.95)  ✓
+    ```
+
+    ---
+
+    ## Parameters Reference
+
+    ### Required Parameters
+
+    **`query`** (string)
+    - The OPAL query to execute
+    - Must be valid OPAL syntax
+    - See patterns above for examples
+
+    **`primary_dataset_id`** (string)
+    - Dataset ID from `discover_context()`
+    - Use `dataset_id` for backward compatibility
+    - Get from Phase 2 of discovery (detailed lookup)
+
+    ### Optional Parameters
+
+    **`time_range`** (string)
+    - Relative time range: `"1h"`, `"24h"`, `"7d"`, `"30d"`
+    - Defaults to `"1h"`
+    - Alternative: Use `start_time` and `end_time`
+
+    **`start_time`** / **`end_time`** (string)
+    - ISO format: `"2024-01-20T16:20:00Z"`
+    - For absolute time ranges
+    - Overrides `time_range` if specified
+
+    **`secondary_dataset_ids`** (string)
+    - JSON array for joins: `'["44508111"]'`
+    - Used with `dataset_aliases`
+
+    **`dataset_aliases`** (string)
+    - JSON object for joins: `'{"volumes": "44508111"}'`
+    - Use with `@alias` in join syntax
+
+    **`format`** (string)
+    - `"csv"` (default) or `"ndjson"`
+    - CSV limited to first 1000 rows
+
+    **`timeout`** (number)
+    - Seconds to wait for query completion
+    - Default: 30s
+
+    ---
+
+    ## Best Practices Summary
+
+    ### 1. Always discover_context() first
+    ```
+    Phase 1: Search for datasets/metrics
+    Phase 2: Get detailed schema with field names and types
+    Phase 3: Write query using exact field names
+    ```
+
+    ### 2. Choose the right approach
+
+    | Need | Approach | Why |
+    |------|----------|-----|
+    | Summary stats | Metrics + `options(bins: 1)` | Fastest, one row per group |
+    | Time trends | Metrics + `align 5m` | Efficient time-series |
+    | Raw analysis | Dataset + `statsby` | Full details, slower |
+
+    ### 3. Know your data type
+
+    - **Events (logs):** `filter` → `statsby`
+    - **Intervals (spans):** Calculate duration → `statsby`
+    - **Metrics:** `align` → `aggregate` (REQUIRED)
+
+    ### 4. Metric type matters
+
+    - **Counter/Gauge:** `m("metric_name")`
+    - **TDigest:** `m_tdigest("metric_name")` + double combine pattern
+
+    ### 5. Field naming
+
+    - Copy exactly from `discover_context()`
+    - Quote nested fields with dots: `object."field.with.dots"`
+    - Case-sensitive!
+
+    ---
+
+    ## Additional Resources
+
+    - **Unknown syntax:** `get_relevant_docs("opal <keyword>")`
+    - **Error debugging:** Check error message keywords in docs
+    - **Examples:** Search docs for specific use cases (e.g., "OPAL join syntax")
+
+    ---
+
+    **Remember:** When in doubt about OPAL syntax or seeing unexpected results, use `get_relevant_docs()` to search official Observe documentation.
     """
     import json
 
