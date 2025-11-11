@@ -243,6 +243,42 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
     ---
 
+    ### Pattern 2.5: Formatting Timestamps for Display
+
+    **⚠️ IMPORTANT: Only needed for user-facing output, NOT for analysis/filtering**
+
+    Timestamp fields (`start_time`, `end_time`) are already `timestamp` type in OPAL - no conversion needed for filtering, sorting, or arithmetic. Use `format_time()` ONLY when you need human-readable output.
+
+    ```opal
+    # Format timestamps for user display (Snowflake format syntax)
+    filter error = true
+    | make_col svc:service_name,
+             error_time:format_time(start_time, 'YYYY-MM-DD HH24:MI:SS'),
+             error_msg:string(error_message)
+    | sort desc(start_time)
+    | limit 20
+
+    # Common Snowflake format patterns:
+    # - 'YYYY-MM-DD' - Date only (2025-11-11)
+    # - 'HH24:MI:SS' - 24-hour time (17:18:13)
+    # - 'YYYY-MM-DD HH24:MI:SS' - Full datetime (2025-11-11 17:18:13)
+    # - 'YYYY-MM-DD"T"HH24:MI:SS' - ISO 8601 format
+
+    # For analysis, use timestamps directly (no formatting needed!)
+    filter start_time > @"2025-11-11T00:00:00Z"
+    | make_col svc:service_name, dur_ms:float64(duration)/1000000
+    | statsby avg_latency:avg(dur_ms), group_by(svc)
+    ```
+
+    **Key points:**
+    - `start_time` and `end_time` are native `timestamp` types - NOT int64 nanoseconds
+    - Use `format_time(start_time, 'format_string')` for display only
+    - Use raw timestamps for filtering, sorting, and time arithmetic
+    - Format strings use Snowflake datetime format syntax (NOT strftime)
+    - Do NOT use `from_nanoseconds()` - timestamps are already the correct type
+
+    ---
+
     ### Pattern 3: Metrics (Pre-aggregated Data)
 
     **CRITICAL: Metrics require `align` verb**

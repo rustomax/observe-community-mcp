@@ -694,7 +694,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'find_index', 'first', 'firstnotnull', 'float64', 'floor', 'fold_any',
         'fold_interval', 'format_date', 'format_duration', 'format_url', 'frac', 'from_base64',
         'from_epochms', 'from_epochns', 'from_hex', 'from_json', 'from_nanoseconds',
-        'from_proto_timestamp', 'from_url', 'group_by', 'hash', 'host', 'if', 'int', 'int64',
+        'from_proto_timestamp', 'from_url', 'format_time','group_by', 'hash', 'host', 'if', 'int', 'int64',
         'ipaddr', 'ipsubnet', 'is_ipv4', 'is_ipv6', 'is_null', 'is_private_ip', 'is_url',
         'json_extract', 'json_group_object', 'lag', 'last', 'lastnotnull', 'lead',
         'left_pad', 'length', 'ln', 'log10', 'log2', 'lower', 'ltrim', 'make_col',
