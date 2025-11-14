@@ -617,6 +617,123 @@ def transform_metric_pipeline(query: str) -> Tuple[str, List[str]]:
     return query, []
 
 
+def _split_pipeline_safely(query: str) -> list[str]:
+    """
+    Split an OPAL query into pipeline operations, respecting regex delimiters.
+
+    The pipe character '|' is used both as:
+    1. Pipeline operator between OPAL verbs
+    2. Regex OR operator inside regex patterns (e.g., /error|exception|fail/)
+
+    This function correctly handles the latter case by tracking regex context.
+
+    Args:
+        query: The OPAL query string to split
+
+    Returns:
+        List of pipeline operations (strings)
+
+    Example:
+        >>> _split_pipeline_safely('filter body ~ /error|exception/i | make_col x:1')
+        ['filter body ~ /error|exception/i', 'make_col x:1']
+    """
+    operations = []
+    current_op = []
+    in_regex = False
+    in_double_quote = False
+    in_single_quote = False
+    escape_next = False
+
+    i = 0
+    while i < len(query):
+        char = query[i]
+
+        # Handle escape sequences
+        if escape_next:
+            current_op.append(char)
+            escape_next = False
+            i += 1
+            continue
+
+        if char == '\\':
+            current_op.append(char)
+            escape_next = True
+            i += 1
+            continue
+
+        # Track string contexts (strings can contain / that aren't regex delimiters)
+        if char == '"' and not in_single_quote:
+            in_double_quote = not in_double_quote
+            current_op.append(char)
+            i += 1
+            continue
+
+        if char == "'" and not in_double_quote:
+            in_single_quote = not in_single_quote
+            current_op.append(char)
+            i += 1
+            continue
+
+        # Don't process special characters inside strings
+        if in_double_quote or in_single_quote:
+            current_op.append(char)
+            i += 1
+            continue
+
+        # Track regex context
+        # Regex patterns in OPAL are delimited by / ... / with optional flags like /i
+        if char == '/':
+            # Check if this is a regex delimiter (not division operator)
+            # Heuristic: preceded by whitespace or operators like ~, =, !=
+            if i > 0:
+                prev_chars = query[max(0, i-3):i].strip()
+                # Common patterns before regex: "~ /", "= /", "!= /", or start of line
+                if prev_chars.endswith('~') or prev_chars.endswith('=') or prev_chars.endswith('!=') or i == 0:
+                    in_regex = not in_regex
+                # If we're already in a regex, this closes it (with possible flags after)
+                elif in_regex:
+                    in_regex = False
+                    current_op.append(char)
+                    # Consume any regex flags (i, g, m, etc.)
+                    i += 1
+                    while i < len(query) and query[i] in 'igmsuy':
+                        current_op.append(query[i])
+                        i += 1
+                    continue
+            else:
+                # At start of query, assume it's a regex delimiter
+                in_regex = not in_regex
+
+            current_op.append(char)
+            i += 1
+            continue
+
+        # Handle pipe character
+        if char == '|':
+            if in_regex:
+                # Inside regex, | is the OR operator, not a pipeline separator
+                current_op.append(char)
+            else:
+                # Outside regex, | separates pipeline operations
+                op_str = ''.join(current_op).strip()
+                if op_str:
+                    operations.append(op_str)
+                current_op = []
+            i += 1
+            continue
+
+        # Regular character
+        current_op.append(char)
+        i += 1
+
+    # Add the final operation
+    op_str = ''.join(current_op).strip()
+    if op_str:
+        operations.append(op_str)
+
+    return operations
+
+
 def validate_opal_query_structure(query: str, time_range: Optional[str] = None) -> ValidationResult:
     """
     Validate OPAL query structure and apply auto-fix transformations.
@@ -820,7 +937,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
 
     # 3. Check query complexity (prevent DoS)
     MAX_OPERATIONS = 20
-    operations = [op.strip() for op in query.split('|') if op.strip()]
+    operations = _split_pipeline_safely(query)
     if len(operations) > MAX_OPERATIONS:
         return ValidationResult(
             is_valid=False,
