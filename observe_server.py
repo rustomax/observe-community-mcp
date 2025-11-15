@@ -182,6 +182,54 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
     ---
 
+    ### Reference Tables
+    **Characteristics:**
+    - Static or slowly-changing lookup data
+    - No timestamp typically (Table type datasets)
+    - Used to enrich other datasets via joins
+    - Examples: Product catalogs, user mappings, service metadata
+
+    **Interface:** None (Table type)
+
+    **Best for:** Data enrichment, ID-to-name mapping, dimensional lookups
+
+    **Query approach:** Join with other datasets using `lookup` verb
+
+    **Lookup Patterns:**
+
+    **Pattern A: Explicit Join (Recommended)**
+    ```opal
+    # Join Product Logs with Product reference table using alias
+    # Requires: dataset_aliases={"product": "42782294"}, secondary_dataset_ids=["42782294"]
+    lookup @product.app_product_id=product_id, pname:@product.app_product_name
+    | statsby count(), group_by(pname)
+    | limit 10
+    ```
+
+    **Pattern B: Implicit Join (Requires Matching Column Names)**
+    ```opal
+    # Must have matching column name
+    make_col app_product_id:product_id
+    | lookup @product_ref
+    | make_col pname:app_product_name
+    | limit 10
+    ```
+
+    **Pattern C: Using on() with Column Bindings**
+    ```opal
+    # Full control over join conditions and retrieved columns
+    lookup on(product_id=@product.app_product_id), product_name:@product.app_product_name
+    | statsby count(), group_by(product_name)
+    ```
+
+    **Key Points:**
+    - Explicit lookup allows different column names between datasets
+    - Implicit lookup requires exact column name matching
+    - Use `discover_context()` to find reference table fields
+    - Reference tables typically have `primaryKey` defined
+
+    ---
+
     ## OPAL Patterns by Data Type
 
     ### Pattern 1: Events (Logs)
