@@ -797,7 +797,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     query, count_if_transforms = transform_count_if(query)
     all_transformations.extend(count_if_transforms)
 
-    # Complete list of OPAL functions (289 functions across 11 categories)
+    # Complete list of OPAL functions (343 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
         'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad',
         'asc', 'desc',  # Sort direction functions
@@ -819,6 +819,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'map_keys', 'map_values', 'match', 'match_regex', 'max', 'md5', 'median', 'min',
         'mode', 'nanoseconds', 'nanoseconds_to_milliseconds', 'nanoseconds_to_seconds',
         'not_null', 'now', 'nth', 'null_if', 'num_bytes', 'num_codepoints', 'object_agg',
+        'on',
         'object_delete', 'options', 'parse_csv', 'parse_duration', 'parse_isotime', 'parse_json',
         'parse_key_value', 'parse_time', 'parse_timestamp', 'parse_url', 'parse_user_agent',
         'path', 'percentile', 'pi', 'pow', 'protocol', 'query_param', 'query_params',
@@ -873,7 +874,7 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'getdate': 'OPAL doesn\'t have getdate(). Use: now()'
     }
 
-    # Complete list of OPAL verbs (70 verbs across 6 categories)
+    # Complete list of OPAL verbs (79 verbs across 6 categories)
     ALLOWED_VERBS = {
         # Aggregate verbs
         'aggregate', 'align', 'dedup', 'distinct', 'fill', 'histogram',
@@ -885,7 +886,8 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'union', 'where',
         # Join verbs
         'join', 'join_lookup', 'lookup', 'lookup_add', 'set_col_visible',
-        'set_link', 'set_metric', 'top_grouping',
+        'set_link', 'set_metric', 'top_grouping', 'follow', 'leftjoin', 'fulljoin',
+        'follow_not', 'not_exists', 'surrounding', 'update_resource',
         # Metadata verbs
         'extract_regex', 'interface', 'make_col', 'make_resource', 'make_set_col',
         'pick', 'pick_col', 'remove_col', 'rename_col', 'set_col', 'set_col_enum',
