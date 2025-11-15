@@ -336,6 +336,9 @@ class DatasetsIntelligenceAnalyzer:
 
             # Resource datasets (no interface filter)
             {"type": "Resource"},
+
+            # Reference tables (Table type)
+            {"type": "Table"},
         ]
 
         async def _fetch_with_params(params: Dict[str, Any]):
@@ -1153,6 +1156,8 @@ class DatasetsIntelligenceAnalyzer:
         if not max(technical_scores.values()):
             if dataset_type == "Resource":
                 technical_category = "Resources"
+            elif dataset_type == "Table":
+                technical_category = "Reference Data"
             elif dataset_type == "Interval":
                 if any(keyword in expanded_keywords for keyword in ['session', 'journey', 'user']):
                     technical_category = "Sessions"
@@ -1161,7 +1166,11 @@ class DatasetsIntelligenceAnalyzer:
             else:
                 technical_category = "Events"
         else:
-            technical_category = max(technical_scores, key=technical_scores.get)
+            # Override with "Reference Data" if dataset type is Table
+            if dataset_type == "Table":
+                technical_category = "Reference Data"
+            else:
+                technical_category = max(technical_scores, key=technical_scores.get)
 
         # Special case: Kubernetes and similar platform logs are hybrid Infrastructure+Application
         if any(keyword in name_lower for keyword in ['kubernetes', 'k8s', 'cloudwatch', 'azure.*log', 'gcp.*log']) and 'Logs' in technical_category:
@@ -1183,7 +1192,10 @@ class DatasetsIntelligenceAnalyzer:
         )
         
         # Generate purpose and usage based on patterns
-        if 'logs' in name_lower:
+        if dataset_type == "Table":
+            purpose = f"Reference table providing lookup data for {name.split('/')[1] if '/' in name else name}"
+            usage = "Join with other datasets for enrichment, lookup values, map IDs to descriptive names"
+        elif 'logs' in name_lower:
             purpose = f"Contains log entries from {name.split('/')[0] if '/' in name else name}"
             usage = "Debug issues, trace request flows, analyze error patterns, monitor system health"
         elif 'metrics' in name_lower or 'metric' in interfaces:
@@ -1202,7 +1214,14 @@ class DatasetsIntelligenceAnalyzer:
         
         # Generate common use cases based on category
         common_use_cases = []
-        if technical_category == "Logs":
+        if technical_category == "Reference Data":
+            common_use_cases = [
+                "Enrich logs and traces with descriptive names",
+                "Lookup product/service metadata",
+                "Map IDs to human-readable labels",
+                "Join dimension data for reporting"
+            ]
+        elif technical_category == "Logs":
             common_use_cases = [
                 "Error investigation and debugging",
                 "Request flow tracing",
@@ -1212,7 +1231,7 @@ class DatasetsIntelligenceAnalyzer:
         elif technical_category == "Metrics":
             common_use_cases = [
                 "Performance monitoring and alerting",
-                "Resource utilization analysis", 
+                "Resource utilization analysis",
                 "SLA compliance tracking",
                 "Capacity planning"
             ]
