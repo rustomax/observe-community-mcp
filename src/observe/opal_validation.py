@@ -797,45 +797,75 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     query, count_if_transforms = transform_count_if(query)
     all_transformations.extend(count_if_transforms)
 
-    # Complete list of OPAL functions (344 functions across 11 categories)
+    # Complete list of OPAL functions (476 functions across 11 categories)
     ALLOWED_FUNCTIONS = {
         'abs', 'any', 'any_not_null', 'append_item', 'arccos_deg', 'arccos_rad',
         'asc', 'desc',  # Sort direction functions
         'arcsin_deg', 'arcsin_rad', 'arctan2_deg', 'arctan2_rad', 'arctan_deg',
-        'arctan_rad', 'array_agg', 'array_concat', 'array_contains', 'array_flatten',
-        'array_length', 'atoi', 'avg', 'base64decode', 'base64encode', 'bool', 'cast',
-        'cbrt', 'ceil', 'coalesce', 'concat', 'contains', 'cos_deg', 'cos_rad', 'cosh',
-        'count', 'count_distinct', 'count_distinct_exact', 'deriv', 'distinct_count',
-        'duration', 'duration_hr', 'duration_min', 'duration_ms', 'duration_ns',
-        'duration_sec', 'duration_us', 'ends_with', 'exp', 'extract_all', 'filter_index',
-        'find_index', 'first', 'firstnotnull', 'float64', 'floor', 'fold_any',
-        'fold_interval', 'format_date', 'format_duration', 'format_url', 'frac', 'from_base64',
-        'from_epochms', 'from_epochns', 'from_hex', 'from_json', 'from_nanoseconds',
-        'from_proto_timestamp', 'from_url', 'format_time','group_by', 'hash', 'host', 'if', 'int', 'int64',
-        'ipaddr', 'ipsubnet', 'is_ipv4', 'is_ipv6', 'is_null', 'is_private_ip', 'is_url',
-        'json_extract', 'json_group_object', 'lag', 'last', 'lastnotnull', 'lead',
-        'left_pad', 'length', 'ln', 'log10', 'log2', 'lower', 'ltrim', 'make_col',
-        'make_col_aggregated', 'make_object', 'make_resource', 'make_set_col', 'map_get',
-        'map_keys', 'map_values', 'match', 'match_regex', 'max', 'md5', 'median', 'min',
-        'mode', 'nanoseconds', 'nanoseconds_to_milliseconds', 'nanoseconds_to_seconds',
-        'not_null', 'now', 'nth', 'null_if', 'num_bytes', 'num_codepoints', 'object_agg',
-        'on', 'order_by',
-        'object_delete', 'options', 'parse_csv', 'parse_duration', 'parse_isotime', 'parse_json',
-        'parse_key_value', 'parse_time', 'parse_timestamp', 'parse_url', 'parse_user_agent',
-        'path', 'percentile', 'pi', 'pow', 'protocol', 'query_param', 'query_params',
-        'radians_to_degrees', 'rand', 'regextract', 'regexmatch', 'replace', 'replace_regex',
-        'right_pad', 'round', 'rtrim', 'search', 'sha1', 'sha256', 'sign', 'sin_deg',
-        'sin_rad', 'sinh', 'slice', 'split', 'split_part', 'sqrt', 'starts_with', 'stddev',
-        'string', 'string_agg', 'strip_null_columns', 'strip_prefix', 'strip_suffix',
-        'strlen', 'strpos', 'substr', 'sum', 'tan_deg', 'tan_rad', 'tanh', 'tdigest_combine',
-        'tdigest_merge', 'tdigest_quantile', 'time_bucket', 'timestamp', 'timestamp_ms',
-        'timestamp_ns', 'timestamp_sec', 'timestamp_us', 'to_base64', 'to_hex', 'to_json',
-        'to_lowercase', 'to_nanoseconds', 'to_proto_timestamp', 'to_uppercase', 'to_url',
-        'tokenize', 'tokenize_pattern', 'top', 'trim', 'trunc', 'typeof', 'unnest',
-        'unnest_cols', 'upper', 'url_encode', 'urlparse', 'variance', 'window',
-        'm', 'm_tdigest', 'make_fields', 'value_counts', 'first_value', 'last_value',
-        'nth_value', 'row_number', 'rank', 'dense_rank', 'percent_rank', 'cume_dist',
-        'ntile', 'frame', 'group_by_all', 'get_field', 'set_field', 'delete_field',
+        'arctan_rad', 'array', 'array_agg', 'array_agg_distinct', 'array_concat',
+        'array_contains', 'array_flatten', 'array_length', 'array_null', 'array_to_string',
+        'array_union_agg', 'atoi', 'avg', 'base64decode', 'base64encode', 'bin_end_time',
+        'bin_size', 'bin_start_time', 'bool', 'bool_null', 'cast',
+        'cbrt', 'ceil', 'check_json', 'coalesce', 'concat', 'concat_arrays', 'concat_strings',
+        'contains', 'cos_deg', 'cos_rad', 'cosh', 'count', 'count_distinct', 'count_distinct_exact',
+        'count_regex_matches', 'decode_base64', 'decode_uri', 'decode_uri_component', 'degrees',
+        'delta', 'delta_monotonic', 'dense_rank', 'deriv', 'desc', 'detect_browser', 'distinct_count',
+        'drop_fields', 'duration', 'duration_hr', 'duration_min', 'duration_ms', 'duration_ns',
+        'duration_null', 'duration_sec', 'duration_us', 'editdistance', 'embed_sql_params',
+        'encode_base64', 'encode_uri', 'encode_uri_component', 'ends_with', 'eq', 'ewma',
+        'exp', 'exponential_histogram_null', 'extract_all', 'filter_index',
+        'find_index', 'first', 'first_not_null', 'firstnotnull', 'float64', 'float64_null', 'floor',
+        'fold_any', 'fold_interval', 'format_date', 'format_duration', 'format_time', 'format_url',
+        'frac', 'frame', 'frame_exact', 'frame_following', 'frame_preceding', 'from_base64',
+        'from_epochms', 'from_epochns', 'from_hex', 'from_json', 'from_milliseconds',
+        'from_nanoseconds', 'from_proto_timestamp', 'from_seconds', 'from_url', 'get_field',
+        'get_item', 'get_jmespath', 'get_regex', 'get_regex_all', 'group_by', 'gt', 'gte',
+        'hash', 'hash_agg', 'hash_agg_distinct', 'haversine_distance_km', 'histogram_combine',
+        'histogram_fraction', 'histogram_null', 'histogram_quantile', 'host', 'if', 'if_null',
+        'in', 'index_of_item', 'insert_item', 'int', 'int64', 'int64_null', 'int64_to_ipv4',
+        'int_div', 'intersect_arrays',
+        'ipaddr', 'ipsubnet', 'ipv4', 'ipv4_address_in_network', 'ipv4_network_int64',
+        'ipv4_to_int64', 'is_ipv4', 'is_ipv6', 'is_null', 'is_private_ip', 'is_url',
+        'json_extract', 'json_group_object', 'label', 'lag', 'lag_not_null', 'last',
+        'last_not_null', 'lastnotnull', 'lead', 'lead_not_null', 'left', 'left_pad',
+        'length', 'like', 'ln', 'log', 'log10', 'log2', 'lower', 'lt', 'lte', 'ltrim',
+        'm', 'm_exponential_histogram', 'm_histogram', 'm_object', 'm_tdigest', 'make_array',
+        'make_array_range', 'make_col', 'make_col_aggregated', 'make_fields', 'make_object',
+        'make_resource', 'make_set_col', 'map_get',
+        'map_keys', 'map_values', 'match', 'match_regex', 'max', 'md5', 'median', 'median_exact',
+        'merge_objects', 'metric', 'min', 'mod', 'mode', 'nanoseconds',
+        'nanoseconds_to_milliseconds', 'nanoseconds_to_seconds', 'ne', 'not_null', 'now',
+        'nth', 'null_if', 'nullsfirst', 'nullslast', 'num_bytes', 'num_codepoints',
+        'numeric_null', 'object', 'object_agg', 'object_keys', 'object_null', 'on', 'order_by',
+        'otel_exponential_histogram_quantile', 'otel_exponential_histogram_sum',
+        'otel_histogram_quantile', 'otel_histogram_sum',
+        'object_delete', 'options', 'parse_csv', 'parse_duration', 'parse_hex', 'parse_ip',
+        'parse_isotime', 'parse_json', 'parse_key_value', 'parse_kvs', 'parse_time',
+        'parse_timestamp', 'parse_url', 'parse_user_agent', 'path', 'path_exists',
+        'percentile', 'percentile_cont', 'percentile_disc', 'pi', 'pick_fields',
+        'pivot_array', 'position', 'pow', 'prepend_item', 'primary_key', 'prom_quantile',
+        'protocol', 'query_end_time', 'query_param', 'query_params', 'query_start_time',
+        'radians', 'radians_to_degrees', 'rand', 'rank', 'rate', 'regex', 'regextract',
+        'regexmatch', 'replace', 'replace_regex',
+        'right', 'right_pad', 'round', 'row_end_time', 'row_number', 'row_timestamp', 'rpad',
+        'rtrim', 'same', 'search', 'sha1', 'sha2', 'sha256', 'sign', 'sin_deg', 'sin_rad',
+        'sinh', 'slice', 'slice_array', 'sort_array', 'split', 'split_part', 'sqrt',
+        'starts_with', 'stddev', 'string', 'string_agg', 'string_agg_distinct', 'string_null',
+        'strip_null_columns', 'strip_prefix', 'strip_suffix', 'strlen', 'strpos', 'substr',
+        'sum', 'tags', 'tan_deg', 'tan_rad', 'tanh', 'tdigest', 'tdigest_agg', 'tdigest_combine',
+        'tdigest_merge', 'tdigest_null', 'tdigest_quantile', 'time_bucket', 'timestamp',
+        'timestamp_ms', 'timestamp_ns', 'timestamp_null', 'timestamp_sec', 'timestamp_us',
+        'to_base64', 'to_days', 'to_hex', 'to_hours', 'to_json', 'to_lowercase',
+        'to_milliseconds', 'to_minutes', 'to_nanoseconds', 'to_proto_timestamp',
+        'to_seconds', 'to_uppercase', 'to_url', 'to_weeks', 'tokenize', 'tokenize_part',
+        'tokenize_pattern', 'top', 'topk_agg', 'trim', 'trunc', 'typeof', 'uniform',
+        'unnest',
+        'unnest_cols', 'unpivot_array', 'upper', 'url_encode', 'urlparse', 'valid_for',
+        'value_counts', 'variant_null', 'variant_type_name', 'variance', 'width_bucket',
+        'window', 'zipf',
+        # Additional window/analytic functions (already listed above in different context)
+        'first_value', 'last_value', 'nth_value', 'percent_rank', 'cume_dist',
+        'ntile', 'group_by_all', 'get_field', 'set_field', 'delete_field',
         'at', 'every', 'extract_values', 'is_array', 'is_bool', 'is_int', 'is_float',
         'is_object', 'is_string', 'get_or_default', 'exists', 'not_exists', 'keys',
         'values', 'entries', 'merge_objects', 'parse_xml', 'case', 'when', 'otherwise',
@@ -874,31 +904,34 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
         'getdate': 'OPAL doesn\'t have getdate(). Use: now()'
     }
 
-    # Complete list of OPAL verbs (79 verbs across 6 categories)
+    # Complete list of OPAL verbs (108 verbs across 6 categories)
     ALLOWED_VERBS = {
         # Aggregate verbs
-        'aggregate', 'align', 'dedup', 'distinct', 'fill', 'histogram',
-        'make_event', 'rollup', 'statsby', 'timechart', 'top', 'topk', 'top_logsources',
-        'window', 'bottom',
+        'aggregate', 'align', 'always', 'bottomk', 'dedup', 'distinct', 'ever', 'fill',
+        'histogram', 'make_event', 'merge_events', 'never', 'rollup', 'statsby',
+        'timechart', 'timeshift', 'timestats', 'top', 'topk', 'top_logsources', 'window', 'bottom',
         # Filter verbs
-        'filter', 'filter_null', 'filter_repeated_source', 'filter_repeated_value',
-        'flatten_leaves', 'flatten_single', 'limit', 'sample', 'search', 'tail',
-        'union', 'where',
+        'filter', 'filter_last', 'filter_null', 'filter_repeated_source', 'filter_repeated_value',
+        'flatten_all', 'flatten_leaves', 'flatten_single', 'limit', 'sample', 'search', 'tail',
+        'union', 'unsort', 'where',
         # Join verbs
-        'join', 'join_lookup', 'lookup', 'lookup_add', 'set_col_visible',
+        'join', 'join_lookup', 'lookup', 'lookup_add', 'lookup_ip_info', 'set_col_visible',
         'set_link', 'set_metric', 'top_grouping', 'follow', 'leftjoin', 'fulljoin',
         'follow_not', 'not_exists', 'surrounding', 'update_resource',
         # Metadata verbs
-        'extract_regex', 'interface', 'make_col', 'make_resource', 'make_set_col',
-        'pick', 'pick_col', 'remove_col', 'rename_col', 'set_col', 'set_col_enum',
-        'set_col_tag', 'set_label', 'set_metadata', 'set_primary_key', 'set_severity',
-        'set_type', 'set_valid_from', 'unwrap',
+        'add_key', 'drop_col', 'drop_interface', 'extract_regex', 'interface', 'make_col',
+        'make_interval', 'make_metric', 'make_reference', 'make_resource', 'make_session',
+        'make_set_col', 'make_table', 'pick', 'pick_col', 'remove_col', 'rename_col',
+        'set_col', 'set_col_enum', 'set_col_immutable', 'set_col_searchable', 'set_col_tag',
+        'set_label', 'set_metadata', 'set_metric_metadata', 'set_primary_key', 'set_severity',
+        'set_timestamp', 'set_type', 'set_valid_from', 'set_valid_to', 'unset_all_links',
+        'unset_keys', 'unset_link', 'unwrap',
         # Projection verbs
         'colcount', 'columns', 'exists', 'fields', 'head', 'metadata', 'sample_distinct',
         'set_dataset_metadata',
         # Semistructured verbs
         'expand', 'flatten', 'make_fields', 'parse_csv', 'parse_kvs', 'parse_xml',
-        'unflatten', 'unnest', 'make_object',
+        'pivot', 'unflatten', 'unnest', 'unpivot', 'make_object',
         # Sort verbs
         'sort'
     }
@@ -969,10 +1002,12 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     # 5. Validate all verbs in the pipeline (not just the first one)
     for i, operation in enumerate(operations, 1):
         # Extract the first word (the verb)
-        words = operation.strip().split()
-        if not words:
+        # Use regex to extract just the verb name (alphanumeric + underscore)
+        # This handles cases like "union(" where there's no space before the parenthesis
+        verb_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)', operation.strip())
+        if not verb_match:
             continue
-        first_word = words[0]
+        first_word = verb_match.group(1)
 
         # Check if it's a valid OPAL verb
         if first_word not in ALLOWED_VERBS:
@@ -995,7 +1030,12 @@ def validate_opal_query_structure(query: str, time_range: Optional[str] = None) 
     function_matches = re.findall(function_pattern, query)
 
     # Check each function against the whitelist
+    # Skip verbs that happen to have parentheses (like union(...), pivot(...))
     for func_name in set(function_matches):
+        # Skip if it's actually a verb, not a function
+        if func_name in ALLOWED_VERBS:
+            continue
+
         if func_name not in ALLOWED_FUNCTIONS:
             # Check if it's a common SQL function with a hint
             if func_name in SQL_FUNCTION_HINTS:
