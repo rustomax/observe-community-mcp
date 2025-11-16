@@ -138,16 +138,20 @@ async def search_docs_gemini(query: str, n_results: int = 5) -> List[Dict[str, A
             temperature=0.1,  # Low temperature for factual documentation retrieval
         )
 
-        # Create a focused prompt that requests structured documentation
-        prompt = f"""Search for information about: {query}
+        # Create a focused prompt that requests ONLY grounded documentation
+        prompt = f"""Search docs.observeinc.com for: {query}
 
-Please find relevant documentation from docs.observeinc.com and provide:
-1. Key concepts and explanations
-2. Syntax examples if applicable
-3. Best practices and common usage patterns
-4. Related documentation topics
+CRITICAL INSTRUCTIONS:
+1. ONLY return information directly from the actual documentation pages you find via search
+2. Quote OPAL code examples EXACTLY as written in the documentation - do not modify syntax
+3. DO NOT add examples, explanations, or syntax from your general knowledge
+4. DO NOT generate code examples if they are not present in the actual documentation
+5. If documentation is found but doesn't contain what was asked for, say so explicitly
 
-Focus on technical accuracy and cite specific documentation sources."""
+For each documentation page found, provide:
+- Direct quotes or very close paraphrases from the actual page content
+- OPAL code examples exactly as they appear (preserve all syntax)
+- The specific page where this information was found"""
 
         # Record request before making it
         _rate_limiter.record_request()
@@ -229,18 +233,21 @@ def _parse_gemini_response(response: Any, query: str, n_results: int) -> List[Di
 
             # Create result entries from grounding chunks
             seen_uris = set()
+            seen_text = set()  # Track unique text content
             for i, chunk in enumerate(grounding_chunks[:n_results]):
                 if hasattr(chunk, 'web') and chunk.web:
                     uri = chunk.web.uri if hasattr(chunk.web, 'uri') else ""
                     title = chunk.web.title if hasattr(chunk.web, 'title') else "Documentation"
 
-                    # Skip duplicates
-                    if uri in seen_uris:
+                    # Find relevant text segments that reference this chunk
+                    relevant_text = _extract_relevant_text(main_text, chunk, grounding_supports, i)
+
+                    # Skip duplicates by URI or by text content
+                    text_hash = relevant_text[:200]  # Use first 200 chars as hash
+                    if uri in seen_uris or text_hash in seen_text:
                         continue
                     seen_uris.add(uri)
-
-                    # Find relevant text segments that reference this chunk
-                    relevant_text = _extract_relevant_text(main_text, chunk, grounding_supports)
+                    seen_text.add(text_hash)
 
                     results.append({
                         "id": f"gemini_result_{i}",
@@ -252,25 +259,18 @@ def _parse_gemini_response(response: Any, query: str, n_results: int) -> List[Di
 
             semantic_logger.debug(f"parsed {len(results)} grounded results from gemini")
 
-        # If no grounded results or not enough, create a single result from main text
-        if len(results) < n_results and main_text:
-            results.append({
-                "id": "gemini_summary",
-                "score": 0.9,
-                "text": main_text[:2000],  # Limit text length
-                "source": "docs.observeinc.com",
-                "title": f"Documentation: {query}"
-            })
-
-        # Ensure we have at least one result
+        # ONLY return grounded results - no AI-generated fallback content
         if not results:
+            # No grounded results found - suggest query rewording
+            suggestion = _generate_query_suggestions(query)
             results.append({
-                "id": "no_results",
-                "score": 0.5,
-                "text": f"No specific documentation found for: {query}. Try broader search terms or check docs.observeinc.com directly.",
-                "source": "docs.observeinc.com",
-                "title": "No Results Found"
+                "id": "no_grounded_results",
+                "score": 0.0,
+                "text": f"No documentation found for: '{query}'.\n\nSuggestions:\n{suggestion}\n\nTry:\n- Using different keywords (e.g., 'OPAL' instead of 'SQL')\n- Breaking complex queries into simpler parts\n- Searching for specific function names or verbs\n- Checking docs.observeinc.com directly",
+                "source": "search_assistant",
+                "title": "No Grounded Results - Try Rewording Query"
             })
+            semantic_logger.info(f"no grounded results found for query: '{query}'")
 
         return results[:n_results]
 
@@ -285,7 +285,45 @@ def _parse_gemini_response(response: Any, query: str, n_results: int) -> List[Di
         }]
 
 
-def _extract_relevant_text(main_text: str, chunk: Any, supports: List[Any]) -> str:
+def _generate_query_suggestions(query: str) -> str:
+    """
+    Generate helpful suggestions for rewording failed queries
+
+    Args:
+        query: Original search query that returned no results
+
+    Returns:
+        Suggestion text
+    """
+    suggestions = []
+
+    # Detect SQL-specific terms and suggest OPAL alternatives
+    sql_terms = {
+        'select': 'Use OPAL verbs like filter, make_col, aggregate',
+        'from': 'OPAL queries start with dataset reference or align',
+        'where': 'Use filter verb in OPAL',
+        'group by': 'Use group_by() or statsby in OPAL',
+        'order by': 'Use sort verb in OPAL',
+        'join': 'Try searching for "lookup" or "join" in OPAL',
+        'over': 'OPAL uses window() function, not OVER clause',
+        'partition by': 'Use group_by() within window() in OPAL',
+    }
+
+    query_lower = query.lower()
+    for sql_term, opal_alternative in sql_terms.items():
+        if sql_term in query_lower:
+            suggestions.append(f"- Instead of '{sql_term}': {opal_alternative}")
+
+    # General suggestions if no SQL terms detected
+    if not suggestions:
+        suggestions.append("- Try searching for specific OPAL function names (filter, statsby, window)")
+        suggestions.append("- Search for the verb/operation you want to perform")
+        suggestions.append("- Use more general terms (e.g., 'aggregation' instead of specific syntax)")
+
+    return "\n".join(suggestions)
+
+
+def _extract_relevant_text(main_text: str, chunk: Any, supports: List[Any], chunk_index: int) -> str:
     """
     Extract text segments that are grounded in this specific chunk
 
@@ -293,34 +331,44 @@ def _extract_relevant_text(main_text: str, chunk: Any, supports: List[Any]) -> s
         main_text: Full response text
         chunk: Grounding chunk
         supports: List of grounding supports linking text to sources
+        chunk_index: Index of this chunk in the grounding_chunks list
 
     Returns:
-        Relevant text segment
+        Relevant text segment unique to this chunk
     """
     try:
-        # Find supports that reference this chunk
-        relevant_segments = []
+        # First priority: Use the chunk's own content if available
+        if hasattr(chunk, 'web') and chunk.web:
+            # Try to get snippet or excerpt from the web chunk itself
+            if hasattr(chunk.web, 'snippet') and chunk.web.snippet:
+                return chunk.web.snippet[:1000]
+            if hasattr(chunk.web, 'text') and chunk.web.text:
+                return chunk.web.text[:1000]
 
+        # Second priority: Find supports that reference THIS specific chunk
+        relevant_segments = []
         for support in supports:
             if not hasattr(support, 'segment') or not hasattr(support, 'grounding_chunk_indices'):
                 continue
 
-            # Check if this support references our chunk
+            # Check if this support references our specific chunk index
             chunk_indices = support.grounding_chunk_indices if support.grounding_chunk_indices else []
+            if chunk_index in chunk_indices:
+                # Extract the text segment for THIS chunk only
+                if hasattr(support.segment, 'text'):
+                    segment_text = support.segment.text
+                    if segment_text and segment_text not in relevant_segments:
+                        relevant_segments.append(segment_text)
 
-            # Extract the text segment
-            if hasattr(support.segment, 'text'):
-                segment_text = support.segment.text
-                if segment_text:
-                    relevant_segments.append(segment_text)
-
-        # Combine segments
+        # Combine segments specific to this chunk
         if relevant_segments:
             combined = " ".join(relevant_segments)
             return combined[:1000]  # Limit length
 
-        # Fallback to a portion of main text
-        return main_text[:800]
+        # Last resort: Use offset portion of main text to ensure uniqueness
+        # Use chunk_index to get different portions for different chunks
+        offset = chunk_index * 400
+        return main_text[offset:offset+800] if len(main_text) > offset else main_text[:800]
 
     except Exception as e:
         semantic_logger.debug(f"error extracting relevant text | error:{e}")
