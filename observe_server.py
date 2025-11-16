@@ -993,8 +993,11 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
                 first_chunk = docs_by_source[source][0]
                 title = first_chunk.get("title", "Documentation")
 
-                response += f"### Document {i}: {title}\\n"
-                response += f"Source: {source}\\n"
+                # Only include title if it's meaningful (not just the domain name)
+                if title and title.lower() not in ["observeinc.com", "documentation"]:
+                    response += f"### Document {i}: {title}\\n"
+                else:
+                    response += f"### Document {i}\\n"
                 response += f"Relevance Score: {score:.2f}\\n\\n"
                 response += f"{chunks_text}\\n\\n\\n"
                 response += "----------------------------------------\\n\\n"
