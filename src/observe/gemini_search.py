@@ -239,6 +239,17 @@ def _parse_gemini_response(response: Any, query: str, n_results: int) -> List[Di
                     uri = chunk.web.uri if hasattr(chunk.web, 'uri') else ""
                     title = chunk.web.title if hasattr(chunk.web, 'title') else "Documentation"
 
+                    # CRITICAL: Only include results from docs.observeinc.com
+                    # Check both URI and title since URI may be a redirect URL
+                    is_observe_doc = (
+                        ("docs.observeinc.com" in uri.lower() if uri else False) or
+                        ("observeinc.com" in title.lower() if title else False)
+                    )
+
+                    if not is_observe_doc:
+                        semantic_logger.debug(f"skipping non-observe result | title:{title} | uri:{uri}")
+                        continue
+
                     # Find relevant text segments that reference this chunk
                     relevant_text = _extract_relevant_text(main_text, chunk, grounding_supports, i)
 
@@ -340,10 +351,13 @@ def _extract_relevant_text(main_text: str, chunk: Any, supports: List[Any], chun
         # First priority: Use the chunk's own content if available
         if hasattr(chunk, 'web') and chunk.web:
             # Try to get snippet or excerpt from the web chunk itself
+            # DO NOT truncate - Gemini already provides appropriately-sized chunks
             if hasattr(chunk.web, 'snippet') and chunk.web.snippet:
-                return chunk.web.snippet[:1000]
+                semantic_logger.debug(f"using chunk snippet | length:{len(chunk.web.snippet)}")
+                return chunk.web.snippet
             if hasattr(chunk.web, 'text') and chunk.web.text:
-                return chunk.web.text[:1000]
+                semantic_logger.debug(f"using chunk text | length:{len(chunk.web.text)}")
+                return chunk.web.text
 
         # Second priority: Find supports that reference THIS specific chunk
         relevant_segments = []
@@ -360,19 +374,22 @@ def _extract_relevant_text(main_text: str, chunk: Any, supports: List[Any], chun
                     if segment_text and segment_text not in relevant_segments:
                         relevant_segments.append(segment_text)
 
-        # Combine segments specific to this chunk
+        # Combine segments specific to this chunk - DO NOT truncate
         if relevant_segments:
             combined = " ".join(relevant_segments)
-            return combined[:1000]  # Limit length
+            semantic_logger.debug(f"using combined segments | count:{len(relevant_segments)} | length:{len(combined)}")
+            return combined
 
         # Last resort: Use offset portion of main text to ensure uniqueness
         # Use chunk_index to get different portions for different chunks
-        offset = chunk_index * 400
-        return main_text[offset:offset+800] if len(main_text) > offset else main_text[:800]
+        offset = chunk_index * 2000
+        fallback = main_text[offset:offset+3000] if len(main_text) > offset else main_text[:3000]
+        semantic_logger.debug(f"using fallback text | offset:{offset} | length:{len(fallback)}")
+        return fallback
 
     except Exception as e:
         semantic_logger.debug(f"error extracting relevant text | error:{e}")
-        return main_text[:800] if main_text else "Documentation available at source URL"
+        return main_text[:3000] if main_text else "Documentation available at source URL"
 
 
 def get_rate_limiter_stats() -> Dict[str, Any]:

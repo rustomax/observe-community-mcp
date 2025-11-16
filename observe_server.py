@@ -988,12 +988,14 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
             except Exception as e:
                 # Use the chunk text as fallback if we can't read the file
                 chunks_text = "\\n\\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
-                title = os.path.basename(source).replace(".md", "").replace("_", " ").title()
+
+                # Get title from chunk metadata (first chunk of this source)
+                first_chunk = docs_by_source[source][0]
+                title = first_chunk.get("title", "Documentation")
 
                 response += f"### Document {i}: {title}\\n"
-                response += f"Source: {os.path.basename(source)}\\n"
-                response += f"Relevance Score: {score:.2f}\\n"
-                response += f"Note: Could not read the full document file. Showing available chunks.\\n\\n"
+                response += f"Source: {source}\\n"
+                response += f"Relevance Score: {score:.2f}\\n\\n"
                 response += f"{chunks_text}\\n\\n\\n"
                 response += "----------------------------------------\\n\\n"
 
