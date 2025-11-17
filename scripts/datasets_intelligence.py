@@ -981,7 +981,7 @@ class DatasetsIntelligenceAnalyzer:
             return await self.retry_with_backoff(_check_data)
         except Exception as e:
             logger.warning(f"Failed to check data for dataset {dataset_id} after retries: {e}")
-            return True  # Default to including dataset if we can't check
+            return False  # Default to excluding dataset if we can't verify it has data
 
     def expand_keywords(self, name_lower: str) -> Set[str]:
         """Expand keywords from dataset name for better matching."""

@@ -1322,7 +1322,7 @@ class MetricsIntelligenceAnalyzer:
             return await self.retry_with_backoff(_check_data)
         except Exception as e:
             logger.warning(f"Failed to check data for dataset {dataset_id} after retries: {e}")
-            return True  # Default to including dataset if we can't check
+            return False  # Default to excluding dataset if we can't verify it has data
 
     async def analyze_dataset(self, dataset: Dict[str, Any]) -> None:
         """Analyze a single metrics dataset and discover all metrics within it."""
@@ -1684,10 +1684,9 @@ class MetricsIntelligenceAnalyzer:
     async def clear_database(self) -> None:
         """Clear all data from metrics_intelligence table for fresh start."""
         async with self.db_pool.acquire() as conn:
-            # Clear the main table
-            result = await conn.execute("DELETE FROM metrics_intelligence")
-            count = result.split()[-1] if result else "0"
-            logger.info(f"🧹 Cleared {count} existing records from metrics_intelligence table")
+            # Clear the main table and reset sequence (TRUNCATE is faster and resets SERIAL sequences)
+            result = await conn.execute("TRUNCATE TABLE metrics_intelligence RESTART IDENTITY CASCADE")
+            logger.info(f"🧹 Cleared all records from metrics_intelligence table and reset ID sequence")
 
             # Force refresh of materialized views and indexes to clear any cached data
             # This ensures search functions return fresh results
