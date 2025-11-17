@@ -1272,21 +1272,35 @@ class MetricsIntelligenceAnalyzer:
         
         async def _check_data():
             logger.debug(f"checking for data in dataset {dataset_id} (type: {dataset_type}) over 24h")
-            
+
             await self.rate_limit_observe()
             response = await self.http_client.post(url, json=payload, params=params)
-            
+
             if response.status_code != 200:
                 logger.debug(f"Data check failed for dataset {dataset_id}: {response.status_code}")
                 return False
-                
+
             # Check if response has any data
             content_type = response.headers.get('content-type', '')
             response_text = response.text
-            
+
             if not response_text or len(response_text.strip()) == 0:
                 logger.debug(f"Dataset {dataset_id} has no data: empty response")
                 return False
+
+            # Check for permission/access errors in response body
+            # Observe API returns 200 with error messages for inaccessible datasets
+            error_indicators = [
+                'cannot be bound',
+                'is not accessible',
+                'permission denied',
+                'not authorized'
+            ]
+            response_lower = response_text.lower()
+            for indicator in error_indicators:
+                if indicator.lower() in response_lower:
+                    logger.warning(f"Dataset {dataset_id} access denied (check API token permissions): {response_text[:200]}")
+                    return False
             
             if 'text/csv' in content_type:
                 csv_data = response_text.strip()
