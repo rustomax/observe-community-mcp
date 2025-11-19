@@ -1400,9 +1400,24 @@ class DatasetsIntelligenceAnalyzer:
             # Check if dataset has data
             logger.info(f"Dataset {name} checking for data availability")
             has_data = await self.check_dataset_has_data(dataset_id, dataset_type)
-            
+
             if not has_data:
-                logger.info(f"Dataset {name} has no data - skipping")
+                # Check if dataset exists in database to provide clear logging
+                async with self.db_pool.acquire() as conn:
+                    exists = await conn.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM datasets_intelligence WHERE dataset_id = $1)",
+                        dataset_id
+                    )
+
+                    if exists:
+                        logger.info(f"Dataset {name} has no data - removing stale record from database")
+                        await conn.execute(
+                            "DELETE FROM datasets_intelligence WHERE dataset_id = $1",
+                            dataset_id
+                        )
+                    else:
+                        logger.info(f"Dataset {name} has no data - skipping (not adding to database)")
+
                 self.stats['datasets_empty'] += 1
                 return
             
