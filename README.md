@@ -117,7 +117,7 @@ OBSERVE_OTEL_DOMAIN="observeinc.com"
 
 ```bash
 # Build and start all services
-docker-compose up --build
+docker-compose up --build -d
 
 # The server will be available at http://localhost:8000
 ```
@@ -127,14 +127,18 @@ docker-compose up --build
 Run these commands locally to populate the intelligence databases:
 
 ```bash
-# Activate virtual environment
+# Create and activate virtual environment
+python3.13 -m venv .venv
 source .venv/bin/activate
 
+# Install dependencies
+pip install -r ./requirements
+
 # Build dataset intelligence (analyzes datasets in your Observe instance)
-python scripts/datasets_intelligence.py
+python scripts/datasets_intelligence.py --force
 
 # Build metrics intelligence (analyzes metrics with categorization)
-python scripts/metrics_intelligence.py
+python scripts/metrics_intelligence.py --force
 ```
 
 **Note**: Documentation search now uses Gemini AI and requires no local setup - it queries docs.observeinc.com in real-time.
