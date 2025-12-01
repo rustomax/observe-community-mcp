@@ -78,7 +78,7 @@ When queries fail, the system provides contextual help with actionable suggestio
 ### 1. Clone and Configure
 
 ```bash
-git clone https://github.com/your-repo/observe-community-mcp.git
+git clone https://github.com/rustomax/observe-community-mcp.git
 cd observe-community-mcp
 
 # Copy and configure environment
