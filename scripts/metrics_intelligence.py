@@ -24,6 +24,8 @@ import asyncpg
 import httpx
 from dotenv import load_dotenv
 
+from config_filter import DatasetFilter, load_filter_config, ConfigError
+
 # ANSI color codes for terminal output
 class Colors:
     RED = '\033[91m'
@@ -144,9 +146,13 @@ class MetricsIntelligenceAnalyzer:
             'metrics_processed': 0,
             'metrics_skipped': 0,
             'metrics_excluded': 0,
-            'high_cardinality_metrics': 0
+            'high_cardinality_metrics': 0,
+            'datasets_filtered_by_config': 0
         }
-        
+
+        # Config filter (set via set_filter method)
+        self.dataset_filter: Optional[DatasetFilter] = None
+
         # Rate limiting configuration
         self.last_observe_call = 0
         self.observe_delay = 0.2  # 200ms between Observe API calls
@@ -401,7 +407,17 @@ class MetricsIntelligenceAnalyzer:
             logger.warning(f"Error checking metric update status for {metric_name}: {e}")
             # If we can't check, err on the side of updating
             return True
-    
+
+    def set_filter(self, dataset_filter: DatasetFilter) -> None:
+        """Set the dataset filter for config-based filtering."""
+        self.dataset_filter = dataset_filter
+        logger.info(f"Config filter loaded: {dataset_filter.get_summary()}")
+
+    def _extract_dataset_id(self, dataset: Dict[str, Any]) -> str:
+        """Extract numeric dataset ID from dataset dict."""
+        meta = dataset.get('meta', {})
+        return meta.get('id', '').replace('o::', '').split(':')[-1]
+
     async def fetch_metrics_datasets(self) -> List[Dict[str, Any]]:
         """Fetch all datasets with metric interface from Observe API."""
         url = f"https://{self.observe_customer_id}.{self.observe_domain}/v1/dataset"
@@ -1662,11 +1678,20 @@ class MetricsIntelligenceAnalyzer:
         
         # Fetch all metrics datasets
         datasets = await self.fetch_metrics_datasets()
-        
+
+        # Apply config filter if set
+        if self.dataset_filter:
+            original_count = len(datasets)
+            datasets = [d for d in datasets if self.dataset_filter.should_process(
+                self._extract_dataset_id(d)
+            )]
+            self.stats['datasets_filtered_by_config'] = original_count - len(datasets)
+            logger.info(f"📋 Config filter applied: {len(datasets)} datasets to process ({original_count - len(datasets)} filtered out)")
+
         if limit:
             datasets = datasets[:limit]
             logger.info(f"Limited analysis to {limit} datasets")
-        
+
         # Process datasets
         for i, dataset in enumerate(datasets):
             logger.info(f"Progress: {i+1}/{len(datasets)}")
@@ -1692,6 +1717,8 @@ class MetricsIntelligenceAnalyzer:
         logger.info(f"║ Metrics skipped: {self.stats['metrics_skipped']:>38} ║")
         logger.info(f"║ Metrics excluded: {self.stats['metrics_excluded']:>37} ║")
         logger.info(f"║ High cardinality metrics: {self.stats['high_cardinality_metrics']:>27} ║")
+        if self.stats['datasets_filtered_by_config'] > 0:
+            logger.info(f"║ Datasets filtered by config: {self.stats['datasets_filtered_by_config']:>26} ║")
         logger.info("╚═══════════════════════════════════════════════════════════════╝")
         logger.info("")
     
@@ -1727,9 +1754,15 @@ async def main():
     parser.add_argument('--limit', type=int, help='Limit number of datasets to analyze')
     parser.add_argument('--verbose', action='store_true', help='Enable verbose logging')
     parser.add_argument('--force', action='store_true', help='Force clean database and reprocess all metrics from scratch')
-    
+    parser.add_argument('--config', type=str, help='Path to YAML config file for dataset filtering (requires --force)')
+
     args = parser.parse_args()
-    
+
+    # Validate --config requires --force
+    if args.config and not args.force:
+        print("Error: --config requires --force flag (config filtering needs a clean database)")
+        sys.exit(1)
+
     # Configure colored logging
     handler = logging.StreamHandler()
     formatter = ColoredFormatter(
@@ -1737,22 +1770,38 @@ async def main():
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     handler.setFormatter(formatter)
-    
+
     # Set up root logger
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
     root_logger.addHandler(handler)
     root_logger.setLevel(logging.INFO)
-    
+
     if args.verbose:
         root_logger.setLevel(logging.DEBUG)
-    
+
     # Reduce noise from HTTP libraries unless in verbose mode
     if not args.verbose:
         logging.getLogger('httpx').setLevel(logging.WARNING)
         logging.getLogger('httpcore').setLevel(logging.WARNING)
-    
+
+    # Load config filter if specified
+    dataset_filter = None
+    if args.config:
+        try:
+            dataset_filter = load_filter_config(args.config)
+        except FileNotFoundError as e:
+            logger.error(f"Config file not found: {e}")
+            sys.exit(1)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            sys.exit(1)
+
     analyzer = MetricsIntelligenceAnalyzer()
+
+    # Set filter if loaded
+    if dataset_filter:
+        analyzer.set_filter(dataset_filter)
 
     try:
         await analyzer.initialize_database()

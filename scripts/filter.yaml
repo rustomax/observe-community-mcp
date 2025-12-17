@@ -1,0 +1,17 @@
+mode: allowlist  # or blocklist
+# in allowlist mode, no datasets are included by default,
+# only the datasets in the include list will be processed
+
+# in blocklist mode, all datasets are included by default,
+# only the datasets in the exclude list will be excluded
+
+# the two modes are mutually exclusive, you can only use one at a time
+
+include:
+  by_id:
+    - "12345678" # Kubernetes Explorer/Opentelemetry Logs
+    - "87654321" # Kubernetes Explorer/Kubernetes Logs
+    - "12345679" # Service Explorer/Service Metrics
+exclude:
+  by_id:
+    - "98765432" # Secret dataset to exclude
