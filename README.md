@@ -525,6 +525,49 @@ This project uses `requirements-lock.txt` for reproducible builds with pinned ve
 | `scripts/metrics_intelligence.py` | Analyze and categorize metrics | ~5-10 minutes |
 | `scripts/generate_mcp_token.sh` | Generate JWT tokens for authentication | Instant |
 
+### Filtering Datasets
+
+Both intelligence scripts support YAML-based filtering to control which datasets are processed. This is useful when you want to focus on specific datasets or exclude certain ones from analysis.
+
+**Usage:**
+```bash
+# Filter requires --force flag (clean database)
+python scripts/datasets_intelligence.py --force --config ./filter.yaml
+python scripts/metrics_intelligence.py --force --config ./filter.yaml
+```
+
+**Config file format:**
+```yaml
+# Allowlist mode: only process specified datasets
+mode: allowlist
+
+include:
+  by_id:
+    - "41234567"
+    - "41234568"
+
+exclude:
+  by_id: []  # Ignored in allowlist mode
+```
+
+```yaml
+# Blocklist mode: process all except specified datasets
+mode: blocklist
+
+include:
+  by_id: []  # Ignored in blocklist mode
+
+exclude:
+  by_id:
+    - "31321231"
+```
+
+**Modes:**
+- **`allowlist`**: Only process datasets listed in `include.by_id`. The `exclude` section is ignored.
+- **`blocklist`**: Process all datasets except those listed in `exclude.by_id`. The `include` section is ignored.
+
+**Note:** The `--config` flag requires `--force` because filtering needs a clean database to work correctly.
+
 ### Contributing
 
 This project demonstrates modern approaches to LLM-native observability tooling. Issues, feature requests, and pull requests are welcome.
