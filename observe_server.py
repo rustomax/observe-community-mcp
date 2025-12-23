@@ -42,8 +42,8 @@ if telemetry_enabled:
 else:
     metrics_enabled = False
 
-# Import Gemini-powered document search
-from src.observe.gemini_search import search_docs_gemini as search_docs
+# Import BM25-powered skills search (no external API dependencies)
+from src.observe.skills_search import search_skills_bm25 as search_docs
 
 # Import organized Observe API modules
 from src.observe import (
@@ -854,13 +854,13 @@ async def execute_opal_query(ctx: Context, query: str, dataset_id: str = None, p
 
 @mcp.tool()
 @requires_scopes(['admin', 'read'])
-@trace_mcp_tool(tool_name="get_relevant_docs", record_args=True, record_result=False)
-async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str:
+@trace_mcp_tool(tool_name="learn_observe_skill", record_args=True, record_result=False)
+async def learn_observe_skill(ctx: Context, query: str, n_results: int = 5) -> str:
     """
-    Search Observe documentation using Gemini Search for OPAL syntax and platform guidance.
+    Search OPAL skill documentation using local BM25 search for OPAL syntax and best practices.
 
-    This tool uses Google's Gemini AI with search grounding to find relevant, up-to-date
-    documentation from docs.observeinc.com about OPAL syntax, functions, features, and best practices.
+    This tool uses ParadeDB BM25 ranking to search curated OPAL skills documentation.
+    No external API dependencies - all search happens locally in PostgreSQL.
 
     WHEN YOU MUST USE THIS TOOL
     ═══════════════════════════════════════════════════════════════════════════════════
@@ -883,131 +883,107 @@ async def get_relevant_docs(ctx: Context, query: str, n_results: int = 5) -> str
     ─────────────────────────────────────────────────────────────────────────────────
     execute_opal_query() fails
             ↓
-    get_relevant_docs("error message keywords" or "feature name")
+    learn_observe_skill("error message keywords" or "feature name")
             ↓
-    Review official syntax from documentation
+    Review official syntax from skills documentation
             ↓
     Retry execute_opal_query() with corrected syntax
 
     SEARCH TIPS:
     ───────────────
-    • Use specific error keywords: "statsby syntax", "join datasets"
-    • Include OPAL in your search: "OPAL filter operators"
-    • Search for function names directly: "make_col examples"
+    • Use specific keywords: "aggregation", "filtering", "percentile"
+    • Search for OPAL verbs: "statsby", "filter", "make_col", "timechart"
+    • Search for operations: "group by", "time series", "window functions"
 
     TYPICAL USE CASES
     ────────────────
-    - "OPAL filter syntax" → Learn filtering operators and patterns
-    - "OPAL time functions" → Understand time manipulation functions
-    - "kubernetes resource attributes" → Find available K8s fields
-    - "statsby group_by" → Learn aggregation syntax
-    - "OPAL join syntax" → Multi-dataset join patterns
+    - "aggregation statsby" → Learn aggregation syntax with statsby
+    - "filter logs" → Filtering event datasets
+    - "percentile latency" → Analyzing tdigest metrics for percentiles
+    - "time series" → Creating time-series charts
+    - "window functions" → Using lag(), lead(), row_number()
+    - "join datasets" → Subquery patterns and unions
 
     Args:
         query: Documentation search query describing what you need to learn
-        n_results: Number of documents to return (default: 5, recommended: 3-10)
+        n_results: Number of skills to return (default: 5, recommended: 3-10)
 
     Returns:
-        Relevant documentation sections with:
-        - Full document content
-        - Source filename for reference
-        - Relevance score indicating match quality
+        Relevant skill documentation with:
+        - Full skill content
+        - Skill name and category
+        - BM25 relevance score
+        - Difficulty level and tags
 
     Examples:
-        # Learn OPAL syntax
-        get_relevant_docs("OPAL filter syntax")
-        get_relevant_docs("time range functions")
+        # Learn OPAL operations
+        learn_observe_skill("aggregation")
+        learn_observe_skill("filter events")
 
-        # Find schema information
-        get_relevant_docs("kubernetes resource attributes")
-        get_relevant_docs("opentelemetry span fields")
-
-        # Advanced features
-        get_relevant_docs("OPAL join multiple datasets", n_results=3)
-        get_relevant_docs("aggregation functions statsby")
+        # Advanced patterns
+        learn_observe_skill("percentile metrics", n_results=3)
+        learn_observe_skill("time series analysis")
+        learn_observe_skill("window functions")
 
     Performance:
-        - Search time: 1-3 seconds (includes web search + AI processing)
-        - Returns AI-curated documentation excerpts with citations
-        - Rate limited to 400 requests per day (Gemini Tier 1 limit)
+        - Search time: < 100ms (local BM25 index)
+        - No external API calls or rate limits
+        - Instant results from PostgreSQL
     """
     # Validate input sizes to prevent DoS attacks (H-INPUT-2)
     validate_input_size(query, "query", 1024)  # 1KB max for search queries
 
     try:
-        # Import required modules
-        import os
-        from collections import defaultdict
+        # Log the skills search operation
+        semantic_logger.info(f"skills search | query:'{query}' | n_results:{n_results}")
 
-        # Log the documentation search operation
-        semantic_logger.info(f"docs search | query:'{query}' | n_results:{n_results}")
+        # Search skills using BM25
+        skill_results = await search_docs(query, n_results=n_results)
 
-        chunk_results = await search_docs(query, n_results=max(n_results * 3, 15))  # Get more chunks to ensure we have enough from relevant docs
+        if not skill_results:
+            return f"No relevant skills found for: '{query}'"
 
-        if not chunk_results:
-            return f"No relevant documents found for: '{query}'"
+        # Check for error results
+        if len(skill_results) == 1 and skill_results[0].get("id") == "error":
+            return f"Search error: {skill_results[0].get('text', 'Unknown error')}"
 
-        # Group chunks by source document
-        docs_by_source = defaultdict(list)
-        for result in chunk_results:
-            source = result.get("source", "")
-            if source and source != "error":
-                docs_by_source[source].append(result)
+        response = f"Found {len(skill_results)} relevant OPAL skills for: '{query}'\\n\\n"
 
-        # Calculate average score for each document
-        doc_scores = {}
-        for source, chunks in docs_by_source.items():
-            avg_score = sum(chunk.get("score", 0.0) for chunk in chunks) / len(chunks)
-            doc_scores[source] = avg_score
+        # Format each skill result
+        for i, result in enumerate(skill_results, 1):
+            title = result.get("title", "Untitled Skill")
+            score = result.get("score", 0.0)
+            content = result.get("text", "")
+            metadata = result.get("metadata", {})
 
-        # Sort documents by average score and limit to requested number
-        sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:n_results]
+            # Extract metadata
+            category = metadata.get("category", "General")
+            difficulty = metadata.get("difficulty", "intermediate")
+            tags = metadata.get("tags", [])
+            description = metadata.get("description", "")
 
-        if not sorted_docs:
-            return f"No valid documents found for: '{query}'"
+            # Format skill output
+            response += f"### Skill {i}: {title}\\n"
+            response += f"Category: {category} | Difficulty: {difficulty}\\n"
+            response += f"BM25 Score: {score:.2f}\\n"
 
-        response = f"Found {len(sorted_docs)} relevant documents for: '{query}'\\n\\n"
+            if tags:
+                response += f"Tags: {', '.join(tags[:10])}\\n"
 
-        # Read and format each full document
-        for i, (source, score) in enumerate(sorted_docs, 1):
-            try:
-                # Read the entire document file
-                with open(source, 'r', encoding='utf-8') as f:
-                    document_content = f.read()
+            if description:
+                response += f"\\n**Description:** {description}\\n"
 
-                # Get metadata from the first chunk of this source
-                first_chunk = docs_by_source[source][0]
-                title = first_chunk.get("title", os.path.basename(source).replace(".md", "").replace("_", " ").title())
-                source_filename = os.path.basename(source)
+            response += f"\\n{content}\\n\\n"
+            response += "----------------------------------------\\n\\n"
 
-                response += f"### Document {i}: {title}\\n"
-                response += f"Source: {source_filename}\\n"
-                response += f"Relevance Score: {score:.2f}\\n\\n"
-                response += f"{document_content}\\n\\n\\n"
-                response += "----------------------------------------\\n\\n"
-            except Exception as e:
-                # Use the chunk text as fallback if we can't read the file
-                chunks_text = "\\n\\n".join([chunk.get("text", "") for chunk in docs_by_source[source]])
-
-                # Get title from chunk metadata (first chunk of this source)
-                first_chunk = docs_by_source[source][0]
-                title = first_chunk.get("title", "Documentation")
-
-                # Only include title if it's meaningful (not just the domain name)
-                if title and title.lower() not in ["observeinc.com", "documentation"]:
-                    response += f"### Document {i}: {title}\\n"
-                else:
-                    response += f"### Document {i}\\n"
-                response += f"Relevance Score: {score:.2f}\\n\\n"
-                response += f"{chunks_text}\\n\\n\\n"
-                response += "----------------------------------------\\n\\n"
-
-        # Log successful documentation search
-        semantic_logger.info(f"docs search complete | found:{len(sorted_docs)} documents | chunks:{len(chunk_results)}")
+        # Log successful skills search
+        semantic_logger.info(f"skills search complete | found:{len(skill_results)} skills")
 
         return response
     except Exception as e:
-        return f"Error retrieving relevant documents: {str(e)}. Make sure GEMINI_API_KEY is set in your environment."
+        error_msg = f"Error searching skills: {str(e)}. Make sure skills database is populated (run scripts/skills_intelligence.py)."
+        semantic_logger.error(f"skills search error | {error_msg}")
+        return error_msg
 
 
 @mcp.tool()

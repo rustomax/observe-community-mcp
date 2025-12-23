@@ -42,7 +42,7 @@ The server provides **3 intelligent tools** for Observe platform interaction:
 
 ### 🔍 Discovery & Search
 - **`discover_context`**: Unified discovery tool for both datasets and metrics - shows dimensions, schemas, and query templates in one search. Addresses the #1 user pain point: "eliminate dimension guessing!"
-- **`get_relevant_docs`**: Search Observe documentation using Gemini AI with real-time web access to docs.observeinc.com
+- **`learn_observe_skill`**: Search OPAL skill documentation using local BM25 search for OPAL syntax and best practices - no external API dependencies
 
 ### ⚡ Query Execution
 - **`execute_opal_query`**: Run OPAL queries against single or multiple Observe datasets with comprehensive error handling
@@ -104,9 +104,6 @@ your_public_key_content_here
 # Database Security
 SEMANTIC_GRAPH_PASSWORD="your_secure_postgres_password"
 
-# Gemini AI for Documentation Search
-GEMINI_API_KEY="your_gemini_api_key_here"
-
 # OpenTelemetry Collection (optional)
 OBSERVE_OTEL_TOKEN="your_otel_token_here"
 OBSERVE_OTEL_CUSTOMER_ID="your_customer_id_here"
@@ -132,7 +129,13 @@ python3.13 -m venv .venv
 source .venv/bin/activate
 
 # Install dependencies
-pip install -r ./requirements
+pip install -r requirements-lock.txt
+
+# Setup skills search (one-time database setup)
+./scripts/setup_skills.sh
+
+# Load OPAL skills documentation
+python scripts/skills_intelligence.py --force
 
 # Build dataset intelligence (analyzes datasets in your Observe instance)
 python scripts/datasets_intelligence.py --force
@@ -141,7 +144,7 @@ python scripts/datasets_intelligence.py --force
 python scripts/metrics_intelligence.py --force
 ```
 
-**Note**: Documentation search now uses Gemini AI and requires no local setup - it queries docs.observeinc.com in real-time.
+**Note**: Skills search uses local BM25 indexing (no external APIs). Datasets and metrics intelligence require Observe API credentials.
 
 ### 5. Connect with Claude Desktop
 

@@ -116,7 +116,7 @@ def enhance_field_error(match, query: str, dataset_id: str, schema_info: Optiona
             f"\n   | filter labels.{field_name} ~ \"your-value\""
             f"\n"
             f"\n📖 Learn more about metrics queries:"
-            f"\n   get_relevant_docs(\"OPAL metrics align aggregate pattern\")"
+            f"\n   learn_observe_skill(\"OPAL metrics align aggregate pattern\")"
         )
     elif is_metrics_query and has_labels_field:
         # Generic metrics guidance
