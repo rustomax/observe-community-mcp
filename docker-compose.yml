@@ -24,9 +24,6 @@ services:
       # === MCP Authentication ===
       - PUBLIC_KEY_PEM=${PUBLIC_KEY_PEM}
 
-      # === Document Search (Gemini AI) ===
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-
       # === Database (Semantic Graph) ===
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
